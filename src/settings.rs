@@ -26,7 +26,7 @@ pub fn run() {
             .with_min_inner_size([600.0, 420.0]),
         ..Default::default()
     };
-    let _ = eframe::run_native(
+    if let Err(e) = eframe::run_native(
         "OpenHinoVoice",
         options,
         Box::new(|cc| {
@@ -38,7 +38,9 @@ pub fn run() {
             });
             Ok(Box::new(Settings::load()))
         }),
-    );
+    ) {
+        crate::overlay::show_error(&format!("設定画面を開けません: {e}"));
+    }
 }
 
 fn use_japanese_font(ctx: &egui::Context) {

@@ -18,11 +18,12 @@ use windows::Win32::UI::Shell::{
     Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, GetCursorPos,
-    GetForegroundWindow, LoadIconW, PostMessageW, RegisterClassW, SetForegroundWindow, ShowWindow,
-    TrackPopupMenu, UpdateLayeredWindow, HWND_TOPMOST, IDI_APPLICATION, MF_STRING, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, TPM_RETURNCMD, ULW_ALPHA, WM_APP,
-    WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY, WM_RBUTTONUP, WNDCLASSW, WS_EX_LAYERED,
+    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
+    GetCursorPos, GetForegroundWindow, LoadIconW, MessageBoxW, PostMessageW, RegisterClassW,
+    RegisterWindowMessageW, SetForegroundWindow, ShowWindow, TrackPopupMenu, UpdateLayeredWindow,
+    HWND_TOPMOST, IDI_APPLICATION, MB_ICONERROR, MB_OK, MB_SETFOREGROUND, MF_STRING,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, TPM_RETURNCMD, ULW_ALPHA,
+    WM_APP, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY, WM_RBUTTONUP, WNDCLASSW, WS_EX_LAYERED,
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
@@ -34,6 +35,7 @@ pub const CMD_RECOVER_TEXT: usize = 1003;
 pub static EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 static RECOVERY_COUNT: AtomicUsize = AtomicUsize::new(0);
 static RECOVERY_REQUESTED: AtomicBool = AtomicBool::new(false);
+static TASKBAR_CREATED: OnceLock<u32> = OnceLock::new();
 
 pub fn set_recovery_count(count: usize) {
     RECOVERY_COUNT.store(count, Ordering::SeqCst);
@@ -106,8 +108,29 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+/// GUI-subsystem binaries have no visible stderr; surface fatal errors to the user.
+pub fn show_error(message: &str) {
+    let text = wide(message);
+    unsafe {
+        let _ = MessageBoxW(
+            None,
+            PCWSTR(text.as_ptr()),
+            windows::core::w!("OpenHinoVoice"),
+            MB_OK | MB_ICONERROR | MB_SETFOREGROUND,
+        );
+    }
+}
+
 pub fn create() -> Result<HWND, String> {
     unsafe {
+        let taskbar_created = *TASKBAR_CREATED
+            .get_or_init(|| RegisterWindowMessageW(windows::core::w!("TaskbarCreated")));
+        if taskbar_created == 0 {
+            return Err(format!(
+                "TaskbarCreated メッセージを登録できません: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
         let hinstance = GetModuleHandleW(None)
             .map_err(|e| format!("モジュールハンドルを取得できません: {e}"))?;
         let class_name = wide("OpenHinoVoiceOverlay");
@@ -134,14 +157,18 @@ pub fn create() -> Result<HWND, String> {
             None,
         )
         .map_err(|e| format!("オーバーレイを作れません: {e}"))?;
+        if let Err(e) = add_tray(window) {
+            let _ = DestroyWindow(window);
+            return Err(e);
+        }
         lock().hwnd = window.0 as isize;
-        add_tray(window);
         Ok(window)
     }
 }
 
-unsafe fn add_tray(window: HWND) {
-    let icon = LoadIconW(None, IDI_APPLICATION).unwrap_or_default();
+unsafe fn add_tray(window: HWND) -> Result<(), String> {
+    let icon = LoadIconW(None, IDI_APPLICATION)
+        .map_err(|e| format!("トレイ用アイコンを読み込めません: {e}"))?;
     let mut tip = [0u16; 128];
     let label: Vec<u16> = "OpenHinoVoice".encode_utf16().collect();
     tip[..label.len()].copy_from_slice(&label);
@@ -155,7 +182,13 @@ unsafe fn add_tray(window: HWND) {
         szTip: tip,
         ..Default::default()
     };
-    let _ = Shell_NotifyIconW(NIM_ADD, &data);
+    if !Shell_NotifyIconW(NIM_ADD, &data).as_bool() {
+        return Err(format!(
+            "通知領域にトレイアイコンを登録できません: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
 }
 
 pub fn remove_tray() {
@@ -783,6 +816,13 @@ unsafe extern "system" fn wnd_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    if TASKBAR_CREATED.get().copied() == Some(msg) {
+        // Explorer recreates its notification area on restart; icons must be re-added.
+        if let Err(e) = add_tray(window) {
+            show_error(&format!("Explorer 再起動後のトレイ復元に失敗しました: {e}"));
+        }
+        return LRESULT(0);
+    }
     match msg {
         x if x == WM_TRAY => {
             let event = (lparam.0 as u32) & 0xFFFF;
@@ -807,6 +847,14 @@ unsafe extern "system" fn wnd_proc(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn taskbar_created_message_registration_is_stable() {
+        let first = unsafe { RegisterWindowMessageW(windows::core::w!("TaskbarCreated")) };
+        let second = unsafe { RegisterWindowMessageW(windows::core::w!("TaskbarCreated")) };
+        assert!((0xC000..=0xFFFF).contains(&first));
+        assert_eq!(first, second);
+    }
 
     #[test]
     fn level_maps_voice_range_into_meter() {

@@ -517,7 +517,7 @@ fn main() {
     let cfg = match config::load() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("{e}");
+            overlay::show_error(&e);
             return;
         }
     };
@@ -527,13 +527,13 @@ fn main() {
     let mut last_config_check = Instant::now();
 
     if let Err(e) = overlay::create() {
-        eprintln!("{e}");
+        overlay::show_error(&e);
         return;
     }
 
     let (key_tx, key_rx) = channel::<hook::KeyEvent>();
     if let Err(e) = hook::install(key_tx, hotkey) {
-        eprintln!("{e}");
+        overlay::show_error(&e);
         return;
     }
 
