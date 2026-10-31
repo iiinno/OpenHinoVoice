@@ -13,6 +13,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const AUTHORIZE_URL: &str = "https://auth.openai.com/api/accounts/authorize";
 const TOKEN_URL: &str = "https://auth.openai.com/api/accounts/oauth/token";
 const DISCOVERY_URL: &str = "https://auth.openai.com/.well-known/openid-configuration";
+const JWKS_URL: &str = "https://auth.openai.com/.well-known/jwks.json";
 const ISSUER: &str = "https://auth.openai.com";
 const RESOURCE: &str = "https://api.openai.com/v1";
 const API: &str = "https://api.openai.com/v1";
@@ -47,7 +48,10 @@ pub enum Status {
 }
 
 fn dir() -> PathBuf {
-    crate::config::config_path().parent().map(PathBuf::from).unwrap_or_default()
+    crate::config::config_path()
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_default()
 }
 fn registration_path() -> PathBuf {
     dir().join("chatgpt.json")
@@ -57,7 +61,9 @@ fn tokens_path() -> PathBuf {
 }
 
 fn now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 fn load_registration() -> Registration {
@@ -124,7 +130,14 @@ pub fn sign_in() -> Result<Status, String> {
     let nonce = URL_SAFE_NO_PAD.encode(random_bytes(16));
     let first = reg.client_id.is_empty();
     let mut params = vec![
-        ("client_id", if first { "dynamic_agent_client".to_string() } else { reg.client_id.clone() }),
+        (
+            "client_id",
+            if first {
+                "dynamic_agent_client".to_string()
+            } else {
+                reg.client_id.clone()
+            },
+        ),
         ("ext_agent_host_id", reg.host_id.clone()),
         ("response_type", "code".into()),
         ("redirect_uri", redirect_uri.clone()),
@@ -148,9 +161,15 @@ pub fn sign_in() -> Result<Status, String> {
         return Err("サインインの応答が一致しません。もう一度お試しください".into());
     }
     if let Some(err) = query.get("error") {
-        return Err(if err == "access_denied" { "サインインが取り消されました".into() } else { format!("サインインに失敗しました: {err}") });
+        return Err(if err == "access_denied" {
+            "サインインが取り消されました".into()
+        } else {
+            format!("サインインに失敗しました: {err}")
+        });
     }
-    let code = query.get("code").ok_or("認可コードが返ってきませんでした")?;
+    let code = query
+        .get("code")
+        .ok_or("認可コードが返ってきませんでした")?;
     match (first, query.get("client_id")) {
         (true, Some(id)) => reg.client_id = id.clone(),
         (true, None) => return Err("登録が完了しませんでした。もう一度お試しください".into()),
@@ -166,7 +185,7 @@ pub fn sign_in() -> Result<Status, String> {
         ("redirect_uri", &redirect_uri),
         ("resource", RESOURCE),
     ])?;
-    // トークン窓口から TLS で直接受け取った ID トークンなので、署名の検証は TLS に代える(OIDC Core 3.1.3.7)
+    // TLS だけで済ませず、公開 JWKS により RS256 署名を検証する。
     let claims = check_id_token(&resp.id_token, &reg.client_id, &nonce)?;
     reg.email = claims.email.unwrap_or_default();
     save_registration(&reg)?;
@@ -177,14 +196,19 @@ pub fn sign_in() -> Result<Status, String> {
         expires_at: now() + resp.expires_in,
         scope: resp.scope.unwrap_or_default(),
     };
+    let _guard = NamedLock::acquire("Local\\OpenHinoVoice.ChatGPTRefresh")?;
     save_tokens(&tokens)?;
     Ok(status())
 }
 
 pub fn sign_out() -> Result<(), String> {
+    // refresh と同じ名前付き排他を取得してから失効/削除する。
+    // これによりサインアウト直後に古い refresh がトークンを復活させない。
+    let _guard = NamedLock::acquire("Local\\OpenHinoVoice.ChatGPTRefresh")?;
+    let mut warning: Option<String> = None;
     if let Some(t) = load_tokens() {
         let reg = load_registration();
-        // 取り消し先は OpenID の設定情報から引く。取り消しに失敗しても手元のトークンは消す
+        // 取り消し先は OpenID の設定情報から引く。失敗は利用者に通知する。
         let endpoint = agent()
             .get(DISCOVERY_URL)
             .call()
@@ -192,19 +216,52 @@ pub fn sign_out() -> Result<(), String> {
             .and_then(|r| r.into_json::<serde_json::Value>().ok())
             .and_then(|v| v["revocation_endpoint"].as_str().map(str::to_string));
         if let Some(url) = endpoint {
-            let _ = agent()
-                .post(&url)
-                .send_form(&[("token", t.refresh_token.as_str()), ("token_type_hint", "refresh_token"), ("client_id", &reg.client_id)]);
+            let mut revoked = false;
+            for attempt in 0..3 {
+                let result = agent()
+                    .post(&url)
+                    .timeout(Duration::from_secs(6))
+                    .send_form(&[
+                        ("token", t.refresh_token.as_str()),
+                        ("token_type_hint", "refresh_token"),
+                        ("client_id", &reg.client_id),
+                    ]);
+                match result {
+                    Ok(_) => {
+                        revoked = true;
+                        break;
+                    }
+                    Err(ureq::Error::Status(code, _)) if code >= 500 && attempt < 2 => {
+                        std::thread::sleep(Duration::from_millis(200 * (1 << attempt)));
+                    }
+                    Err(ureq::Error::Transport(_)) if attempt < 2 => {
+                        std::thread::sleep(Duration::from_millis(200 * (1 << attempt)));
+                    }
+                    _ => break,
+                }
+            }
+            if !revoked {
+                warning = Some("サーバー側のセッション失効を確認できませんでした".into());
+            }
+        } else {
+            warning = Some("失効用URLを取得できませんでした".into());
         }
     }
     match std::fs::remove_file(tokens_path()) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(format!("トークンを消せません: {e}")),
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("トークンを消せません: {e}")),
     }
+    if let Some(warning) = warning {
+        return Err(format!("ローカルではサインアウト済みですが、{warning}。ChatGPT設定からこのアプリの接続を解除できます"));
+    }
+    Ok(())
 }
 
-fn wait_for_callback(listener: &TcpListener, timeout: Duration) -> Result<std::collections::HashMap<String, String>, String> {
+fn wait_for_callback(
+    listener: &TcpListener,
+    timeout: Duration,
+) -> Result<std::collections::HashMap<String, String>, String> {
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
     let deadline = std::time::Instant::now() + timeout;
     loop {
@@ -217,7 +274,9 @@ fn wait_for_callback(listener: &TcpListener, timeout: Duration) -> Result<std::c
                 let target = line.split_whitespace().nth(1).unwrap_or("");
                 let (path, query) = target.split_once('?').unwrap_or((target, ""));
                 if path != CALLBACK_PATH {
-                    let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
                     continue;
                 }
                 let body = "<!doctype html><meta charset=utf-8><title>OpenHinoVoice</title><body style=\"font-family:sans-serif;padding:3em\"><h2>OpenHinoVoice にサインインしました</h2><p>このタブは閉じてかまいません。</p>";
@@ -254,30 +313,80 @@ struct IdClaims {
     aud: serde_json::Value,
     exp: u64,
     nonce: Option<String>,
+    sub: String,
     email: Option<String>,
 }
 
 fn check_id_token(id_token: &str, client_id: &str, nonce: &str) -> Result<IdClaims, String> {
-    let payload = id_token.split('.').nth(1).ok_or("ID トークンの形式が不正です")?;
-    let bytes = URL_SAFE_NO_PAD.decode(payload).map_err(|_| "ID トークンを読めません")?;
-    let claims: IdClaims = serde_json::from_slice(&bytes).map_err(|_| "ID トークンを読めません")?;
+    use jsonwebtoken::{Algorithm, DecodingKey, Validation};
+    let header =
+        jsonwebtoken::decode_header(id_token).map_err(|_| "IDトークンのヘッダーが不正です")?;
+    if header.alg != Algorithm::RS256 {
+        return Err("想定外のIDトークン署名方式です".into());
+    }
+    let kid = header.kid.ok_or("IDトークンの署名鍵IDがありません")?;
+    let jwks: serde_json::Value = agent()
+        .get(JWKS_URL)
+        .timeout(Duration::from_secs(15))
+        .call()
+        .map_err(|e| format!("署名鍵を取得できません: {e}"))?
+        .into_json()
+        .map_err(|e| format!("署名鍵を読めません: {e}"))?;
+    let key = jwks["keys"]
+        .as_array()
+        .and_then(|keys| {
+            keys.iter().find(|k| {
+                k["kid"].as_str() == Some(kid.as_str())
+                    && k["kty"] == "RSA"
+                    && k["alg"] == "RS256"
+                    && k["use"] == "sig"
+            })
+        })
+        .ok_or("対応するOpenAI署名鍵が見つかりません")?;
+    let (n, e) = (
+        key["n"].as_str().ok_or("署名鍵が不正です")?,
+        key["e"].as_str().ok_or("署名鍵が不正です")?,
+    );
+    let decoding_key =
+        DecodingKey::from_rsa_components(n, e).map_err(|_| "署名鍵を解析できません")?;
+    let mut validation = Validation::new(Algorithm::RS256);
+    validation.set_audience(&[client_id]);
+    validation.set_issuer(&[ISSUER]);
+    let claims = jsonwebtoken::decode::<IdClaims>(id_token, &decoding_key, &validation)
+        .map_err(|_| "IDトークンの署名・有効期限の検証に失敗しました")?
+        .claims;
+    validate_id_claims(&claims, client_id, nonce)?;
+    Ok(claims)
+}
+
+fn validate_id_claims(claims: &IdClaims, client_id: &str, nonce: &str) -> Result<(), String> {
     let aud_ok = match &claims.aud {
         serde_json::Value::String(a) => a == client_id,
         serde_json::Value::Array(a) => a.iter().any(|v| v == client_id),
         _ => false,
     };
-    if claims.iss != ISSUER || !aud_ok || claims.exp < now() || claims.nonce.as_deref() != Some(nonce) {
+    if claims.iss != ISSUER
+        || !aud_ok
+        || claims.exp <= now()
+        || claims.nonce.as_deref() != Some(nonce)
+        || claims.sub.is_empty()
+    {
         return Err("ID トークンの検証に失敗しました".into());
     }
-    Ok(claims)
+    Ok(())
 }
 
 fn post_form<T: serde::de::DeserializeOwned>(form: &[(&str, &str)]) -> Result<T, String> {
     match agent().post(TOKEN_URL).send_form(form) {
-        Ok(r) => r.into_json().map_err(|e| format!("トークンの応答を読めません: {e}")),
+        Ok(r) => r
+            .into_json()
+            .map_err(|e| format!("トークンの応答を読めません: {e}")),
         Err(ureq::Error::Status(code, r)) => {
             let body: serde_json::Value = r.into_json().unwrap_or_default();
-            Err(format!("トークンの取得に失敗しました({code} {})", body["error"].as_str().unwrap_or("")))
+            Err(format!(
+                "トークンの取得に失敗しました({code} {})",
+                body["error"].as_str().unwrap_or("")
+            ))
         }
         Err(e) => Err(format!("認証サーバーに接続できません: {e}")),
     }
@@ -289,19 +398,22 @@ fn post_form<T: serde::de::DeserializeOwned>(form: &[(&str, &str)]) -> Result<T,
 fn access_token() -> Result<String, String> {
     let mut t = load_tokens().ok_or("ChatGPT にサインインしていません")?;
     if !has_plan_scope(&t.scope) {
-        return Err("ChatGPT プランの利用が許可されていません。設定からサインインし直してください".into());
+        return Err(
+            "ChatGPT プランの利用が許可されていません。設定からサインインし直してください".into(),
+        );
     }
     if t.expires_at > now() + 60 {
         return Ok(t.access_token);
     }
     // 常駐側と設定ウィンドウが同時に更新しないよう、プロセスをまたいで順番にする
-    let _guard = NamedLock::acquire("Local\\OpenHinoVoice.ChatGPTRefresh");
-    if let Some(latest) = load_tokens() {
-        if latest.expires_at > now() + 60 {
-            return Ok(latest.access_token);
-        }
-        t = latest;
+    let _guard = NamedLock::acquire("Local\\OpenHinoVoice.ChatGPTRefresh")?;
+    // ロック取得待ち中に他プロセスがサインアウトしていた場合、
+    // 古いメモリ上の refresh_token を使って再認証してはならない。
+    let latest = load_tokens().ok_or("ChatGPT からサインアウトしています")?;
+    if latest.expires_at > now() + 60 {
+        return Ok(latest.access_token);
     }
+    t = latest;
     let reg = load_registration();
     let resp: Result<TokenResponse, String> = post_form(&[
         ("grant_type", "refresh_token"),
@@ -349,19 +461,28 @@ pub fn list_models() -> Result<Vec<Model>, String> {
         .filter_map(|m| {
             Some(Model {
                 slug: m["slug"].as_str()?.to_string(),
-                display_name: m["display_name"].as_str().unwrap_or(m["slug"].as_str()?).to_string(),
+                display_name: m["display_name"]
+                    .as_str()
+                    .unwrap_or(m["slug"].as_str()?)
+                    .to_string(),
             })
         })
         .collect())
 }
 
 /// Responses API で整形する。プラン利用では store と stream が必須で、temperature などは送れない
-pub fn format(model: &str, instructions: &str, raw: &str, fast: bool, timeout: Duration) -> Result<String, String> {
+pub fn format(
+    model: &str,
+    instructions: &str,
+    raw: &str,
+    fast: bool,
+    timeout: Duration,
+) -> Result<String, String> {
     let token = access_token()?;
     let mut body = serde_json::json!({
         "model": model,
         "instructions": instructions,
-        "input": [{ "role": "user", "content": format!("<text>{raw}</text>") }],
+        "input": [{ "role": "user", "content": raw }],
         "store": false,
         "stream": true,
     });
@@ -394,8 +515,12 @@ fn read_stream(reader: impl Read) -> Result<String, String> {
     let mut text = String::new();
     for line in BufReader::new(reader).lines() {
         let line = line.map_err(|e| format!("応答が途中で切れました: {e}"))?;
-        let Some(data) = line.strip_prefix("data:") else { continue };
-        let Ok(event) = serde_json::from_str::<serde_json::Value>(data.trim()) else { continue };
+        let Some(data) = line.strip_prefix("data:") else {
+            continue;
+        };
+        let Ok(event) = serde_json::from_str::<serde_json::Value>(data.trim()) else {
+            continue;
+        };
         match event["type"].as_str().unwrap_or("") {
             "response.output_text.delta" => text.push_str(event["delta"].as_str().unwrap_or("")),
             "response.completed" => return Ok(text),
@@ -412,9 +537,15 @@ fn read_stream(reader: impl Read) -> Result<String, String> {
 
 fn explain_error(http: u16, code: &str) -> String {
     match code {
-        "subscription_sharing_usage_limit_exceeded" => "ChatGPT プランの利用上限に達しました".into(),
-        "subscription_sharing_user_not_eligible" => "この ChatGPT プランでは使えません(Plus か Pro が必要です)".into(),
-        "subscription_sharing_usage_unavailable" | "subscription_sharing_user_unavailable" => "ChatGPT が一時的に使えません".into(),
+        "subscription_sharing_usage_limit_exceeded" => {
+            "ChatGPT プランの利用上限に達しました".into()
+        }
+        "subscription_sharing_user_not_eligible" => {
+            "この ChatGPT プランでは使えません(Plus か Pro が必要です)".into()
+        }
+        "subscription_sharing_usage_unavailable" | "subscription_sharing_user_unavailable" => {
+            "ChatGPT が一時的に使えません".into()
+        }
         "subscription_sharing_invalid_user" => "ChatGPT にサインインし直してください".into(),
         "" => format!("ChatGPT のエラー(HTTP {http})"),
         other => format!("ChatGPT のエラー({other})"),
@@ -440,7 +571,9 @@ fn sha256(data: &[u8]) -> [u8; 32] {
 }
 
 fn random_bytes(n: usize) -> Vec<u8> {
-    use windows::Win32::Security::Cryptography::{BCryptGenRandom, BCRYPT_USE_SYSTEM_PREFERRED_RNG};
+    use windows::Win32::Security::Cryptography::{
+        BCryptGenRandom, BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+    };
     let mut buf = vec![0u8; n];
     let status = unsafe { BCryptGenRandom(None, &mut buf, BCRYPT_USE_SYSTEM_PREFERRED_RNG) };
     assert!(status.is_ok(), "BCryptGenRandom failed: {status:?}");
@@ -452,20 +585,33 @@ fn uuid_v4() -> String {
     b[6] = (b[6] & 0x0f) | 0x40;
     b[8] = (b[8] & 0x3f) | 0x80;
     let h: String = b.iter().map(|x| format!("{x:02x}")).collect();
-    format!("{}-{}-{}-{}-{}", &h[0..8], &h[8..12], &h[12..16], &h[16..20], &h[20..32])
+    format!(
+        "{}-{}-{}-{}-{}",
+        &h[0..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..32]
+    )
 }
 
 fn percent_encode(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
             _ => format!("%{b:02X}"),
         })
         .collect()
 }
 
 fn encode_query(params: &[(&str, String)]) -> String {
-    params.iter().map(|(k, v)| format!("{k}={}", percent_encode(v))).collect::<Vec<_>>().join("&")
+    params
+        .iter()
+        .map(|(k, v)| format!("{k}={}", percent_encode(v)))
+        .collect::<Vec<_>>()
+        .join("&")
 }
 
 fn parse_query(q: &str) -> std::collections::HashMap<String, String> {
@@ -502,7 +648,14 @@ pub(crate) fn open_browser(url: &str) {
     use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
     let wide: Vec<u16> = url.encode_utf16().chain(Some(0)).collect();
     unsafe {
-        ShellExecuteW(None, windows::core::w!("open"), windows::core::PCWSTR(wide.as_ptr()), None, None, SW_SHOWNORMAL);
+        ShellExecuteW(
+            None,
+            windows::core::w!("open"),
+            windows::core::PCWSTR(wide.as_ptr()),
+            None,
+            None,
+            SW_SHOWNORMAL,
+        );
     }
 }
 
@@ -510,13 +663,22 @@ pub(crate) fn open_browser(url: &str) {
 struct NamedLock(windows::Win32::Foundation::HANDLE);
 
 impl NamedLock {
-    fn acquire(name: &str) -> NamedLock {
+    fn acquire(name: &str) -> Result<NamedLock, String> {
         use windows::Win32::System::Threading::{CreateMutexW, WaitForSingleObject};
         let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
         unsafe {
-            let h = CreateMutexW(None, false, windows::core::PCWSTR(wide.as_ptr())).unwrap_or_default();
-            WaitForSingleObject(h, 30_000);
-            NamedLock(h)
+            let h = CreateMutexW(None, false, windows::core::PCWSTR(wide.as_ptr()))
+                .map_err(|e| format!("ChatGPTの排他ロックを作成できません: {e}"))?;
+            let outcome = WaitForSingleObject(h, 30_000).0;
+            // WAIT_OBJECT_0 (0), WAIT_ABANDONED (0x80) のみ排他取得済み。
+            // WAIT_TIMEOUT / WAIT_FAILED 等では Drop が ReleaseMutex しないよう閉じる。
+            if outcome != 0 && outcome != 0x80 {
+                let _ = windows::Win32::Foundation::CloseHandle(h);
+                return Err(format!(
+                    "ChatGPTの排他ロックを取得できません ({outcome:#x})"
+                ));
+            }
+            Ok(NamedLock(h))
         }
     }
 }
@@ -530,27 +692,51 @@ impl Drop for NamedLock {
     }
 }
 
-mod dpapi {
+pub(crate) mod dpapi {
     use windows::Win32::Foundation::{LocalFree, HLOCAL};
-    use windows::Win32::Security::Cryptography::{CryptProtectData, CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB};
+    use windows::Win32::Security::Cryptography::{
+        CryptProtectData, CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
+    };
 
     /// 今の Windows ユーザーだけが復号できる形に暗号化する
     pub fn protect(data: &[u8]) -> Result<Vec<u8>, String> {
-        let input = CRYPT_INTEGER_BLOB { cbData: data.len() as u32, pbData: data.as_ptr() as *mut u8 };
+        let input = CRYPT_INTEGER_BLOB {
+            cbData: data.len() as u32,
+            pbData: data.as_ptr() as *mut u8,
+        };
         let mut out = CRYPT_INTEGER_BLOB::default();
         unsafe {
-            CryptProtectData(&input, windows::core::w!("OpenHinoVoice"), None, None, None, CRYPTPROTECT_UI_FORBIDDEN, &mut out)
-                .map_err(|e| format!("トークンを暗号化できません: {e}"))?;
+            CryptProtectData(
+                &input,
+                windows::core::w!("OpenHinoVoice"),
+                None,
+                None,
+                None,
+                CRYPTPROTECT_UI_FORBIDDEN,
+                &mut out,
+            )
+            .map_err(|e| format!("トークンを暗号化できません: {e}"))?;
             Ok(take(out))
         }
     }
 
     pub fn unprotect(data: &[u8]) -> Result<Vec<u8>, String> {
-        let input = CRYPT_INTEGER_BLOB { cbData: data.len() as u32, pbData: data.as_ptr() as *mut u8 };
+        let input = CRYPT_INTEGER_BLOB {
+            cbData: data.len() as u32,
+            pbData: data.as_ptr() as *mut u8,
+        };
         let mut out = CRYPT_INTEGER_BLOB::default();
         unsafe {
-            CryptUnprotectData(&input, None, None, None, None, CRYPTPROTECT_UI_FORBIDDEN, &mut out)
-                .map_err(|e| format!("トークンを復号できません: {e}"))?;
+            CryptUnprotectData(
+                &input,
+                None,
+                None,
+                None,
+                None,
+                CRYPTPROTECT_UI_FORBIDDEN,
+                &mut out,
+            )
+            .map_err(|e| format!("トークンを復号できません: {e}"))?;
             Ok(take(out))
         }
     }
@@ -568,14 +754,23 @@ mod tests {
 
     #[test]
     fn pkce_matches_rfc7636_example() {
-        assert_eq!(pkce_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"), "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
+        assert_eq!(
+            pkce_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        );
     }
 
     #[test]
     fn query_round_trip() {
-        let q = encode_query(&[("scope", SCOPE.into()), ("redirect_uri", "http://127.0.0.1:1455/auth/callback".into())]);
+        let q = encode_query(&[
+            ("scope", SCOPE.into()),
+            ("redirect_uri", "http://127.0.0.1:1455/auth/callback".into()),
+        ]);
         assert!(q.contains("scope=openid%20profile"), "{q}");
-        assert!(q.contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A1455%2Fauth%2Fcallback"), "{q}");
+        assert!(
+            q.contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A1455%2Fauth%2Fcallback"),
+            "{q}"
+        );
         let back = parse_query("code=a%2Bb&scope=openid+email&state=x&bad=%E3%81%82%&jp=あ%zz");
         assert_eq!(back["bad"], "あ%");
         assert_eq!(back["jp"], "あ%zz");
@@ -600,16 +795,29 @@ mod tests {
 
     #[test]
     fn id_token_claims_are_checked() {
-        let make = |iss: &str, aud: &str, exp: u64, nonce: &str| {
-            let payload = serde_json::json!({ "iss": iss, "aud": aud, "exp": exp, "nonce": nonce, "email": "a@example.com" });
-            format!("x.{}.y", URL_SAFE_NO_PAD.encode(payload.to_string()))
+        let make = |iss: &str, aud: &str, exp: u64, nonce: &str| IdClaims {
+            iss: iss.to_string(),
+            aud: serde_json::Value::String(aud.to_string()),
+            exp,
+            nonce: Some(nonce.to_string()),
+            sub: "account-123".to_string(),
+            email: Some("a@example.com".to_string()),
         };
         let later = now() + 600;
-        assert!(check_id_token(&make(ISSUER, "oaiapp_1", later, "n"), "oaiapp_1", "n").is_ok());
-        assert!(check_id_token(&make("https://evil", "oaiapp_1", later, "n"), "oaiapp_1", "n").is_err());
-        assert!(check_id_token(&make(ISSUER, "other", later, "n"), "oaiapp_1", "n").is_err());
-        assert!(check_id_token(&make(ISSUER, "oaiapp_1", 1, "n"), "oaiapp_1", "n").is_err());
-        assert!(check_id_token(&make(ISSUER, "oaiapp_1", later, "m"), "oaiapp_1", "n").is_err());
+        assert!(validate_id_claims(&make(ISSUER, "oaiapp_1", later, "n"), "oaiapp_1", "n").is_ok());
+        assert!(validate_id_claims(
+            &make("https://evil", "oaiapp_1", later, "n"),
+            "oaiapp_1",
+            "n"
+        )
+        .is_err());
+        assert!(validate_id_claims(&make(ISSUER, "other", later, "n"), "oaiapp_1", "n").is_err());
+        assert!(validate_id_claims(&make(ISSUER, "oaiapp_1", 1, "n"), "oaiapp_1", "n").is_err());
+        assert!(
+            validate_id_claims(&make(ISSUER, "oaiapp_1", later, "m"), "oaiapp_1", "n").is_err()
+        );
+        // 偽造・無署名 JWT は JWKS 取得前に拒否される。
+        assert!(check_id_token("x.y.z", "oaiapp_1", "n").is_err());
     }
 
     #[test]
@@ -618,6 +826,9 @@ mod tests {
         assert_eq!(read_stream(sse.as_bytes()).unwrap(), "明日です。");
         let failed = "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"subscription_sharing_usage_limit_exceeded\"}}}\n";
         assert!(read_stream(failed.as_bytes()).unwrap_err().contains("上限"));
-        assert!(read_stream("data: {\"type\":\"response.output_text.delta\",\"delta\":\"a\"}\n".as_bytes()).is_err());
+        assert!(read_stream(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"a\"}\n".as_bytes()
+        )
+        .is_err());
     }
 }

@@ -1,10 +1,20 @@
 [package]
 name = "openhinovoice"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT"
 description = "Japanese voice input for Windows with local speech recognition"
 repository = "https://github.com/iiinno/OpenHinoVoice"
+
+[package.metadata.winresource]
+ProductName = "OpenHinoVoice"
+FileDescription = "OpenHinoVoice - Japanese voice input for Windows"
+OriginalFilename = "openhinovoice.exe"
+InternalName = "openhinovoice"
+LegalCopyright = "Copyright (c) 2026 iiinno"
+
+[build-dependencies]
+winresource = "0.1.34"
 
 [dependencies]
 windows = { version = "0.58", features = [
@@ -25,7 +35,10 @@ cpal = "0.15"
 ureq = { version = "2", features = ["json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+url = "2"
+jsonwebtoken = { version = "9", default-features = false, features = ["use_pem"] }
 toml = "0.8"
+toml_edit = "0.22"
 base64 = "0.22"
 eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts"] }
 

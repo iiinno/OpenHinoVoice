@@ -26,7 +26,7 @@ pub fn run() {
             .with_min_inner_size([600.0, 420.0]),
         ..Default::default()
     };
-    let _ = eframe::run_native(
+    if let Err(e) = eframe::run_native(
         "OpenHinoVoice",
         options,
         Box::new(|cc| {
@@ -38,16 +38,27 @@ pub fn run() {
             });
             Ok(Box::new(Settings::load()))
         }),
-    );
+    ) {
+        crate::overlay::show_error(&format!("設定画面を開けません: {e}"));
+    }
 }
 
 fn use_japanese_font(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
-    for path in [r"C:\Windows\Fonts\YuGothM.ttc", r"C:\Windows\Fonts\meiryo.ttc"] {
+    for path in [
+        r"C:\Windows\Fonts\YuGothM.ttc",
+        r"C:\Windows\Fonts\meiryo.ttc",
+    ] {
         if let Ok(bytes) = std::fs::read(path) {
-            fonts.font_data.insert("ja".into(), Arc::new(egui::FontData::from_owned(bytes)));
+            fonts
+                .font_data
+                .insert("ja".into(), Arc::new(egui::FontData::from_owned(bytes)));
             for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-                fonts.families.entry(family).or_default().insert(0, "ja".into());
+                fonts
+                    .families
+                    .entry(family)
+                    .or_default()
+                    .insert(0, "ja".into());
             }
             break;
         }
@@ -67,7 +78,10 @@ enum Page {
 /// 別スレッドで走らせる処理の結果の受け皿
 type Job<T> = Arc<Mutex<Option<T>>>;
 
-fn spawn<T: Send + 'static>(ctx: &egui::Context, work: impl FnOnce() -> T + Send + 'static) -> Job<T> {
+fn spawn<T: Send + 'static>(
+    ctx: &egui::Context,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Job<T> {
     let slot: Job<T> = Arc::new(Mutex::new(None));
     let (out, ctx) = (slot.clone(), ctx.clone());
     std::thread::spawn(move || {
@@ -79,12 +93,18 @@ fn spawn<T: Send + 'static>(ctx: &egui::Context, work: impl FnOnce() -> T + Send
 }
 
 fn take<T>(job: &mut Option<Job<T>>) -> Option<T> {
-    let result = job.as_ref()?.lock().unwrap_or_else(|p| p.into_inner()).take();
+    let result = job
+        .as_ref()?
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .take();
     if result.is_some() {
         *job = None;
     }
     result
 }
+
+type ModelList = Vec<(String, String)>;
 
 struct Settings {
     cfg: Config,
@@ -94,7 +114,7 @@ struct Settings {
     timeout_secs: f32,
     message: Option<(bool, String)>,
     models: Vec<(String, String)>,
-    models_job: Option<Job<Result<Vec<(String, String)>, String>>>,
+    models_job: Option<Job<Result<ModelList, String>>>,
     test_job: Option<Job<(Result<String, String>, f32)>>,
     test_result: Option<(Result<String, String>, f32)>,
     chatgpt_status: chatgpt::Status,
@@ -105,7 +125,10 @@ impl Settings {
     fn load() -> Settings {
         let (cfg, message) = match config::load() {
             Ok(cfg) => (cfg, None),
-            Err(e) => (config::parse(config::EXAMPLE_TOML).expect("example parses"), Some((false, e))),
+            Err(e) => (
+                config::parse(config::EXAMPLE_TOML).expect("example parses"),
+                Some((false, e)),
+            ),
         };
         Settings {
             timeout_secs: cfg.format.timeout_ms as f32 / 1000.0,
@@ -127,11 +150,21 @@ impl Settings {
         use toml::Value as V;
         let f = &self.cfg.format;
         let path = config::config_path();
-        let text = std::fs::read_to_string(&path).map_err(|e| format!("設定ファイルを読めません: {e}"))?;
+        let text =
+            std::fs::read_to_string(&path).map_err(|e| format!("設定ファイルを読めません: {e}"))?;
         // 自動検出したパスは保存しない。空のまま残すと、speech.cpp を更新したときに新しい版を使える
-        let speech_exe = if self.cfg.speech_exe.trim() == config::find_speech_exe() { "" } else { self.cfg.speech_exe.trim() };
+        let speech_exe = if self.cfg.speech_exe.trim() == config::find_speech_exe() {
+            ""
+        } else {
+            self.cfg.speech_exe.trim()
+        };
         let edits = [
             (None, "hotkey", V::from(self.cfg.hotkey.trim())),
+            (
+                None,
+                "max_recording_minutes",
+                V::from(self.cfg.max_recording_minutes as i64),
+            ),
             (None, "theme", V::from(self.cfg.theme.as_str())),
             (None, "speech_exe", V::from(speech_exe)),
             (None, "model", V::from(self.cfg.model.as_str())),
@@ -140,16 +173,30 @@ impl Settings {
             (None, "volume", V::from(self.cfg.volume as i64)),
             (Some("format"), "provider", V::from(f.provider.as_str())),
             (Some("format"), "base_url", V::from(f.base_url.trim())),
-            (Some("format"), "api_key", V::from(f.api_key.trim())),
+            (Some("format"), "api_key", V::from("")),
             (Some("format"), "model", V::from(f.model.trim())),
-            (Some("format"), "openai_api_key", V::from(f.openai_api_key.trim())),
-            (Some("format"), "openai_model", V::from(f.openai_model.trim())),
-            (Some("format"), "chatgpt_model", V::from(f.chatgpt_model.trim())),
+            (Some("format"), "openai_api_key", V::from("")),
+            (
+                Some("format"),
+                "openai_model",
+                V::from(f.openai_model.trim()),
+            ),
+            (
+                Some("format"),
+                "chatgpt_model",
+                V::from(f.chatgpt_model.trim()),
+            ),
             (Some("format"), "fast", V::from(f.fast)),
-            (Some("format"), "timeout_ms", V::from((self.timeout_secs * 1000.0).round() as i64)),
+            (
+                Some("format"),
+                "timeout_ms",
+                V::from((self.timeout_secs * 1000.0).round() as i64),
+            ),
             (Some("format"), "prompt", V::from(f.prompt.as_str())),
         ];
-        config::save(&config::set_values(text.trim_start_matches('\u{feff}'), &edits))?;
+        let updated = config::set_values(text.trim_start_matches('\u{feff}'), &edits)?;
+        config::save_api_keys(f.api_key.trim(), f.openai_api_key.trim())?;
+        config::save(&updated)?;
         startup::set_enabled(self.startup)
     }
 
@@ -175,7 +222,10 @@ impl eframe::App for Settings {
         if let Some(r) = take(&mut self.chatgpt_job) {
             match r {
                 Ok(s) => self.chatgpt_status = s,
-                Err(e) => self.message = Some((false, e)),
+                Err(e) => {
+                    self.chatgpt_status = chatgpt::status();
+                    self.message = Some((false, e));
+                }
             }
         }
 
@@ -183,9 +233,10 @@ impl eframe::App for Settings {
             .resizable(false)
             .exact_size(170.0)
             .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::same(14)))
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    let (rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
                     ui.painter().circle_filled(rect.center(), 6.0, HINOMARU_RED);
                     ui.heading("OpenHinoVoice");
                 });
@@ -198,26 +249,44 @@ impl eframe::App for Settings {
                     (Page::About, "情報"),
                 ] {
                     let selected = self.page == page;
-                    let text = if selected { RichText::new(label).strong() } else { RichText::new(label) };
-                    if ui.add_sized([ui.available_width(), 30.0], egui::Button::selectable(selected, text)).clicked() {
+                    let text = if selected {
+                        RichText::new(label).strong()
+                    } else {
+                        RichText::new(label)
+                    };
+                    if ui
+                        .add_sized(
+                            [ui.available_width(), 30.0],
+                            egui::Button::selectable(selected, text),
+                        )
+                        .clicked()
+                    {
                         self.page = page;
                     }
                 }
             });
 
         egui::Panel::bottom("actions")
-            .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::symmetric(16, 10)))
-            .show_inside(ui, |ui| {
+            .frame(
+                egui::Frame::side_top_panel(ui.style())
+                    .inner_margin(egui::Margin::symmetric(16, 10)),
+            )
+            .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     let valid = config::parse_hotkey(&self.cfg.hotkey).is_some();
-                    let save = egui::Button::new(RichText::new("保存").color(Color32::WHITE)).fill(HINOMARU_RED).min_size(egui::vec2(84.0, 30.0));
+                    let save = egui::Button::new(RichText::new("保存").color(Color32::WHITE))
+                        .fill(HINOMARU_RED)
+                        .min_size(egui::vec2(84.0, 30.0));
                     if ui.add_enabled(valid, save).clicked() {
                         self.message = Some(match self.save() {
                             Ok(()) => (true, "保存しました。すぐに反映されます。".into()),
                             Err(e) => (false, e),
                         });
                     }
-                    if ui.add(egui::Button::new("閉じる").min_size(egui::vec2(84.0, 30.0))).clicked() {
+                    if ui
+                        .add(egui::Button::new("閉じる").min_size(egui::vec2(84.0, 30.0)))
+                        .clicked()
+                    {
                         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                     if let Some((ok, text)) = &self.message {
@@ -229,14 +298,16 @@ impl eframe::App for Settings {
 
         egui::CentralPanel::default()
             .frame(egui::Frame::central_panel(ui.style()).inner_margin(egui::Margin::same(20)))
-            .show_inside(ui, |ui| {
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match self.page {
-                    Page::General => self.general(ui),
-                    Page::Format => self.format(ui),
-                    Page::Asr => self.asr(ui),
-                    Page::Sound => self.sound(ui),
-                    Page::About => self.about(ui),
-                });
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| match self.page {
+                        Page::General => self.general(ui),
+                        Page::Format => self.format(ui),
+                        Page::Asr => self.asr(ui),
+                        Page::Sound => self.sound(ui),
+                        Page::About => self.about(ui),
+                    });
             });
     }
 }
@@ -251,7 +322,11 @@ fn hint(ui: &mut egui::Ui, text: &str) {
 }
 
 fn grid(ui: &mut egui::Ui, id: &str, body: impl FnOnce(&mut egui::Ui)) {
-    egui::Grid::new(id).num_columns(2).spacing([18.0, 14.0]).min_col_width(120.0).show(ui, body);
+    egui::Grid::new(id)
+        .num_columns(2)
+        .spacing([18.0, 14.0])
+        .min_col_width(120.0)
+        .show(ui, body);
 }
 
 impl Settings {
@@ -264,15 +339,46 @@ impl Settings {
                 if config::parse_hotkey(&self.cfg.hotkey).is_none() {
                     ui.colored_label(HINOMARU_RED, "書き方が正しくありません(例: Ctrl+Alt+J、F8)");
                 } else {
-                    hint(ui, "マウスのボタンに割り当てるときは、同じ組み合わせを設定アプリにも入れます");
+                    hint(
+                        ui,
+                        "マウスのボタンに割り当てるときは、同じ組み合わせを設定アプリにも入れます",
+                    );
                 }
+            });
+            ui.end_row();
+
+            ui.label("最大録音時間");
+            ui.vertical(|ui| {
+                egui::ComboBox::from_id_salt("max_recording_minutes")
+                    .selected_text(format!("{}分", self.cfg.max_recording_minutes))
+                    .show_ui(ui, |ui| {
+                        for minutes in [1, 3, 5, 10] {
+                            ui.selectable_value(
+                                &mut self.cfg.max_recording_minutes,
+                                minutes,
+                                format!("{minutes}分"),
+                            );
+                        }
+                    });
+                hint(
+                    ui,
+                    "時間になると自動で録音を終了して認識します（データ上限128 MiB）",
+                );
             });
             ui.end_row();
 
             ui.label("表示のテーマ");
             ui.vertical(|ui| {
-                ui.radio_value(&mut self.cfg.theme, "hinomaru".to_string(), "日の丸(白地に赤い点)");
-                ui.radio_value(&mut self.cfg.theme, "auto".to_string(), "Windows のライト、ダークに合わせる");
+                ui.radio_value(
+                    &mut self.cfg.theme,
+                    "hinomaru".to_string(),
+                    "日の丸(白地に赤い点)",
+                );
+                ui.radio_value(
+                    &mut self.cfg.theme,
+                    "auto".to_string(),
+                    "Windows のライト、ダークに合わせる",
+                );
             });
             ui.end_row();
 
@@ -312,13 +418,20 @@ impl Settings {
                 grid(ui, "openai", |ui| {
                     ui.label("API キー");
                     ui.horizontal(|ui| {
-                        ui.add(egui::TextEdit::singleline(&mut f.openai_api_key).password(!*show_key).desired_width(300.0));
+                        ui.add(
+                            egui::TextEdit::singleline(&mut f.openai_api_key)
+                                .password(!*show_key)
+                                .desired_width(300.0),
+                        );
                         ui.checkbox(show_key, "表示");
                     });
                     ui.end_row();
                 });
                 self.model_picker(ui);
-                ui.checkbox(&mut self.cfg.format.fast, "Fast モード(応答が速くなる代わりに料金が 2 倍)");
+                ui.checkbox(
+                    &mut self.cfg.format.fast,
+                    "Fast モード(応答が速くなる代わりに料金が 2 倍)",
+                );
             }
             provider => {
                 let custom = provider == "custom";
@@ -327,12 +440,20 @@ impl Settings {
                 grid(ui, "compat", |ui| {
                     if custom {
                         ui.label("ベース URL");
-                        ui.add(egui::TextEdit::singleline(&mut f.base_url).hint_text("https://example.com/v1").desired_width(340.0));
+                        ui.add(
+                            egui::TextEdit::singleline(&mut f.base_url)
+                                .hint_text("https://example.com/v1")
+                                .desired_width(340.0),
+                        );
                         ui.end_row();
                     }
                     ui.label("API キー");
                     ui.horizontal(|ui| {
-                        ui.add(egui::TextEdit::singleline(&mut f.api_key).password(!*show_key).desired_width(300.0));
+                        ui.add(
+                            egui::TextEdit::singleline(&mut f.api_key)
+                                .password(!*show_key)
+                                .desired_width(300.0),
+                        );
                         ui.checkbox(show_key, "表示");
                     });
                     ui.end_row();
@@ -348,7 +469,11 @@ impl Settings {
         grid(ui, "timeout", |ui| {
             ui.label("整形を待つ時間");
             ui.vertical(|ui| {
-                ui.add(egui::Slider::new(&mut self.timeout_secs, 1.0..=15.0).step_by(0.5).suffix(" 秒"));
+                ui.add(
+                    egui::Slider::new(&mut self.timeout_secs, 1.0..=15.0)
+                        .step_by(0.5)
+                        .suffix(" 秒"),
+                );
                 hint(ui, "この時間内に返らないときは、整形せずに貼ります");
             });
             ui.end_row();
@@ -356,7 +481,11 @@ impl Settings {
 
         ui.add_space(10.0);
         egui::CollapsingHeader::new("指示文(整形のしかた)").show(ui, |ui| {
-            ui.add(egui::TextEdit::multiline(&mut self.cfg.format.prompt).desired_rows(7).desired_width(f32::INFINITY));
+            ui.add(
+                egui::TextEdit::multiline(&mut self.cfg.format.prompt)
+                    .desired_rows(7)
+                    .desired_width(f32::INFINITY),
+            );
             if ui.small_button("初期の指示文に戻す").clicked() {
                 self.cfg.format.prompt = config::DEFAULT_PROMPT.to_string();
             }
@@ -365,7 +494,10 @@ impl Settings {
         ui.add_space(14.0);
         ui.horizontal(|ui| {
             let busy = self.test_job.is_some();
-            if ui.add_enabled(!busy, egui::Button::new("接続テスト")).clicked() {
+            if ui
+                .add_enabled(!busy, egui::Button::new("接続テスト"))
+                .clicked()
+            {
                 let f = self.draft_format();
                 self.test_result = None;
                 self.test_job = Some(spawn(ui.ctx(), move || {
@@ -409,15 +541,19 @@ impl Settings {
             ui.horizontal(|ui| {
                 ui.add(egui::TextEdit::singleline(&mut chosen).desired_width(220.0));
                 if !models.is_empty() {
-                    egui::ComboBox::from_id_salt("models").selected_text("一覧から選ぶ").show_ui(ui, |ui| {
-                        for (id, label) in models {
-                            if ui.selectable_label(*id == chosen, label).clicked() {
-                                chosen = id.clone();
+                    egui::ComboBox::from_id_salt("models")
+                        .selected_text("一覧から選ぶ")
+                        .show_ui(ui, |ui| {
+                            for (id, label) in models {
+                                if ui.selectable_label(*id == chosen, label).clicked() {
+                                    chosen = id.clone();
+                                }
                             }
-                        }
-                    });
+                        });
                 }
-                fetch = ui.add_enabled(!busy, egui::Button::new("一覧を取得")).clicked();
+                fetch = ui
+                    .add_enabled(!busy, egui::Button::new("一覧を取得"))
+                    .clicked();
                 if busy {
                     ui.spinner();
                 }
@@ -427,10 +563,15 @@ impl Settings {
         if fetch {
             let f = self.draft_format();
             self.models_job = Some(spawn(ui.ctx(), move || match f.provider.as_str() {
-                "chatgpt" => chatgpt::list_models().map(|m| m.into_iter().map(|m| (m.slug, m.display_name)).collect()),
-                "openai" => crate::format::list_models("https://api.openai.com/v1", &f.openai_api_key),
+                "chatgpt" => chatgpt::list_models()
+                    .map(|m| m.into_iter().map(|m| (m.slug, m.display_name)).collect()),
+                "openai" => {
+                    crate::format::list_models("https://api.openai.com/v1", &f.openai_api_key)
+                }
                 // OpenCode Go の一覧は整形の窓口(/openai/v1)ではなく /inference/go/v1 にある
-                "opencode-go" => crate::format::list_models("https://opencode.ai/inference/go/v1", &f.api_key),
+                "opencode-go" => {
+                    crate::format::list_models("https://opencode.ai/inference/go/v1", &f.api_key)
+                }
                 _ => crate::format::list_models(&f.base_url, &f.api_key),
             }));
         }
@@ -449,9 +590,13 @@ impl Settings {
             chatgpt::Status::SignedOut => {
                 hint(ui, "ChatGPT の Plus か Pro のプランの範囲で整形します。OpenHinoVoice の料金はかかりません。");
                 ui.add_space(8.0);
-                let button = egui::Button::new(RichText::new("Continue with ChatGPT").color(Color32::WHITE).strong())
-                    .fill(Color32::BLACK)
-                    .min_size(egui::vec2(220.0, 34.0));
+                let button = egui::Button::new(
+                    RichText::new("Continue with ChatGPT")
+                        .color(Color32::WHITE)
+                        .strong(),
+                )
+                .fill(Color32::BLACK)
+                .min_size(egui::vec2(220.0, 34.0));
                 ui.horizontal(|ui| {
                     if ui.add_enabled(!busy, button).clicked() {
                         self.chatgpt_job = Some(spawn(ui.ctx(), chatgpt::sign_in));
@@ -465,8 +610,13 @@ impl Settings {
             chatgpt::Status::SignedIn { email, plan_usage } => {
                 ui.horizontal(|ui| {
                     ui.label(format!("{email} でサインイン中"));
-                    if ui.add_enabled(!busy, egui::Button::new("サインアウト")).clicked() {
-                        self.chatgpt_job = Some(spawn(ui.ctx(), || chatgpt::sign_out().map(|()| chatgpt::Status::SignedOut)));
+                    if ui
+                        .add_enabled(!busy, egui::Button::new("サインアウト"))
+                        .clicked()
+                    {
+                        self.chatgpt_job = Some(spawn(ui.ctx(), || {
+                            chatgpt::sign_out().map(|()| chatgpt::Status::SignedOut)
+                        }));
                     }
                 });
                 if plan_usage {
@@ -481,37 +631,60 @@ impl Settings {
                 }
                 ui.add_space(8.0);
                 self.model_picker(ui);
-                ui.checkbox(&mut self.cfg.format.fast, "Fast モード(応答が速くなる代わりにプランの利用枠を多く使う)");
+                ui.checkbox(
+                    &mut self.cfg.format.fast,
+                    "Fast モード(応答が速くなる代わりにプランの利用枠を多く使う)",
+                );
             }
         }
     }
 
     fn asr(&mut self, ui: &mut egui::Ui) {
         section(ui, "認識");
-        hint(ui, "音声はこの PC の中だけで文字にします。外には送りません。");
+        hint(
+            ui,
+            "音声はこの PC の中だけで文字にします。外には送りません。",
+        );
         ui.add_space(10.0);
         let detected = config::find_speech_exe();
         grid(ui, "asr", |ui| {
             ui.label("認識モデル");
-            let label = ASR_MODELS.iter().find(|(id, _)| *id == self.cfg.model).map_or(self.cfg.model.clone(), |(_, l)| l.to_string());
-            egui::ComboBox::from_id_salt("asr_model").selected_text(label).width(260.0).show_ui(ui, |ui| {
-                for (id, label) in ASR_MODELS {
-                    ui.selectable_value(&mut self.cfg.model, id.to_string(), label);
-                }
-            });
+            let label = ASR_MODELS
+                .iter()
+                .find(|(id, _)| *id == self.cfg.model)
+                .map_or(self.cfg.model.clone(), |(_, l)| l.to_string());
+            egui::ComboBox::from_id_salt("asr_model")
+                .selected_text(label)
+                .width(260.0)
+                .show_ui(ui, |ui| {
+                    for (id, label) in ASR_MODELS {
+                        ui.selectable_value(&mut self.cfg.model, id.to_string(), label);
+                    }
+                });
             ui.end_row();
 
             ui.label("語彙ヒント");
             ui.vertical(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut self.cfg.words).hint_text("共有フォルダ,OpenHinoVoice").desired_width(340.0));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.cfg.words)
+                        .hint_text("共有フォルダ,OpenHinoVoice")
+                        .desired_width(340.0),
+                );
                 hint(ui, "聞き間違えやすい言葉をカンマで区切って並べます");
             });
             ui.end_row();
 
             ui.label("speech.exe");
             ui.vertical(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut self.cfg.speech_exe).hint_text(detected.as_str()).desired_width(340.0));
-                hint(ui, "空なら自動で探します。認識モデルは初回に自動で取得します");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.cfg.speech_exe)
+                        .hint_text(detected.as_str())
+                        .desired_width(340.0),
+                );
+                hint(
+                    ui,
+                    "空なら自動で探します。認識モデルは初回に自動で取得します",
+                );
             });
             ui.end_row();
         });
@@ -528,7 +701,12 @@ impl Settings {
 
             ui.label("試し聞き");
             ui.horizontal(|ui| {
-                for (s, label) in [(Sound::Start, "録音開始"), (Sound::Stop, "確定"), (Sound::Done, "貼り付け"), (Sound::Error, "エラー")] {
+                for (s, label) in [
+                    (Sound::Start, "録音開始"),
+                    (Sound::Stop, "確定"),
+                    (Sound::Done, "貼り付け"),
+                    (Sound::Error, "エラー"),
+                ] {
                     if ui.button(label).clicked() {
                         sound::play(s, self.cfg.volume);
                     }
@@ -554,7 +732,10 @@ impl Settings {
         });
         ui.add_space(14.0);
         ui.label(RichText::new("使っているもの").strong());
-        hint(ui, "音声認識: speech.cpp と Haas-ja-v1.0(Third Intelligence、Apache-2.0)");
+        hint(
+            ui,
+            "音声認識: speech.cpp と Haas-ja-v1.0(Third Intelligence、Apache-2.0)",
+        );
         hint(ui, "効果音: earshot(MIT)で作成");
         hint(ui, "画面: egui(MIT / Apache-2.0)");
     }

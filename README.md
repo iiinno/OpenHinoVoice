@@ -31,6 +31,10 @@ irm https://raw.githubusercontent.com/nyosegawa/speech.cpp/main/install.ps1 | ie
 
 置いたら、ダブルクリックで起動します。初めて起動するときに「Windows によって PC が保護されました」と出た場合は、「詳細情報」を押してから「実行」を押してください。署名のない新しいアプリには、この表示が出ることがあります。
 
+**公開している exe はコード署名されていません。** Windows のファイルの「プロパティ」に表示される製品名やバージョンは、ビルド時に付与する識別情報であり、発行元の身元を証明するデジタル署名ではありません。ダウンロード元を確かめてから実行してください。
+
+リリースには `LICENSE`、`THIRD_PARTY_LICENSES.txt`、`SHA256SUMS.txt` も添付しています。ダウンロードした exe の内容を確認したい場合は、PowerShell で `Get-FileHash .\openhinovoice.exe -Algorithm SHA256` を実行し、表示されたハッシュ値を `SHA256SUMS.txt` の値と比較してください。ハッシュの一致だけでは発行元の身元までは保証されません。
+
 起動すると、タスクバーの右下(時計の近く)にアイコンが出ます。見当たらないときは、時計の左の「^」を押すと出てきます。
 
 ### 3. 設定する
@@ -116,6 +120,8 @@ cargo build --release
 できあがった exe は `target\release\openhinovoice.exe` にあります。
 
 テストは `cargo test` で動きます。本物のマイクや API を使うテストは `#[ignore]` にしてあるので、名前を指定したときだけ動きます。
+
+CI では `cargo fmt --all -- --check`、`cargo check --all-targets --locked`、`cargo clippy --all-targets --locked -- -D warnings`、`cargo test --all-targets --locked` を Windows 上で実行します。リリース用の `v0.1.0` のようなタグは `Cargo.toml` の `version` と一致する必要があります。Windows の exe の `FileVersion`・`ProductVersion` は同じ Cargo バージョンから生成され、`ProductName` は `OpenHinoVoice` です。既存リリースは上書きしません。
 
 | テスト | 内容 |
 |---|---|
