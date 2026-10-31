@@ -189,11 +189,9 @@ impl Settings {
             ),
             (Some("format"), "prompt", V::from(f.prompt.as_str())),
         ];
+        let updated = config::set_values(text.trim_start_matches('\u{feff}'), &edits)?;
         config::save_api_keys(f.api_key.trim(), f.openai_api_key.trim())?;
-        config::save(&config::set_values(
-            text.trim_start_matches('\u{feff}'),
-            &edits,
-        ))?;
+        config::save(&updated)?;
         startup::set_enabled(self.startup)
     }
 

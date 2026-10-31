@@ -482,7 +482,7 @@ pub fn format(
     let mut body = serde_json::json!({
         "model": model,
         "instructions": instructions,
-        "input": [{ "role": "user", "content": format!("<text>{raw}</text>") }],
+        "input": [{ "role": "user", "content": raw }],
         "store": false,
         "stream": true,
     });
