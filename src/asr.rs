@@ -79,6 +79,57 @@ pub fn transcribe_message(sample_rate: u32, words: &str) -> String {
     .to_string()
 }
 
+// 0.9.4 installed on Windows uses protocol 3; current speech.cpp uses 4.
+fn parse_ready(line: &str) -> Result<bool, AsrError> {
+    let value: serde_json::Value =
+        serde_json::from_str(line).map_err(|e| AsrError::Protocol(e.to_string()))?;
+    match value["type"].as_str() {
+        Some("ready") => match value["protocol"].as_u64() {
+            Some(3 | 4) => Ok(true),
+            _ => Err(AsrError::Protocol(
+                "未対応の worker protocol です（3 または 4 が必要）".into(),
+            )),
+        },
+        Some("fatal" | "error") => Err(worker_error(&value)),
+        _ => Ok(false),
+    }
+}
+
+fn worker_error(value: &serde_json::Value) -> AsrError {
+    AsrError::Worker(
+        value["error"]["message"]
+            .as_str()
+            .unwrap_or("worker がエラーを返しました")
+            .to_string(),
+    )
+}
+
+fn parse_end(line: &str) -> Result<Option<String>, AsrError> {
+    let value: serde_json::Value =
+        serde_json::from_str(line).map_err(|e| AsrError::Protocol(e.to_string()))?;
+    match value["type"].as_str() {
+        Some("end") => {
+            if value["id"].as_str() != Some("r") {
+                return Err(AsrError::Protocol(
+                    "認識結果の request id が一致しません".into(),
+                ));
+            }
+            if value["stop"].as_str() != Some("complete") {
+                return Err(AsrError::Worker("認識結果が途中で終了しました".into()));
+            }
+            match value["text"].as_str() {
+                Some(text) if !text.trim().is_empty() => Ok(Some(text.to_string())),
+                _ => Err(AsrError::Worker(
+                    "音声を認識できませんでした（結果が空です）".into(),
+                )),
+            }
+        }
+        Some("fatal" | "error") => Err(worker_error(&value)),
+        Some("cancelled") => Err(AsrError::Worker("認識がキャンセルされました".into())),
+        _ => Ok(None),
+    }
+}
+
 struct WriteCommand {
     id: u64,
     line: String,
@@ -251,17 +302,9 @@ impl Worker {
             }
             match self.lines.recv_timeout(remain) {
                 Ok(line) => {
-                    let value: serde_json::Value = serde_json::from_str(&line)
-                        .map_err(|e| AsrError::Protocol(e.to_string()))?;
-                    match value.get("type").and_then(|t| t.as_str()) {
-                        Some("ready") => {
-                            self.ready = true;
-                            return Ok(());
-                        }
-                        Some("error") => {
-                            return Err(AsrError::Worker(line));
-                        }
-                        _ => continue,
+                    if parse_ready(&line)? {
+                        self.ready = true;
+                        return Ok(());
                     }
                 }
                 Err(_) => return Err(AsrError::Timeout("ready".into())),
@@ -279,16 +322,8 @@ impl Worker {
         }
         match self.lines.try_recv() {
             Ok(line) => {
-                let value: serde_json::Value =
-                    serde_json::from_str(&line).map_err(|e| AsrError::Protocol(e.to_string()))?;
-                match value.get("type").and_then(|t| t.as_str()) {
-                    Some("ready") => {
-                        self.ready = true;
-                        Ok(true)
-                    }
-                    Some("error") => Err(AsrError::Worker(line)),
-                    _ => Ok(false),
-                }
+                self.ready = parse_ready(&line)?;
+                Ok(self.ready)
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => Ok(false),
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -328,19 +363,8 @@ impl Worker {
             }
             match self.lines.recv_timeout(remain) {
                 Ok(line) => {
-                    let value: serde_json::Value = serde_json::from_str(&line)
-                        .map_err(|e| AsrError::Protocol(e.to_string()))?;
-                    match value.get("type").and_then(|t| t.as_str()) {
-                        Some("end") => {
-                            let text = value
-                                .get("text")
-                                .and_then(|t| t.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            return Ok(text);
-                        }
-                        Some("error") => return Err(AsrError::Worker(line)),
-                        _ => continue,
+                    if let Some(text) = parse_end(&line)? {
+                        return Ok(text);
                     }
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
@@ -355,24 +379,7 @@ impl Worker {
 
     pub fn poll_end(&mut self) -> Option<Result<String, AsrError>> {
         match self.lines.try_recv() {
-            Ok(line) => {
-                let parsed = serde_json::from_str::<serde_json::Value>(&line);
-                match parsed {
-                    Ok(value) => match value.get("type").and_then(|t| t.as_str()) {
-                        Some("end") => {
-                            let text = value
-                                .get("text")
-                                .and_then(|t| t.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            Some(Ok(text))
-                        }
-                        Some("error") => Some(Err(AsrError::Worker(line))),
-                        _ => None,
-                    },
-                    Err(e) => Some(Err(AsrError::Protocol(e.to_string()))),
-                }
-            }
+            Ok(line) => parse_end(&line).transpose(),
             Err(std::sync::mpsc::TryRecvError::Empty) => None,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 Some(Err(AsrError::Worker("worker が終了しました".into())))
@@ -472,6 +479,61 @@ pub fn parse_wav_pcm16(bytes: &[u8]) -> Result<WavData, String> {
 mod tests {
     use super::*;
     use std::sync::mpsc::Sender;
+
+    #[test]
+    fn ready_checks_installed_and_current_protocols_and_startup_failure() {
+        assert!(parse_ready(r#"{"type":"ready","protocol":3,"version":"0.9.4"}"#).unwrap());
+        assert!(parse_ready(r#"{"type":"ready","protocol":4,"version":"0.10.0"}"#).unwrap());
+        for line in [
+            r#"{"type":"ready","protocol":2}"#,
+            r#"{"type":"ready","protocol":5}"#,
+            r#"{"type":"ready"}"#,
+        ] {
+            assert!(matches!(parse_ready(line), Err(AsrError::Protocol(_))));
+        }
+        assert!(matches!(
+            parse_ready(r#"{"type":"fatal","error":{"code":"model_file","message":"missing model"}}"#),
+            Err(AsrError::Worker(message)) if message == "missing model"
+        ));
+        assert!(!parse_ready(r#"{"type":"progress","done":0.5}"#).unwrap());
+        assert!(matches!(
+            parse_ready("not json"),
+            Err(AsrError::Protocol(_))
+        ));
+    }
+
+    #[test]
+    fn recognition_end_requires_complete_nonempty_text_and_matching_id() {
+        assert_eq!(
+            parse_end(r#"{"type":"end","id":"r","text":"おはよう。","stop":"complete"}"#).unwrap(),
+            Some("おはよう。".into())
+        );
+        for line in [
+            r#"{"type":"end","id":"r","text":"partial","stop":"model_limit"}"#,
+            r#"{"type":"end","id":"r","text":"","stop":"complete"}"#,
+            r#"{"type":"end","id":"r","text":"   ","stop":"complete"}"#,
+            r#"{"type":"end","id":"r","stop":"complete"}"#,
+            r#"{"type":"end","id":"r","text":"result"}"#,
+        ] {
+            assert!(parse_end(line).unwrap_err().to_string().contains("認識"));
+        }
+        assert!(matches!(
+            parse_end(r#"{"type":"end","id":"other","text":"x","stop":"complete"}"#),
+            Err(AsrError::Protocol(_))
+        ));
+        assert!(matches!(
+            parse_end(r#"{"type":"error","id":"r","error":{"message":"failed"}}"#),
+            Err(AsrError::Worker(message)) if message == "failed"
+        ));
+        assert!(matches!(
+            parse_end(r#"{"type":"cancelled","id":"r"}"#),
+            Err(AsrError::Worker(_))
+        ));
+        assert_eq!(
+            parse_end(r#"{"type":"progress","id":"r","done":0.5}"#).unwrap(),
+            None
+        );
+    }
 
     // Mimics a speech.exe process that stays alive but never drains stdin.
     // The writer blocks inside write(), while its caller must remain responsive.

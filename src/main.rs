@@ -31,6 +31,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, WM_QUIT,
 };
 
+const MAX_RECORDING_DURATION: Duration = Duration::from_secs(5 * 60);
+// Mono PCM16 at 48 kHz is 96,000 bytes/s: five minutes fits within 32 MiB.
+// Higher-rate microphones hit this memory limit earlier.
+const MAX_RECORDING_PCM_BYTES: usize = 32 * 1024 * 1024;
+
 enum FormatOutcome {
     Done { generation: u64, text: String },
     Failed { generation: u64, reason: String },
@@ -75,6 +80,7 @@ struct Session {
     recorder: Option<Recorder>,
     paste_target: Option<paste::PasteTarget>,
     pending_pcm: VecDeque<Vec<u8>>,
+    recorded_pcm_bytes: usize,
     sample_rate: u32,
     stop_requested: bool,
     transcribe_sent: bool,
@@ -91,6 +97,7 @@ impl Session {
             recorder: None,
             paste_target: None,
             pending_pcm: VecDeque::new(),
+            recorded_pcm_bytes: 0,
             sample_rate: 16000,
             stop_requested: false,
             transcribe_sent: false,
@@ -98,6 +105,23 @@ impl Session {
             started_at: Instant::now(),
             skip_until: Instant::now(),
         }
+    }
+
+    fn queue_audio(&mut self, samples: &[f32]) -> bool {
+        let bytes = samples.len().saturating_mul(2);
+        if bytes > MAX_RECORDING_PCM_BYTES.saturating_sub(self.recorded_pcm_bytes) {
+            return false;
+        }
+        if !samples.is_empty() {
+            self.pending_pcm
+                .push_back(audio::samples_to_pcm_le(samples));
+            self.recorded_pcm_bytes += bytes;
+        }
+        true
+    }
+
+    fn recording_time_limit(&self, now: Instant) -> bool {
+        now.saturating_duration_since(self.started_at) >= MAX_RECORDING_DURATION
     }
 }
 
@@ -202,10 +226,9 @@ impl App {
                 if let Some(recorder) = self.session.recorder.take() {
                     let samples = recorder.drain();
                     drop(recorder);
-                    if !samples.is_empty() {
-                        self.session
-                            .pending_pcm
-                            .push_back(audio::samples_to_pcm_le(&samples));
+                    if !self.session.queue_audio(&samples) {
+                        self.fail_session("録音が上限の32 MiBを超えました".into());
+                        return false;
                     }
                 }
                 self.session.stop_requested = true;
@@ -354,11 +377,19 @@ impl App {
         if let Some(recorder) = &self.session.recorder {
             let samples = recorder.drain();
             overlay::push_level(&samples);
-            if !samples.is_empty() && Instant::now() >= self.session.skip_until {
-                self.session
-                    .pending_pcm
-                    .push_back(audio::samples_to_pcm_le(&samples));
+            if Instant::now() >= self.session.skip_until && !self.session.queue_audio(&samples) {
+                self.dispatch(Event::AsrError {
+                    message: "録音が上限の32 MiBを超えました".into(),
+                });
+                return;
             }
+        }
+
+        if in_recording && self.session.recording_time_limit(Instant::now()) {
+            // Reuse the manual Enter transition, including final microphone
+            // drain, Stop sound and recognition; no new state or GUI.
+            self.dispatch(Event::Enter);
+            return;
         }
 
         if self.session.worker.is_none() {
@@ -637,6 +668,23 @@ fn config_modified() -> Option<std::time::SystemTime> {
 #[cfg(test)]
 mod flow_tests {
     use super::*;
+
+    #[test]
+    fn recording_limits_keep_pcm_bounded_and_use_existing_stop_transition() {
+        let mut session = Session::new();
+        let started = session.started_at;
+        assert!(!session
+            .recording_time_limit(started + MAX_RECORDING_DURATION - Duration::from_millis(1)));
+        assert!(session.recording_time_limit(started + MAX_RECORDING_DURATION));
+        session.recorded_pcm_bytes = MAX_RECORDING_PCM_BYTES - 4;
+        assert!(session.queue_audio(&[0.0, 1.0]));
+        assert_eq!(session.recorded_pcm_bytes, MAX_RECORDING_PCM_BYTES);
+        assert!(!session.queue_audio(&[0.0]));
+        assert_eq!(session.pending_pcm.len(), 1);
+        let (next, actions) = state::step(State::Recording, Event::Enter);
+        assert!(matches!(next, State::Recognizing { .. }));
+        assert!(actions.contains(&Action::StopRecordingAndTranscribe));
+    }
 
     fn test_app() -> App {
         let mut cfg: Config = toml::from_str("").unwrap();
