@@ -92,6 +92,8 @@ AI がやるのは、ソフトの導入と起動までです。API キーの入�
 
 AI に送るのは、文字にしたあとの文だけです。各サービスが送った文をどう扱うかは、それぞれの規約を確かめてください。ChatGPT のサインインの情報は、Windows の機能(DPAPI)で暗号化して、この PC に保存します。
 
+OpenCode Go は、規約で「OpenCode などのコーディングエージェント向け」とされています。音声入力の整形はその想定から外れる使い方なので、使う場合はご自身の判断でお願いします。
+
 ## うまく動かないとき
 
 | 困っていること | 確かめること |
@@ -123,11 +125,23 @@ cargo build --release
 | `tests/overlay_preview.rs` | 録音中の表示を、全部の状態について順に出します |
 | `tests/paste_integration.rs` | 選んでいる入力欄に文字を貼ります |
 
-## 使わせてもらっているもの
+## スペシャルサンクス
 
-- 音声認識: [speech.cpp](https://github.com/nyosegawa/speech.cpp)(MIT)、[Haas-ja-v1.0](https://huggingface.co/third-intelligence/Haas-ja-v1.0)(Third Intelligence、Apache-2.0)
-- 効果音: [earshot](https://github.com/Leonxlnx/earshot)(MIT)で作りました
-- 設定の画面: [egui](https://github.com/emilk/egui)(MIT または Apache-2.0)
+OpenHinoVoice は、次のみなさんが公開しているものの上に成り立っています。ありがとうございます。
+
+- [speech.cpp](https://github.com/nyosegawa/speech.cpp)(nyosegawa さん、MIT): 音声認識を PC の中だけで速く動かせるのは、このソフトのおかげです
+- [Haas-ja-v1.0](https://huggingface.co/third-intelligence/Haas-ja-v1.0)(Third Intelligence、Apache-2.0): 速くて正確な、日本語の音声認識モデルです
+- [Haas-ja-v1.0 の GGUF 版](https://huggingface.co/sakasegawa/Haas-ja-v1.0-GGUF)(sakasegawa さん、Apache-2.0): speech.cpp で動かすためのモデルファイルです
+- [earshot](https://github.com/Leonxlnx/earshot)(Leon Lin さん、MIT): 録音開始や貼り付けの効果音を、この道具で作りました
+- [egui](https://github.com/emilk/egui)(Emil Ernerfeldt さんほか、MIT または Apache-2.0): 設定の画面に使っています
+- そのほか、組み込んでいるライブラリの一覧とライセンスは [THIRD_PARTY_LICENSES.txt](THIRD_PARTY_LICENSES.txt) にあります
+
+## 権利と規約について
+
+- OpenHinoVoice は個人のプロジェクトです。OpenAI、OpenCode、Third Intelligence をはじめ、名前を挙げた会社やプロジェクトとは関係がなく、公認も受けていません。ChatGPT は OpenAI の商標です
+- 認識モデルと speech.cpp はこのリポジトリに含めていません。導入のときに、それぞれの公式の配布元から取得します
+- 効果音(`assets/sounds`)は earshot がコードだけで作った音で、録音を元にした素材は使っていません
+- ChatGPT でのサインインは、OpenAI が公開している「Sign in with ChatGPT」の、オープンソースのアプリ向けの手順に従っています
 
 ## ライセンス
 

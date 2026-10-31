@@ -77,6 +77,8 @@ To start recording from a mouse button, assign a key combination such as Ctrl+Al
 
 Only the transcribed text is sent. Check each provider's terms for how they handle data. ChatGPT sign-in tokens are encrypted with Windows DPAPI and stored on this PC.
 
+OpenCode Go's terms describe it as designed for OpenCode and other coding agents. Cleaning up dictation is outside that intended use, so use it at your own discretion.
+
 ## Troubleshooting
 
 | Problem | What to check |
@@ -96,11 +98,23 @@ cargo build --release
 
 The executable is `target\release\openhinovoice.exe`. Run the tests with `cargo test`; tests that need a real microphone or API are `#[ignore]`d.
 
-## Credits
+## Special thanks
 
-- Speech recognition: [speech.cpp](https://github.com/nyosegawa/speech.cpp) (MIT), [Haas-ja-v1.0](https://huggingface.co/third-intelligence/Haas-ja-v1.0) (Third Intelligence, Apache-2.0)
-- Sound effects: made with [earshot](https://github.com/Leonxlnx/earshot) (MIT)
-- Settings window: [egui](https://github.com/emilk/egui) (MIT or Apache-2.0)
+OpenHinoVoice is built on work shared by these people. Thank you.
+
+- [speech.cpp](https://github.com/nyosegawa/speech.cpp) by nyosegawa (MIT): fast, fully local speech recognition
+- [Haas-ja-v1.0](https://huggingface.co/third-intelligence/Haas-ja-v1.0) by Third Intelligence (Apache-2.0): a fast and accurate Japanese speech recognition model
+- [Haas-ja-v1.0 GGUF](https://huggingface.co/sakasegawa/Haas-ja-v1.0-GGUF) by sakasegawa (Apache-2.0): the model files for speech.cpp
+- [earshot](https://github.com/Leonxlnx/earshot) by Leon Lin (MIT): used to make the sound effects
+- [egui](https://github.com/emilk/egui) by Emil Ernerfeldt and contributors (MIT or Apache-2.0): the settings window
+- All bundled libraries and their licenses are listed in [THIRD_PARTY_LICENSES.txt](THIRD_PARTY_LICENSES.txt)
+
+## Rights and terms
+
+- OpenHinoVoice is a personal project. It is not affiliated with or endorsed by OpenAI, OpenCode, Third Intelligence or any other company or project named here. ChatGPT is a trademark of OpenAI
+- The recognition model and speech.cpp are not included in this repository; they are downloaded from their official sources during setup
+- The sound effects (`assets/sounds`) were synthesized entirely in code by earshot; no recorded material was used
+- Sign in with ChatGPT follows OpenAI's published flow for open-source apps
 
 ## License
 

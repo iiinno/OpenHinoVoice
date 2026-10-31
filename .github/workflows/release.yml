@@ -21,4 +21,4 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" target/release/openhinovoice.exe --title "OpenHinoVoice ${{ github.ref_name }}" --notes "Windows x64 用のビルド済み exe です。導入の手順は README を見てください。"
+        run: gh release create "${{ github.ref_name }}" target/release/openhinovoice.exe THIRD_PARTY_LICENSES.txt --title "OpenHinoVoice ${{ github.ref_name }}" --notes "Windows x64 用のビルド済み exe です。導入の手順は README を見てください。組み込んでいるライブラリのライセンスは THIRD_PARTY_LICENSES.txt にあります。"
