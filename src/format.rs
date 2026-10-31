@@ -1,7 +1,15 @@
 use crate::config::FormatConfig;
+use std::collections::HashMap;
 use std::fmt;
-use std::sync::OnceLock;
+use std::io::{BufRead, BufReader, Read};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// 1 回の依頼の上限。応答が途切れずに届いている限りはこれまで待つ。
+/// ureq は依頼全体の timeout を指定すると読み取りごとの timeout_read を無視するので、読む側で数える
+pub(crate) const CEILING: Duration = Duration::from_secs(90);
+/// 一時的な失敗のときに、最初の 1 回を含めて何回まで送るか
+pub const MAX_ATTEMPTS: u32 = 3;
 
 // OpenCode Go は汎用 HTTP ライブラリ名の UA を拒否し、会話ごとに固定のセッション ID を求める
 const USER_AGENT: &str = concat!("openhinovoice/", env!("CARGO_PKG_VERSION"));
@@ -25,7 +33,20 @@ pub enum FormatError {
     Timeout,
     Network(String),
     BadResponse(String),
+    /// 接続先が一時的に混んでいる、使えない。やり直せば通る見込みがある
+    Busy(String),
     Provider(String),
+}
+
+impl FormatError {
+    /// やり直せば通る見込みのある失敗か。キーの誤りや利用上限のように、やり直しても同じ結果になるものは含めない
+    pub fn retryable(&self) -> bool {
+        match self {
+            FormatError::Timeout | FormatError::Network(_) | FormatError::Busy(_) => true,
+            FormatError::Http(code) => *code == 408 || *code == 429 || *code >= 500,
+            _ => false,
+        }
+    }
 }
 
 impl fmt::Display for FormatError {
@@ -37,6 +58,7 @@ impl fmt::Display for FormatError {
             FormatError::Timeout => write!(f, "整形が時間切れ"),
             FormatError::Network(e) => write!(f, "整形APIに接続できません: {e}"),
             FormatError::BadResponse(e) => write!(f, "整形APIの応答が不正です: {e}"),
+            FormatError::Busy(e) => write!(f, "{e}"),
             FormatError::Provider(e) => write!(f, "{e}"),
         }
     }
@@ -54,6 +76,79 @@ pub(crate) fn agent() -> &'static ureq::Agent {
 pub(crate) fn openai_agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
     AGENT.get_or_init(|| ureq::AgentBuilder::new().max_idle_connections(0).build())
+}
+
+/// 整形用の Agent。合計時間ではなく、応答が wait の間ずっと途切れたら打ち切る(読み取り 1 回ごとの上限)。
+/// 長く話すと整形した文を返すだけで数秒かかるので、合計時間で切ると話した内容の整形が必ず失敗する
+pub(crate) fn streaming_agent(wait: Duration, pooled: bool) -> ureq::Agent {
+    static AGENTS: OnceLock<Mutex<HashMap<(u128, bool), ureq::Agent>>> = OnceLock::new();
+    let mut agents = AGENTS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    agents
+        .entry((wait.as_millis(), pooled))
+        .or_insert_with(|| {
+            let builder = ureq::AgentBuilder::new()
+                .timeout_connect(wait)
+                .timeout_read(wait);
+            if pooled {
+                builder
+            } else {
+                builder.max_idle_connections(0)
+            }
+            .build()
+        })
+        .clone()
+}
+
+fn wait_of(cfg: &FormatConfig) -> Duration {
+    Duration::from_millis(cfg.timeout_ms.max(1))
+}
+
+/// 一時的な失敗なら、少し間を置いて最大 MAX_ATTEMPTS 回まで送り直す。
+/// cancelled が真になったら(Enter で生テキスト、Esc で中止)、それ以上は送らない
+pub fn format_with_retry(
+    cfg: &FormatConfig,
+    raw: &str,
+    cancelled: &dyn Fn() -> bool,
+    mut on_retry: impl FnMut(u32),
+) -> Result<String, FormatError> {
+    let mut attempt = 1;
+    loop {
+        let result = format(cfg, raw);
+        match &result {
+            Err(e) if e.retryable() && attempt < MAX_ATTEMPTS && !cancelled() => {
+                on_retry(attempt);
+                std::thread::sleep(Duration::from_millis(400 * u64::from(attempt)));
+                if cancelled() {
+                    return result;
+                }
+                attempt += 1;
+            }
+            _ => return result,
+        }
+    }
+}
+
+/// 通信の失敗を、時間切れとそれ以外に分ける。Windows の時間切れ(os error 10060)は文面が日本語になるので、種類で見る
+pub(crate) fn transport_error(err: &(dyn std::error::Error + 'static)) -> FormatError {
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(err);
+    while let Some(e) = source {
+        if let Some(io) = e.downcast_ref::<std::io::Error>() {
+            if matches!(
+                io.kind(),
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+            ) {
+                return FormatError::Timeout;
+            }
+        }
+        if e.to_string().to_lowercase().contains("timed out") {
+            return FormatError::Timeout;
+        }
+        source = e.source();
+    }
+    FormatError::Network(err.to_string())
 }
 
 /// API キーと文字起こしを任意の平文 HTTP サーバーへ送らない。
@@ -93,7 +188,7 @@ pub fn prewarm(cfg: &FormatConfig) {
     if validate_base_url(base).is_err() {
         return;
     }
-    let resp = agent()
+    let resp = streaming_agent(wait_of(cfg), true)
         .get(&format!("{base}/models"))
         .timeout(Duration::from_secs(5))
         .set("Authorization", &format!("Bearer {key}"))
@@ -118,14 +213,13 @@ pub fn format(cfg: &FormatConfig, raw: &str) -> Result<String, FormatError> {
     let prompt = cfg
         .prompt
         .replace("<text> 内の文", "次のユーザーメッセージの文");
-    let timeout = Duration::from_millis(cfg.timeout_ms.max(1));
+    let timeout = wait_of(cfg);
     let text = match cfg.provider.as_str() {
         "chatgpt" => {
             if cfg.chatgpt_model.trim().is_empty() {
                 return Err(FormatError::MissingModel);
             }
-            crate::chatgpt::format(&cfg.chatgpt_model, &prompt, raw, cfg.fast, timeout)
-                .map_err(FormatError::Provider)?
+            crate::chatgpt::format(&cfg.chatgpt_model, &prompt, raw, cfg.fast, timeout)?
         }
         "openai" => {
             // OpenAI のモデルは temperature を受け付けないものがあるので送らない。Fast モードは service_tier で頼む
@@ -183,7 +277,7 @@ fn chat_completions(
     temperature: Option<u8>,
     prompt: &str,
     raw: &str,
-    timeout: Duration,
+    wait: Duration,
 ) -> Result<String, FormatError> {
     validate_base_url(base_url)?;
     if api_key.trim().is_empty() {
@@ -198,6 +292,8 @@ fn chat_completions(
         "model": model,
         // 推論が止まらないモデルで延々と出力されるのを防ぐ上限。整形は入力とほぼ同じ長さになる
         "max_tokens": raw_chars * 2 + 64,
+        // 少しずつ受け取り、途中で止まったかどうかで打ち切りを判断する
+        "stream": true,
         "messages": [
             { "role": "system", "content": prompt },
             { "role": "user", "content": raw }
@@ -209,14 +305,10 @@ fn chat_completions(
         }
         obj.extend(extra.clone());
     }
-    let agent = if base_url.trim_end_matches('/') == OPENAI_API {
-        openai_agent()
-    } else {
-        agent()
-    };
+    let agent = streaming_agent(wait, base_url.trim_end_matches('/') != OPENAI_API);
+    let started = std::time::Instant::now();
     let resp = agent
         .post(&url)
-        .timeout(timeout)
         .set("Authorization", &format!("Bearer {api_key}"))
         .set("Content-Type", "application/json")
         .set("User-Agent", USER_AGENT)
@@ -225,18 +317,13 @@ fn chat_completions(
     let resp = match resp {
         Ok(r) => r,
         Err(ureq::Error::Status(code, _)) => return Err(FormatError::Http(code)),
-        Err(ureq::Error::Transport(t)) => {
-            let msg = t.to_string();
-            let lower = msg.to_lowercase();
-            if lower.contains("timed out") || lower.contains("timeout") {
-                return Err(FormatError::Timeout);
-            }
-            return Err(FormatError::Network(msg));
-        }
+        Err(ureq::Error::Transport(t)) => return Err(transport_error(&t)),
     };
-    let text = resp
-        .into_string()
-        .map_err(|e| FormatError::BadResponse(e.to_string()))?;
+    if resp.content_type() == "text/event-stream" {
+        return read_chat_stream(resp.into_reader(), started);
+    }
+    // stream を無視して一度に返す互換サービスもあるので、そのときは全体を読む
+    let text = resp.into_string().map_err(|e| transport_error(&e))?;
     let value: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| FormatError::BadResponse(e.to_string()))?;
     if value["choices"][0]["finish_reason"] == "length" {
@@ -254,6 +341,40 @@ fn chat_completions(
             FormatError::BadResponse("choices[0].message.content がありません".into())
         })?;
     Ok(content.trim().to_string())
+}
+
+/// Chat Completions のストリーム(SSE)を読み、[DONE] までの本文を返す
+fn read_chat_stream(reader: impl Read, started: std::time::Instant) -> Result<String, FormatError> {
+    let mut text = String::new();
+    for line in BufReader::new(reader).lines() {
+        let line = line.map_err(|e| transport_error(&e))?;
+        if started.elapsed() > CEILING {
+            return Err(FormatError::Timeout);
+        }
+        let Some(data) = line.strip_prefix("data:") else {
+            continue;
+        };
+        let data = data.trim();
+        if data == "[DONE]" {
+            return Ok(text.trim().to_string());
+        }
+        let Ok(event) = serde_json::from_str::<serde_json::Value>(data) else {
+            continue;
+        };
+        if let Some(err) = event.get("error") {
+            return Err(FormatError::BadResponse(err.to_string()));
+        }
+        let choice = &event["choices"][0];
+        if let Some(delta) = choice["delta"]["content"].as_str() {
+            text.push_str(delta);
+        }
+        if choice["finish_reason"] == "length" {
+            return Err(FormatError::BadResponse(
+                "整形結果が途中で切れました".into(),
+            ));
+        }
+    }
+    Err(FormatError::Network("応答が途中で切れました".into()))
 }
 
 /// OpenAI 互換の /models から使えるモデルの ID を取る。(ID, 表示名) の組で返す
@@ -615,16 +736,20 @@ Connection: close
 ",
             );
             for d in deltas {
-                let line = format!("data: {{\"choices\":[{{\"delta\":{{\"content\":\"{d}\"}}}}]}}
+                let line = format!(
+                    "data: {{\"choices\":[{{\"delta\":{{\"content\":\"{d}\"}}}}]}}
 
-");
+"
+                );
                 let _ = stream.write_all(line.as_bytes());
                 let _ = stream.flush();
                 thread::sleep(gap);
             }
-            let _ = stream.write_all(b"data: [DONE]
+            let _ = stream.write_all(
+                b"data: [DONE]
 
-");
+",
+            );
         });
         format!("http://{addr}")
     }
@@ -632,12 +757,125 @@ Connection: close
     #[test]
     fn long_steady_stream_is_not_cut_by_the_wait_limit() {
         // 合計は待ち時間を超えるが、途中で待ち時間ほど止まることはない。長く話したときの整形がこれに当たる
-        let url = serve_stream(&["明日の", "会議は", "午後", "3時からに", "変更です。"], Duration::from_millis(350));
+        let url = serve_stream(
+            &["明日の", "会議は", "午後", "3時からに", "変更です。"],
+            Duration::from_millis(350),
+        );
         let mut cfg = cfg_for(url);
         cfg.timeout_ms = 600;
         let started = Instant::now();
         let result = format(&cfg, "えーと明日の会議は午後3時からに変更です。");
-        assert_eq!(result, Ok("明日の会議は午後3時からに変更です。".to_string()), "took {:?}", started.elapsed());
+        assert_eq!(
+            result,
+            Ok("明日の会議は午後3時からに変更です。".to_string()),
+            "took {:?}",
+            started.elapsed()
+        );
         assert!(started.elapsed() > Duration::from_millis(600));
+    }
+
+    /// 接続ごとに、用意した応答を順に返すサーバー。受けた接続の数を返す
+    fn serve_sequence(
+        responses: Vec<String>,
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = count.clone();
+        thread::spawn(move || {
+            for response in responses {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                read_request(&mut stream);
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        (format!("http://{addr}"), count)
+    }
+
+    fn sse_ok(text: &str) -> String {
+        format!(
+            "HTTP/1.1 200 OK
+Content-Type: text/event-stream
+Connection: close
+
+data: {{\"choices\":[{{\"delta\":{{\"content\":\"{text}\"}}}}]}}
+
+data: [DONE]
+
+"
+        )
+    }
+
+    fn status(code: u16) -> String {
+        format!(
+            "HTTP/1.1 {code} Error
+Content-Length: 2
+Connection: close
+
+{{}}"
+        )
+    }
+
+    #[test]
+    fn busy_provider_is_retried_until_it_formats() {
+        let (url, count) = serve_sequence(vec![status(503), sse_ok("明日の会議です。")]);
+        let cfg = cfg_for(url);
+        let mut retries = Vec::new();
+        let result = format_with_retry(&cfg, "えーと明日の会議です。", &|| false, |a| {
+            retries.push(a)
+        });
+        assert_eq!(result, Ok("明日の会議です。".to_string()));
+        assert_eq!(retries, vec![1]);
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn wrong_key_is_not_retried() {
+        let (url, count) = serve_sequence(vec![status(401), sse_ok("x")]);
+        let cfg = cfg_for(url);
+        let result = format_with_retry(&cfg, "明日の会議です。", &|| false, |_| {
+            panic!("401 must not be retried")
+        });
+        assert_eq!(result, Err(FormatError::Http(401)));
+        thread::sleep(Duration::from_millis(100));
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn cancelled_formatting_stops_retrying() {
+        // Enter で生テキストを選んだあとに、裏で送り直し続けない
+        let (url, count) = serve_sequence(vec![status(503), sse_ok("x"), sse_ok("x")]);
+        let cfg = cfg_for(url);
+        let cancelled = std::sync::atomic::AtomicBool::new(false);
+        let result = format_with_retry(
+            &cfg,
+            "明日の会議です。",
+            &|| cancelled.load(std::sync::atomic::Ordering::SeqCst),
+            |_| cancelled.store(true, std::sync::atomic::Ordering::SeqCst),
+        );
+        assert_eq!(result, Err(FormatError::Http(503)));
+        thread::sleep(Duration::from_millis(100));
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn stalled_stream_times_out_and_is_retryable() {
+        // 返し始めたあとで止まったら、待ち時間で打ち切ってやり直しの対象にする
+        let url = serve_stream(&["明日の"], Duration::from_millis(1500));
+        let mut cfg = cfg_for(url);
+        cfg.timeout_ms = 300;
+        let started = Instant::now();
+        let result = format(&cfg, "明日の");
+        assert_eq!(
+            result,
+            Err(FormatError::Timeout),
+            "took {:?}",
+            started.elapsed()
+        );
+        assert!(result.unwrap_err().retryable());
+        assert!(started.elapsed() < Duration::from_millis(1200));
     }
 }

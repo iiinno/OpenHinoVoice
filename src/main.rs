@@ -20,7 +20,9 @@ use overlay::{Mode, Tone};
 use sound::Sound;
 use state::{Action, Event, OverlayKind, State};
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS, LPARAM, WPARAM};
 use windows::Win32::System::Threading::CreateMutexW;
@@ -36,14 +38,27 @@ const MAX_RECORDING_PCM_BYTES: usize = 128 * 1024 * 1024;
 const PCM_LIMIT_MESSAGE: &str = "録音データが128 MiBの安全上限を超えました（高サンプルレートのマイクでは設定時間より早く終了する場合があります）";
 
 enum FormatOutcome {
-    Done { generation: u64, text: String },
-    Failed { generation: u64, reason: String },
+    Done {
+        generation: u64,
+        text: String,
+    },
+    Failed {
+        generation: u64,
+        reason: String,
+    },
+    /// 一時的な失敗のあと、attempt 回目の送り直しを待っている
+    Retrying {
+        generation: u64,
+        attempt: u32,
+    },
 }
 
 impl FormatOutcome {
     fn generation(&self) -> u64 {
         match self {
-            Self::Done { generation, .. } | Self::Failed { generation, .. } => *generation,
+            Self::Done { generation, .. }
+            | Self::Failed { generation, .. }
+            | Self::Retrying { generation, .. } => *generation,
         }
     }
 }
@@ -53,10 +68,14 @@ impl FormatOutcome {
 struct FormatGeneration {
     next: u64,
     active: Option<u64>,
+    /// 裏で送り直している整形に、もう要らないと伝える印
+    cancel: Arc<AtomicBool>,
 }
 
 impl FormatGeneration {
     fn start(&mut self) -> u64 {
+        self.cancel.store(true, Ordering::SeqCst);
+        self.cancel = Arc::new(AtomicBool::new(false));
         self.next = self
             .next
             .checked_add(1)
@@ -65,8 +84,13 @@ impl FormatGeneration {
         self.next
     }
 
+    fn cancel_flag(&self) -> Arc<AtomicBool> {
+        self.cancel.clone()
+    }
+
     fn invalidate(&mut self) {
         self.active = None;
+        self.cancel.store(true, Ordering::SeqCst);
     }
 
     fn accepts(&self, generation: u64, formatting: bool) -> bool {
@@ -241,8 +265,16 @@ impl App {
                 let cfg = self.cfg.format.clone();
                 let tx = self.format_tx.clone();
                 let generation = self.format_generation.start();
+                let cancel = self.format_generation.cancel_flag();
                 std::thread::spawn(move || {
-                    let outcome = match format::format(&cfg, &raw) {
+                    let cancelled = || cancel.load(Ordering::SeqCst);
+                    let result = format::format_with_retry(&cfg, &raw, &cancelled, |attempt| {
+                        let _ = tx.send(FormatOutcome::Retrying {
+                            generation,
+                            attempt,
+                        });
+                    });
+                    let outcome = match result {
                         Ok(text) => FormatOutcome::Done { generation, text },
                         Err(e) => FormatOutcome::Failed {
                             generation,
@@ -520,6 +552,13 @@ impl App {
         match outcome {
             FormatOutcome::Done { text, .. } => self.dispatch(Event::FormatDone { text }),
             FormatOutcome::Failed { reason, .. } => self.dispatch(Event::FormatFailed { reason }),
+            FormatOutcome::Retrying { attempt, .. } => overlay::show(Mode::Busy {
+                label: "整形中".into(),
+                hint: Some(format!(
+                    "再試行 {attempt}/{} · Enter で生テキスト",
+                    format::MAX_ATTEMPTS - 1
+                )),
+            }),
         }
     }
 }
@@ -716,9 +755,14 @@ mod flow_tests {
     fn late_format_result_cannot_apply_to_a_new_request() {
         let mut generations = FormatGeneration::default();
         let old = generations.start();
+        let old_cancel = generations.cancel_flag();
         assert!(generations.accepts(old, true));
         // The user presses Enter for raw text or Esc to discard the old result.
         generations.invalidate();
+        assert!(
+            old_cancel.load(Ordering::SeqCst),
+            "background retries must stop"
+        );
         assert!(!generations.accepts(old, false));
         let current = generations.start();
         assert_ne!(old, current);
