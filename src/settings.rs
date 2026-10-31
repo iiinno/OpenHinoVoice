@@ -160,6 +160,11 @@ impl Settings {
         };
         let edits = [
             (None, "hotkey", V::from(self.cfg.hotkey.trim())),
+            (
+                None,
+                "max_recording_minutes",
+                V::from(self.cfg.max_recording_minutes as i64),
+            ),
             (None, "theme", V::from(self.cfg.theme.as_str())),
             (None, "speech_exe", V::from(speech_exe)),
             (None, "model", V::from(self.cfg.model.as_str())),
@@ -339,6 +344,26 @@ impl Settings {
                         "マウスのボタンに割り当てるときは、同じ組み合わせを設定アプリにも入れます",
                     );
                 }
+            });
+            ui.end_row();
+
+            ui.label("最大録音時間");
+            ui.vertical(|ui| {
+                egui::ComboBox::from_id_salt("max_recording_minutes")
+                    .selected_text(format!("{}分", self.cfg.max_recording_minutes))
+                    .show_ui(ui, |ui| {
+                        for minutes in [1, 3, 5, 10] {
+                            ui.selectable_value(
+                                &mut self.cfg.max_recording_minutes,
+                                minutes,
+                                format!("{minutes}分"),
+                            );
+                        }
+                    });
+                hint(
+                    ui,
+                    "時間になると自動で録音を終了して認識します（データ上限128 MiB）",
+                );
             });
             ui.end_row();
 

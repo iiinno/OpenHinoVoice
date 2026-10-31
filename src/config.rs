@@ -9,6 +9,8 @@ speech_exe = ""
 # 認識モデル。speech.cpp のモデル名か .gguf のパス。名前なら初回に自動で取得する
 model = "haas-ja-v1.0:q4_k"
 hotkey = "F8"
+# 最大録音時間(分)。1、3、5、10から選択。到達時は自動で認識へ進む
+max_recording_minutes = 5
 # 録音中の表示の色。"hinomaru"(白地に赤い点)か "auto"(Windows のライト、ダークに合わせる)
 theme = "hinomaru"
 words = ""
@@ -106,6 +108,8 @@ pub struct Config {
     pub model: String,
     #[serde(default = "default_hotkey")]
     pub hotkey: String,
+    #[serde(default = "default_max_recording_minutes")]
+    pub max_recording_minutes: u32,
     #[serde(default = "default_theme")]
     pub theme: String,
     #[serde(default)]
@@ -125,6 +129,9 @@ fn default_asr_model() -> String {
 }
 fn default_hotkey() -> String {
     "F8".to_string()
+}
+fn default_max_recording_minutes() -> u32 {
+    5
 }
 fn default_true() -> bool {
     true
@@ -352,7 +359,12 @@ fn version_key(name: &str) -> Vec<u64> {
 }
 
 pub fn parse(text: &str) -> Result<Config, String> {
-    toml::from_str(text).map_err(|e| format!("設定ファイルの形式が不正です: {e}"))
+    let cfg: Config =
+        toml::from_str(text).map_err(|e| format!("設定ファイルの形式が不正です: {e}"))?;
+    if !matches!(cfg.max_recording_minutes, 1 | 3 | 5 | 10) {
+        return Err("最大録音時間は1、3、5、10分から選択してください".into());
+    }
+    Ok(cfg)
 }
 
 /// TOML のコメント・複数行値・表の境界を維持したまま、設定画面の値だけを更新する。
@@ -482,12 +494,45 @@ mod tests {
         assert_eq!(cfg.speech_exe, "");
         assert_eq!(cfg.model, "haas-ja-v1.0:q4_k");
         assert_eq!(cfg.hotkey, "F8");
+        assert_eq!(cfg.max_recording_minutes, 5);
         assert_eq!(cfg.theme, "hinomaru");
         assert_eq!(cfg.format.timeout_ms, 5000);
         assert!(!cfg.has_api_key());
         assert!(cfg.format.prompt.contains("校正係"));
         assert_eq!(cfg.format.model, "deepseek-v4.1-flash");
         assert_eq!(cfg.format.extra_body["reasoning_effort"], "none");
+    }
+
+    #[test]
+    fn recording_minutes_defaults_for_older_configs_and_validates_saved_choices() {
+        let old = EXAMPLE_TOML.replace("max_recording_minutes = 5\n", "");
+        assert_eq!(parse(&old).unwrap().max_recording_minutes, 5);
+        for minutes in [1, 3, 5, 10] {
+            let updated = set_values(
+                &old,
+                &[(None, "max_recording_minutes", toml::Value::from(minutes))],
+            )
+            .unwrap();
+            assert_eq!(
+                parse(&updated).unwrap().max_recording_minutes,
+                minutes as u32
+            );
+            assert_eq!(
+                parse(&updated).unwrap().format.extra_body["reasoning_effort"],
+                "none"
+            );
+        }
+        for minutes in [-1, 0, 2, 11, 1000] {
+            let invalid = set_values(
+                EXAMPLE_TOML,
+                &[(None, "max_recording_minutes", toml::Value::from(minutes))],
+            )
+            .unwrap();
+            assert!(
+                parse(&invalid).is_err(),
+                "invalid value accepted: {minutes}"
+            );
+        }
     }
 
     #[test]

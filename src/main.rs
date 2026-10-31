@@ -31,10 +31,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, WM_QUIT,
 };
 
-const MAX_RECORDING_DURATION: Duration = Duration::from_secs(5 * 60);
-// Mono PCM16 at 48 kHz is 96,000 bytes/s: five minutes fits within 32 MiB.
-// Higher-rate microphones hit this memory limit earlier.
-const MAX_RECORDING_PCM_BYTES: usize = 32 * 1024 * 1024;
+// 10 minutes at 96 kHz mono PCM16 is 115.2 MB. Higher sample rates can hit the cap early.
+const MAX_RECORDING_PCM_BYTES: usize = 128 * 1024 * 1024;
+const PCM_LIMIT_MESSAGE: &str = "録音データが128 MiBの安全上限を超えました（高サンプルレートのマイクでは設定時間より早く終了する場合があります）";
 
 enum FormatOutcome {
     Done { generation: u64, text: String },
@@ -120,8 +119,9 @@ impl Session {
         true
     }
 
-    fn recording_time_limit(&self, now: Instant) -> bool {
-        now.saturating_duration_since(self.started_at) >= MAX_RECORDING_DURATION
+    fn recording_time_limit(&self, now: Instant, max_minutes: u32) -> bool {
+        now.saturating_duration_since(self.started_at)
+            >= Duration::from_secs(max_minutes as u64 * 60)
     }
 }
 
@@ -227,7 +227,7 @@ impl App {
                     let samples = recorder.drain();
                     drop(recorder);
                     if !self.session.queue_audio(&samples) {
-                        self.fail_session("録音が上限の32 MiBを超えました".into());
+                        self.fail_session(PCM_LIMIT_MESSAGE.into());
                         return false;
                     }
                 }
@@ -379,13 +379,17 @@ impl App {
             overlay::push_level(&samples);
             if Instant::now() >= self.session.skip_until && !self.session.queue_audio(&samples) {
                 self.dispatch(Event::AsrError {
-                    message: "録音が上限の32 MiBを超えました".into(),
+                    message: PCM_LIMIT_MESSAGE.into(),
                 });
                 return;
             }
         }
 
-        if in_recording && self.session.recording_time_limit(Instant::now()) {
+        if in_recording
+            && self
+                .session
+                .recording_time_limit(Instant::now(), self.cfg.max_recording_minutes)
+        {
             // Reuse the manual Enter transition, including final microphone
             // drain, Stop sound and recognition; no new state or GUI.
             self.dispatch(Event::Enter);
@@ -673,9 +677,15 @@ mod flow_tests {
     fn recording_limits_keep_pcm_bounded_and_use_existing_stop_transition() {
         let mut session = Session::new();
         let started = session.started_at;
-        assert!(!session
-            .recording_time_limit(started + MAX_RECORDING_DURATION - Duration::from_millis(1)));
-        assert!(session.recording_time_limit(started + MAX_RECORDING_DURATION));
+        for minutes in [1, 3, 5, 10] {
+            let limit = Duration::from_secs(minutes as u64 * 60);
+            assert!(
+                !session.recording_time_limit(started + limit - Duration::from_millis(1), minutes,)
+            );
+            assert!(session.recording_time_limit(started + limit, minutes));
+        }
+        assert!(!session.recording_time_limit(started + Duration::from_secs(5 * 60), 10));
+        assert!(session.recording_time_limit(started + Duration::from_secs(10 * 60), 10));
         session.recorded_pcm_bytes = MAX_RECORDING_PCM_BYTES - 4;
         assert!(session.queue_audio(&[0.0, 1.0]));
         assert_eq!(session.recorded_pcm_bytes, MAX_RECORDING_PCM_BYTES);
