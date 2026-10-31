@@ -10,7 +10,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Build
-        run: cargo build --verbose
-      - name: Test
-        run: cargo test --verbose
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Check code and test targets
+        run: cargo check --all-targets --locked
+      - name: Lint
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Build Windows executable
+        run: cargo build --locked
+      - name: Unit and non-hardware regression tests
+        run: cargo test --all-targets --locked

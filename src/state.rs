@@ -38,18 +38,33 @@ pub enum Action {
     HideOverlay,
 }
 
+/// Stop the current transition when an action fails. In particular, a failed Paste must not
+/// be followed by HideOverlay or a notice claiming that text was pasted successfully.
+pub fn run_actions(actions: Vec<Action>, mut execute: impl FnMut(Action) -> bool) {
+    for action in actions {
+        if !execute(action) {
+            break;
+        }
+    }
+}
+
 pub fn step(state: State, event: Event) -> (State, Vec<Action>) {
     match state {
         State::Idle => match event {
             Event::F8 => (
                 State::Recording,
-                vec![Action::StartSession, Action::ShowOverlay(OverlayKind::Recording)],
+                vec![
+                    Action::StartSession,
+                    Action::ShowOverlay(OverlayKind::Recording),
+                ],
             ),
             _ => (State::Idle, Vec::new()),
         },
         State::Recording => match event {
             Event::Enter => (
-                State::Recognizing { raw_requested: false },
+                State::Recognizing {
+                    raw_requested: false,
+                },
                 vec![
                     Action::StopRecordingAndTranscribe,
                     Action::ShowOverlay(OverlayKind::Recognizing),
@@ -69,7 +84,12 @@ pub fn step(state: State, event: Event) -> (State, Vec<Action>) {
             _ => (State::Recording, Vec::new()),
         },
         State::Recognizing { raw_requested } => match event {
-            Event::Enter => (State::Recognizing { raw_requested: true }, Vec::new()),
+            Event::Enter => (
+                State::Recognizing {
+                    raw_requested: true,
+                },
+                Vec::new(),
+            ),
             Event::Esc => (
                 State::Idle,
                 vec![Action::DiscardSession, Action::HideOverlay],
@@ -144,7 +164,9 @@ mod tests {
         State::Recognizing { raw_requested: raw }
     }
     fn fmt() -> State {
-        State::Formatting { raw: "raw".to_string() }
+        State::Formatting {
+            raw: "raw".to_string(),
+        }
     }
 
     #[test]
@@ -167,7 +189,13 @@ mod tests {
             (State::Idle, vec![])
         );
         assert_eq!(
-            step(State::Idle, Event::AsrDone { text: "x".into(), has_api_key: true }),
+            step(
+                State::Idle,
+                Event::AsrDone {
+                    text: "x".into(),
+                    has_api_key: true
+                }
+            ),
             (State::Idle, vec![])
         );
     }
@@ -214,38 +242,68 @@ mod tests {
     fn asr_done_with_raw_flag_pastes_raw() {
         let (s, a) = step(
             recog(true),
-            Event::AsrDone { text: "hello".into(), has_api_key: true },
+            Event::AsrDone {
+                text: "hello".into(),
+                has_api_key: true,
+            },
         );
         assert_eq!(s, State::Idle);
-        assert_eq!(a[0], Action::Paste { text: "hello".into() });
+        assert_eq!(
+            a[0],
+            Action::Paste {
+                text: "hello".into()
+            }
+        );
     }
 
     #[test]
     fn asr_done_with_key_goes_formatting() {
         let (s, a) = step(
             recog(false),
-            Event::AsrDone { text: "hello".into(), has_api_key: true },
+            Event::AsrDone {
+                text: "hello".into(),
+                has_api_key: true,
+            },
         );
-        assert_eq!(s, State::Formatting { raw: "hello".into() });
-        assert!(a.contains(&Action::CallFormat { raw: "hello".into() }));
+        assert_eq!(
+            s,
+            State::Formatting {
+                raw: "hello".into()
+            }
+        );
+        assert!(a.contains(&Action::CallFormat {
+            raw: "hello".into()
+        }));
     }
 
     #[test]
     fn asr_done_without_key_pastes_raw_with_notice() {
         let (s, a) = step(
             recog(false),
-            Event::AsrDone { text: "hello".into(), has_api_key: false },
+            Event::AsrDone {
+                text: "hello".into(),
+                has_api_key: false,
+            },
         );
         assert_eq!(s, State::Idle);
-        assert!(a.contains(&Action::Paste { text: "hello".into() }));
+        assert!(a.contains(&Action::Paste {
+            text: "hello".into()
+        }));
         assert!(a.contains(&Action::ShowOverlay(OverlayKind::ApiKeyMissing)));
     }
 
     #[test]
     fn asr_error_goes_idle_with_error_overlay() {
-        let (s, a) = step(recog(false), Event::AsrError { message: "boom".into() });
+        let (s, a) = step(
+            recog(false),
+            Event::AsrError {
+                message: "boom".into(),
+            },
+        );
         assert_eq!(s, State::Idle);
-        assert!(a.contains(&Action::ShowOverlay(OverlayKind::Error { message: "boom".into() })));
+        assert!(a.contains(&Action::ShowOverlay(OverlayKind::Error {
+            message: "boom".into()
+        })));
     }
 
     #[test]
@@ -269,25 +327,123 @@ mod tests {
 
     #[test]
     fn recording_asr_error_goes_idle() {
-        let (s, a) = step(rec(), Event::AsrError { message: "dead".into() });
+        let (s, a) = step(
+            rec(),
+            Event::AsrError {
+                message: "dead".into(),
+            },
+        );
         assert_eq!(s, State::Idle);
-        assert!(a.contains(&Action::ShowOverlay(OverlayKind::Error { message: "dead".into() })));
+        assert!(a.contains(&Action::ShowOverlay(OverlayKind::Error {
+            message: "dead".into()
+        })));
     }
 
     #[test]
     fn format_done_pastes_formatted() {
-        let (s, a) = step(fmt(), Event::FormatDone { text: "clean".into() });
+        let (s, a) = step(
+            fmt(),
+            Event::FormatDone {
+                text: "clean".into(),
+            },
+        );
         assert_eq!(s, State::Idle);
-        assert!(a.contains(&Action::Paste { text: "clean".into() }));
+        assert!(a.contains(&Action::Paste {
+            text: "clean".into()
+        }));
     }
 
     #[test]
     fn format_failed_pastes_raw_with_skip_notice() {
-        let (s, a) = step(fmt(), Event::FormatFailed { reason: "timeout".into() });
+        let (s, a) = step(
+            fmt(),
+            Event::FormatFailed {
+                reason: "timeout".into(),
+            },
+        );
         assert_eq!(s, State::Idle);
         assert!(a.contains(&Action::Paste { text: "raw".into() }));
         assert!(a.contains(&Action::ShowOverlay(OverlayKind::FormatSkipped {
             reason: "timeout".into()
         })));
+    }
+
+    #[test]
+    fn failed_paste_stops_following_success_notices_and_hides() {
+        let cases = [
+            (
+                recog(true),
+                Event::AsrDone {
+                    text: "raw".into(),
+                    has_api_key: true,
+                },
+            ),
+            (
+                recog(false),
+                Event::AsrDone {
+                    text: "raw".into(),
+                    has_api_key: false,
+                },
+            ),
+            (fmt(), Event::Enter),
+            (
+                fmt(),
+                Event::FormatDone {
+                    text: "clean".into(),
+                },
+            ),
+            (
+                fmt(),
+                Event::FormatFailed {
+                    reason: "timeout".into(),
+                },
+            ),
+        ];
+        for (state, event) in cases {
+            let (_, actions) = step(state, event);
+            let mut executed = Vec::new();
+            run_actions(actions, |action| {
+                let success = !matches!(action, Action::Paste { .. });
+                executed.push(action);
+                success
+            });
+            assert_eq!(executed.len(), 1, "a failed Paste must stop its transition");
+            assert!(matches!(executed[0], Action::Paste { .. }));
+        }
+    }
+
+    #[test]
+    fn successful_paste_retains_normal_notice_and_hide_behavior() {
+        let cases = [
+            (
+                recog(true),
+                Event::AsrDone {
+                    text: "raw".into(),
+                    has_api_key: true,
+                },
+            ),
+            (
+                recog(false),
+                Event::AsrDone {
+                    text: "raw".into(),
+                    has_api_key: false,
+                },
+            ),
+            (
+                fmt(),
+                Event::FormatFailed {
+                    reason: "timeout".into(),
+                },
+            ),
+        ];
+        for (state, event) in cases {
+            let (_, actions) = step(state, event);
+            let mut executed = Vec::new();
+            run_actions(actions.clone(), |action| {
+                executed.push(action);
+                true
+            });
+            assert_eq!(executed, actions);
+        }
     }
 }

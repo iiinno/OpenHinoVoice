@@ -29,6 +29,10 @@ irm https://raw.githubusercontent.com/nyosegawa/speech.cpp/main/install.ps1 | ie
 
 Download `openhinovoice.exe` from the [latest release](https://github.com/iiinno/OpenHinoVoice/releases/latest). Put it anywhere, for example `%LOCALAPPDATA%\Programs\OpenHinoVoice`, and double-click it. If Windows SmartScreen says "Windows protected your PC", click "More info", then "Run anyway". New unsigned apps can show this warning.
 
+**The published executable is not code signed.** The product name and version shown in Windows file properties identify the build, but they are not a digital signature proving who published it. Check the download source before running it.
+
+Each release also includes `LICENSE`, `THIRD_PARTY_LICENSES.txt`, and `SHA256SUMS.txt`. To check the downloaded EXE's integrity, run `Get-FileHash .\openhinovoice.exe -Algorithm SHA256` in PowerShell and compare its result with `SHA256SUMS.txt`. A matching hash alone does not establish publisher identity.
+
 An icon appears in the notification area at the bottom right. If you don't see it, click the "^" next to the clock.
 
 ### 3. Configure
@@ -97,6 +101,8 @@ cargo build --release
 ```
 
 The executable is `target\release\openhinovoice.exe`. Run the tests with `cargo test`; tests that need a real microphone or API are `#[ignore]`d.
+
+Windows CI runs `cargo fmt --all -- --check`, `cargo check --all-targets --locked`, `cargo clippy --all-targets --locked -- -D warnings`, and `cargo test --all-targets --locked`. A release tag such as `v0.1.0` must match `Cargo.toml`'s `version`. The Windows executable embeds `FileVersion` and `ProductVersion` from that Cargo version and uses `OpenHinoVoice` as its `ProductName`. Existing releases are never overwritten.
 
 ## Special thanks
 

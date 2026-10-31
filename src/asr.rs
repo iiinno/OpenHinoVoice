@@ -1,16 +1,46 @@
 use base64::Engine;
-use std::os::windows::process::CommandExt;
+use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc::{channel, Receiver};
+use std::os::windows::process::CommandExt;
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc::{channel, sync_channel, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::time::{Duration, Instant};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+// Initial model setup can take longer than an ordinary transcription. Both
+// deadlines are checked by the UI loop so a silent worker can be torn down.
+const READY_TIMEOUT: Duration = Duration::from_secs(180);
+const TRANSCRIPTION_TIMEOUT: Duration = Duration::from_secs(90);
+// Each chunk is queued independently, so neither a non-reading child nor a
+// slow pipe may hold the UI loop in a synchronous stdin write.
+const WRITE_QUEUE_CAPACITY: usize = 64;
+const WRITE_TIMEOUT: Duration = Duration::from_secs(8);
+
+pub fn timeout_phase(
+    session_started: Instant,
+    ready: bool,
+    transcribe_started: Option<Instant>,
+    now: Instant,
+) -> Option<&'static str> {
+    if !ready && now.saturating_duration_since(session_started) >= READY_TIMEOUT {
+        Some("ready")
+    } else if let Some(started) = transcribe_started {
+        if now.saturating_duration_since(started) >= TRANSCRIPTION_TIMEOUT {
+            Some("end")
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
 
 #[derive(Debug)]
 pub enum AsrError {
     Spawn(String),
     Io(String),
+    #[allow(dead_code)] // Blocking integration tests can report a timeout.
     Timeout(String),
     Worker(String),
     Protocol(String),
@@ -49,9 +79,116 @@ pub fn transcribe_message(sample_rate: u32, words: &str) -> String {
     .to_string()
 }
 
+struct WriteCommand {
+    id: u64,
+    line: String,
+}
+
+struct WriteAck {
+    id: u64,
+    result: Result<(), String>,
+}
+
+struct WriterQueue {
+    sender: SyncSender<WriteCommand>,
+    acknowledgements: Receiver<WriteAck>,
+    pending: VecDeque<(u64, Instant)>,
+    next_id: u64,
+}
+
+impl WriterQueue {
+    fn spawn<W: Write + Send + 'static>(mut stdin: W) -> Self {
+        let (sender, commands) = sync_channel::<WriteCommand>(WRITE_QUEUE_CAPACITY);
+        let (ack_sender, acknowledgements) = channel::<WriteAck>();
+        // Detached on purpose. A blocked Windows pipe must never be joined
+        // from the UI thread. Killing the child closes its read end.
+        std::thread::spawn(move || {
+            while let Ok(command) = commands.recv() {
+                let result = (|| {
+                    stdin.write_all(command.line.as_bytes())?;
+                    stdin.write_all(b"\n")?;
+                    stdin.flush()
+                })()
+                .map_err(|e| e.to_string());
+                let failed = result.is_err();
+                if ack_sender
+                    .send(WriteAck {
+                        id: command.id,
+                        result,
+                    })
+                    .is_err()
+                    || failed
+                {
+                    break;
+                }
+            }
+        });
+        Self {
+            sender,
+            acknowledgements,
+            pending: VecDeque::new(),
+            next_id: 0,
+        }
+    }
+
+    /// False means temporary backpressure: caller must retain and retry the
+    /// same message on a later tick. Order and sequence numbers are preserved.
+    fn enqueue(&mut self, line: String) -> Result<bool, AsrError> {
+        let id = self.next_id;
+        match self.sender.try_send(WriteCommand { id, line }) {
+            Ok(()) => {
+                self.next_id = self.next_id.checked_add(1).expect("ASR write id exhausted");
+                self.pending.push_back((id, Instant::now()));
+                Ok(true)
+            }
+            Err(TrySendError::Full(_)) => Ok(false),
+            Err(TrySendError::Disconnected(_)) => Err(AsrError::Io(
+                "認識エンジンの送信スレッドが終了しました".into(),
+            )),
+        }
+    }
+
+    fn poll_at(&mut self, now: Instant) -> Result<(), AsrError> {
+        loop {
+            match self.acknowledgements.try_recv() {
+                Ok(ack) => {
+                    let Some((expected, _)) = self.pending.pop_front() else {
+                        return Err(AsrError::Protocol("想定外の stdin 送信完了通知".into()));
+                    };
+                    if expected != ack.id {
+                        return Err(AsrError::Protocol(
+                            "stdin 送信完了通知の順序が不正です".into(),
+                        ));
+                    }
+                    ack.result.map_err(AsrError::Io)?;
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    return Err(AsrError::Io(
+                        "認識エンジンの送信スレッドが終了しました".into(),
+                    ));
+                }
+            }
+        }
+        if self
+            .pending
+            .front()
+            .is_some_and(|(_, queued)| now.saturating_duration_since(*queued) >= WRITE_TIMEOUT)
+        {
+            return Err(AsrError::Timeout("stdin 書き込み".into()));
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn pending_len(&self) -> usize {
+        self.pending.len()
+    }
+}
+
 pub struct Worker {
     child: Child,
-    stdin: ChildStdin,
+    writer: WriterQueue,
     lines: Receiver<String>,
     seq: u64,
     ready: bool,
@@ -78,6 +215,7 @@ impl Worker {
             .take()
             .ok_or_else(|| AsrError::Spawn("stdout を取得できません".into()))?;
         let (tx, rx) = channel::<String>();
+        let writer = WriterQueue::spawn(stdin);
         std::thread::spawn(move || {
             let reader = BufReader::new(stdout);
             for line in reader.lines() {
@@ -93,13 +231,14 @@ impl Worker {
         });
         Ok(Worker {
             child,
-            stdin,
+            writer,
             lines: rx,
             seq: 0,
             ready: false,
         })
     }
 
+    #[allow(dead_code)] // Used by the explicit, ignored ASR integration test.
     pub fn wait_ready(&mut self, timeout: Duration) -> Result<(), AsrError> {
         if self.ready {
             return Ok(());
@@ -158,25 +297,28 @@ impl Worker {
         }
     }
 
-    pub fn send_chunk(&mut self, pcm_le: &[u8]) -> Result<(), AsrError> {
+    pub fn send_chunk(&mut self, pcm_le: &[u8]) -> Result<bool, AsrError> {
         let msg = chunk_message(self.seq, pcm_le);
-        self.seq += 1;
-        writeln!(self.stdin, "{msg}").map_err(|e| AsrError::Io(e.to_string()))?;
-        self.stdin
-            .flush()
-            .map_err(|e| AsrError::Io(e.to_string()))?;
-        Ok(())
+        if self.writer.enqueue(msg)? {
+            self.seq += 1;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 
-    pub fn transcribe(&mut self, sample_rate: u32, words: &str) -> Result<(), AsrError> {
+    pub fn transcribe(&mut self, sample_rate: u32, words: &str) -> Result<bool, AsrError> {
         let msg = transcribe_message(sample_rate, words);
-        writeln!(self.stdin, "{msg}").map_err(|e| AsrError::Io(e.to_string()))?;
-        self.stdin
-            .flush()
-            .map_err(|e| AsrError::Io(e.to_string()))?;
-        Ok(())
+        self.writer.enqueue(msg)
     }
 
+    /// Nonblocking acknowledgement + age check; called every UI tick even
+    /// when the recognition process is no longer responding on stdout.
+    pub fn poll_writer(&mut self) -> Result<(), AsrError> {
+        self.writer.poll_at(Instant::now())
+    }
+
+    #[allow(dead_code)] // Used by the explicit, ignored ASR integration test.
     pub fn wait_end(&mut self, timeout: Duration) -> Result<String, AsrError> {
         let deadline = Instant::now() + timeout;
         loop {
@@ -239,33 +381,33 @@ impl Worker {
     }
 
     pub fn shutdown(mut self) {
-        drop(self.stdin);
-        let deadline = Instant::now() + Duration::from_millis(800);
+        drop(self.writer);
+        // Terminate first; a child stuck reading neither stdin nor stdout
+        // cannot be asked to exit gracefully. Never join the writer thread.
+        let _ = self.child.kill();
+        let deadline = Instant::now() + Duration::from_millis(250);
         loop {
             match self.child.try_wait() {
                 Ok(Some(_)) => return,
                 Ok(None) => {
-                    if Instant::now() > deadline {
-                        let _ = self.child.kill();
-                        let _ = self.child.wait();
+                    if Instant::now() >= deadline {
                         return;
                     }
-                    std::thread::sleep(Duration::from_millis(20));
+                    std::thread::sleep(Duration::from_millis(10));
                 }
-                Err(_) => {
-                    let _ = self.child.kill();
-                    return;
-                }
+                Err(_) => return,
             }
         }
     }
 }
 
+#[allow(dead_code)] // Used by the explicit ASR WAV integration test.
 pub struct WavData {
     pub sample_rate: u32,
     pub pcm_le: Vec<u8>,
 }
 
+#[allow(dead_code)] // Used by the explicit ASR WAV integration test.
 pub fn parse_wav_pcm16(bytes: &[u8]) -> Result<WavData, String> {
     if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
         return Err("WAV ヘッダが不正です".into());
@@ -277,14 +419,23 @@ pub fn parse_wav_pcm16(bytes: &[u8]) -> Result<WavData, String> {
     let mut data: Option<&[u8]> = None;
     while pos + 8 <= bytes.len() {
         let id = &bytes[pos..pos + 4];
-        let size = u32::from_le_bytes([bytes[pos + 4], bytes[pos + 5], bytes[pos + 6], bytes[pos + 7]]) as usize;
+        let size = u32::from_le_bytes([
+            bytes[pos + 4],
+            bytes[pos + 5],
+            bytes[pos + 6],
+            bytes[pos + 7],
+        ]) as usize;
         let body_start = pos + 8;
         let body_end = (body_start + size).min(bytes.len());
         if id == b"fmt " {
             if body_end - body_start >= 16 {
                 channels = u16::from_le_bytes([bytes[body_start + 2], bytes[body_start + 3]]);
-                sample_rate =
-                    u32::from_le_bytes([bytes[body_start + 4], bytes[body_start + 5], bytes[body_start + 6], bytes[body_start + 7]]);
+                sample_rate = u32::from_le_bytes([
+                    bytes[body_start + 4],
+                    bytes[body_start + 5],
+                    bytes[body_start + 6],
+                    bytes[body_start + 7],
+                ]);
                 bits = u16::from_le_bytes([bytes[body_start + 14], bytes[body_start + 15]]);
             }
         } else if id == b"data" {
@@ -320,6 +471,218 @@ pub fn parse_wav_pcm16(bytes: &[u8]) -> Result<WavData, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc::Sender;
+
+    // Mimics a speech.exe process that stays alive but never drains stdin.
+    // The writer blocks inside write(), while its caller must remain responsive.
+    struct FrozenStdin {
+        entered: Sender<()>,
+        release: Receiver<()>,
+        exited: Sender<()>,
+        blocked: bool,
+    }
+
+    impl Write for FrozenStdin {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if !self.blocked {
+                self.blocked = true;
+                let _ = self.entered.send(());
+                let _ = self.release.recv();
+            }
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Drop for FrozenStdin {
+        fn drop(&mut self) {
+            let _ = self.exited.send(());
+        }
+    }
+
+    #[test]
+    fn frozen_worker_stdin_cannot_block_ui_or_shutdown() {
+        let (entered_tx, entered_rx) = channel();
+        let (release_tx, release_rx) = channel();
+        let (exited_tx, exited_rx) = channel();
+        let mut queue = WriterQueue::spawn(FrozenStdin {
+            entered: entered_tx,
+            release: release_rx,
+            exited: exited_tx,
+            blocked: false,
+        });
+        let first_send = Instant::now();
+        assert!(queue.enqueue("first chunk".into()).unwrap());
+        assert!(first_send.elapsed() < Duration::from_millis(200));
+        entered_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("mock stdin entered write");
+        // The bounded queue must reject further work instead of waiting for
+        // the child to read its pipe.
+        let start = Instant::now();
+        for _ in 0..WRITE_QUEUE_CAPACITY {
+            assert!(queue.enqueue("more audio".into()).unwrap());
+        }
+        assert!(!queue.enqueue("overflow".into()).unwrap());
+        assert!(
+            start.elapsed() < Duration::from_millis(500),
+            "UI enqueue blocked"
+        );
+        assert_eq!(queue.pending_len(), WRITE_QUEUE_CAPACITY + 1);
+        assert!(matches!(
+            queue.poll_at(Instant::now() + WRITE_TIMEOUT + Duration::from_millis(1)),
+            Err(AsrError::Timeout(_))
+        ));
+
+        // Dropping the producer (the same operation used during shutdown)
+        // must not join the writer while its pipe is frozen.
+        let before_drop = Instant::now();
+        drop(queue);
+        assert!(before_drop.elapsed() < Duration::from_millis(200));
+        release_tx.send(()).unwrap();
+        exited_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("writer exits after release");
+    }
+
+    #[test]
+    fn writer_reports_acknowledgements_and_io_errors() {
+        let mut queue = WriterQueue::spawn(Vec::<u8>::new());
+        assert!(queue.enqueue("chunk".into()).unwrap());
+        assert!(queue.enqueue("transcribe".into()).unwrap());
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while queue.pending_len() > 0 && Instant::now() < deadline {
+            queue.poll_at(Instant::now()).unwrap();
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(queue.pending_len(), 0);
+
+        struct BrokenStdin;
+        impl Write for BrokenStdin {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut queue = WriterQueue::spawn(BrokenStdin);
+        assert!(queue.enqueue("chunk".into()).unwrap());
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match queue.poll_at(Instant::now()) {
+                Err(AsrError::Io(error)) => {
+                    assert!(
+                        error.contains("broken pipe") || error.contains("パイプ"),
+                        "{error}"
+                    );
+                    break;
+                }
+                Err(other) => panic!("unexpected write error: {other}"),
+                Ok(()) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(1)),
+                Ok(()) => panic!("writer failed to report broken pipe"),
+            }
+        }
+    }
+
+    #[test]
+    fn shutdown_kills_a_child_that_never_reads_its_pipe() {
+        // One process, no model or microphone. It deliberately keeps stdin
+        // open without reading for much longer than our allowed shutdown.
+        let mut child = Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Sleep -Seconds 30",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .expect("PowerShell test worker must launch on Windows");
+        let stdin = child.stdin.take().unwrap();
+        let (_, lines) = channel();
+        let mut worker = Worker {
+            child,
+            writer: WriterQueue::spawn(stdin),
+            lines,
+            seq: 0,
+            ready: true,
+        };
+        assert!(worker.send_chunk(&vec![1; 256 * 1024]).unwrap());
+        std::thread::sleep(Duration::from_millis(100));
+        worker
+            .poll_writer()
+            .expect("non-reading worker should not have failed yet");
+        assert_eq!(
+            worker.writer.pending_len(),
+            1,
+            "the pipe write must still be pending"
+        );
+        let start = Instant::now();
+        worker.shutdown();
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "shutdown blocked on frozen worker"
+        );
+    }
+
+    #[test]
+    fn silent_worker_times_out_and_new_session_gets_fresh_deadlines() {
+        let base = Instant::now();
+        assert_eq!(
+            timeout_phase(
+                base,
+                false,
+                None,
+                base + READY_TIMEOUT - Duration::from_millis(1)
+            ),
+            None
+        );
+        assert_eq!(
+            timeout_phase(base, false, None, base + READY_TIMEOUT),
+            Some("ready")
+        );
+        // Once ready, the model may stay recording longer than the startup deadline.
+        assert_eq!(
+            timeout_phase(
+                base,
+                true,
+                None,
+                base + READY_TIMEOUT + Duration::from_secs(5)
+            ),
+            None
+        );
+        let start_transcribe = base + READY_TIMEOUT + Duration::from_secs(10);
+        assert_eq!(
+            timeout_phase(
+                base,
+                true,
+                Some(start_transcribe),
+                start_transcribe + TRANSCRIPTION_TIMEOUT - Duration::from_millis(1)
+            ),
+            None
+        );
+        assert_eq!(
+            timeout_phase(
+                base,
+                true,
+                Some(start_transcribe),
+                start_transcribe + TRANSCRIPTION_TIMEOUT
+            ),
+            Some("end")
+        );
+        let fresh = start_transcribe + TRANSCRIPTION_TIMEOUT;
+        assert_eq!(
+            timeout_phase(fresh, false, None, fresh + Duration::from_secs(1)),
+            None
+        );
+    }
 
     #[test]
     fn chunk_message_shape() {

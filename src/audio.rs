@@ -18,6 +18,7 @@ pub struct Recorder {
     _stream: cpal::Stream,
     buffer: Arc<Mutex<Vec<f32>>>,
     pub sample_rate: u32,
+    #[allow(dead_code)] // Available as device diagnostics; not read by the app yet.
     pub channels: u16,
 }
 

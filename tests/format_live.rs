@@ -1,9 +1,12 @@
+// Integration crates compile full production modules but use only a subset of their APIs.
+#![allow(dead_code)]
+
 use std::time::{Duration, Instant};
 
-#[path = "../src/config.rs"]
-mod config;
 #[path = "../src/chatgpt.rs"]
 mod chatgpt;
+#[path = "../src/config.rs"]
+mod config;
 #[path = "../src/format.rs"]
 mod format;
 
@@ -11,7 +14,8 @@ mod format;
 #[ignore = "calls the real formatting API with the key in the user config; run explicitly"]
 fn real_api_formats_with_prewarm() {
     let cfg = config::load().expect("config must load").format;
-    let raw = "えーと、明日の会議は午後3時からに変更になりました。資料は共有フォルダにおいてあります。";
+    let raw =
+        "えーと、明日の会議は午後3時からに変更になりました。資料は共有フォルダにおいてあります。";
 
     let t = Instant::now();
     let cold = format::format(&cfg, raw).expect("cold request must succeed");

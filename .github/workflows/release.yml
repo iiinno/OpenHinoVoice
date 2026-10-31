@@ -11,14 +11,58 @@ permissions:
 jobs:
   release:
     runs-on: windows-latest
+    concurrency:
+      group: release-${{ github.ref }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Verify that the tag matches Cargo.toml
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $package = (cargo metadata --no-deps --locked --format-version 1 | ConvertFrom-Json).packages |
+            Where-Object { $_.name -eq 'openhinovoice' }
+          if (@($package).Count -ne 1) { throw 'Could not identify the openhinovoice package' }
+          if ($env:RELEASE_TAG -cne "v$($package.version)") {
+            throw "Release tag $env:RELEASE_TAG does not match Cargo version $($package.version)"
+          }
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Lint
+        run: cargo clippy --all-targets --locked -- -D warnings
       - name: Test
-        run: cargo test
+        run: cargo test --all-targets --locked
       - name: Build
-        run: cargo build --release
+        run: cargo build --release --locked
+      - name: Validate EXE version and create checksum
+        shell: pwsh
+        run: |
+          $package = (cargo metadata --no-deps --locked --format-version 1 | ConvertFrom-Json).packages |
+            Where-Object { $_.name -eq 'openhinovoice' }
+          $version = $package.version
+          $info = (Get-Item 'target/release/openhinovoice.exe').VersionInfo
+          $numericVersion = "$($info.FileMajorPart).$($info.FileMinorPart).$($info.FileBuildPart)"
+          $expectedNumericVersion = ($version -split '[-+]')[0]
+          if ($numericVersion -cne $expectedNumericVersion) {
+            throw "EXE numeric version $numericVersion does not match Cargo version $version"
+          }
+          if ($info.FileVersion -cne $version -or $info.ProductVersion -cne $version) {
+            throw "EXE string versions $($info.FileVersion), $($info.ProductVersion) do not match $version"
+          }
+          if ($info.ProductName -cne 'OpenHinoVoice') {
+            throw "Unexpected EXE ProductName: $($info.ProductName)"
+          }
+          $hash = (Get-FileHash 'target/release/openhinovoice.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  openhinovoice.exe" | Set-Content -NoNewline -Encoding ascii SHA256SUMS.txt
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" target/release/openhinovoice.exe THIRD_PARTY_LICENSES.txt --title "OpenHinoVoice ${{ github.ref_name }}" --notes "Windows x64 用のビルド済み exe です。導入の手順は README を見てください。組み込んでいるライブラリのライセンスは THIRD_PARTY_LICENSES.txt にあります。"
+        shell: pwsh
+        run: |
+          # gh release create fails if a release already exists. Never upload --clobber.
+          gh release create "$env:GITHUB_REF_NAME" target/release/openhinovoice.exe LICENSE THIRD_PARTY_LICENSES.txt SHA256SUMS.txt --verify-tag --title "OpenHinoVoice $env:GITHUB_REF_NAME" --notes "Windows x64 用のビルド済み exe（コード署名なし）です。導入の手順は README を参照してください。LICENSE と THIRD_PARTY_LICENSES.txt を同梱しています。SHA256SUMS.txt で exe の SHA-256 を検証できます。"
