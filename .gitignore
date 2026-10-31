@@ -1,0 +1,10 @@
+/target
+config.toml
+*.wav
+!assets/sounds/*.wav
+!tests/*.md
+
+# 開発の記録(手元にだけ置く)
+concept.md
+Plan.md
+HANDOFF.md

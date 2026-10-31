@@ -1,0 +1,38 @@
+[package]
+name = "openhinovoice"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Japanese voice input for Windows with local speech recognition"
+repository = "https://github.com/iiinno/OpenHinoVoice"
+
+[dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Media_Audio",
+    "Win32_Security",
+    "Win32_Security_Cryptography",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+cpal = "0.15"
+ureq = { version = "2", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+base64 = "0.22"
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts"] }
+
+[profile.release]
+opt-level = 2
+# exe を小さく保つ。挙動は変えない
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

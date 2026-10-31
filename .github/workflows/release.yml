@@ -1,0 +1,24 @@
+name: Release
+
+# v で始まるタグを push すると、ビルド済みの exe を GitHub Releases に置く
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test
+        run: cargo test
+      - name: Build
+        run: cargo build --release
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" target/release/openhinovoice.exe --title "OpenHinoVoice ${{ github.ref_name }}" --notes "Windows x64 用のビルド済み exe です。導入の手順は README を見てください。"
