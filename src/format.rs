@@ -599,4 +599,45 @@ mod tests {
         assert!(result.is_err(), "expected timeout error, got {result:?}");
         assert!(start.elapsed() < Duration::from_millis(1400));
     }
+
+    /// 1 回の接続で、決まった間隔を置きながら SSE の行を返すサーバー
+    fn serve_stream(deltas: &'static [&'static str], gap: Duration) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            read_request(&mut stream);
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK
+Content-Type: text/event-stream
+Connection: close
+
+",
+            );
+            for d in deltas {
+                let line = format!("data: {{\"choices\":[{{\"delta\":{{\"content\":\"{d}\"}}}}]}}
+
+");
+                let _ = stream.write_all(line.as_bytes());
+                let _ = stream.flush();
+                thread::sleep(gap);
+            }
+            let _ = stream.write_all(b"data: [DONE]
+
+");
+        });
+        format!("http://{addr}")
+    }
+
+    #[test]
+    fn long_steady_stream_is_not_cut_by_the_wait_limit() {
+        // 合計は待ち時間を超えるが、途中で待ち時間ほど止まることはない。長く話したときの整形がこれに当たる
+        let url = serve_stream(&["明日の", "会議は", "午後", "3時からに", "変更です。"], Duration::from_millis(350));
+        let mut cfg = cfg_for(url);
+        cfg.timeout_ms = 600;
+        let started = Instant::now();
+        let result = format(&cfg, "えーと明日の会議は午後3時からに変更です。");
+        assert_eq!(result, Ok("明日の会議は午後3時からに変更です。".to_string()), "took {:?}", started.elapsed());
+        assert!(started.elapsed() > Duration::from_millis(600));
+    }
 }
