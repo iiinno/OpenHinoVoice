@@ -2,6 +2,7 @@
 //! 手順は https://developers.openai.com/siwc/token-sharing-open-source に従う。
 //! ブラウザで認可し、127.0.0.1 の受け口でコードを受け取り、トークンに換えて DPAPI で暗号化して保存する。
 
+use crate::format::FormatError;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -476,9 +477,9 @@ pub fn format(
     instructions: &str,
     raw: &str,
     fast: bool,
-    timeout: Duration,
-) -> Result<String, String> {
-    let token = access_token()?;
+    wait: Duration,
+) -> Result<String, FormatError> {
+    let token = access_token().map_err(FormatError::Provider)?;
     let mut body = serde_json::json!({
         "model": model,
         "instructions": instructions,
@@ -489,10 +490,11 @@ pub fn format(
     if fast {
         body["service_tier"] = "priority".into();
     }
-    let resp = agent()
+    // 合計時間では切らず、応答が wait の間ずっと途切れたときだけ打ち切る
+    let started = std::time::Instant::now();
+    let resp = crate::format::streaming_agent(wait, false)
         .post(&format!("{API}/responses"))
         .set("Authorization", &format!("Bearer {token}"))
-        .timeout(timeout)
         .send_json(body);
     let resp = match resp {
         Ok(r) => r,
@@ -501,20 +503,34 @@ pub fn format(
             let err_code = v["error"]["code"].as_str().unwrap_or("").to_string();
             // Fast モードが使えない場合は通常の速さでもう一度だけ送る
             if fast && err_code == "subscription_sharing_unsupported_capability" {
-                return format(model, instructions, raw, false, timeout);
+                return format(model, instructions, raw, false, wait);
             }
-            return Err(explain_error(code, &err_code));
+            return Err(classify(code, &err_code));
         }
-        Err(e) => return Err(format!("ChatGPT に接続できません: {e}")),
+        Err(e) => return Err(crate::format::transport_error(&e)),
     };
-    read_stream(resp.into_reader())
+    read_stream(resp.into_reader(), started)
+}
+
+/// ChatGPT のエラーを、やり直す価値のあるものとないものに分ける
+fn classify(http: u16, code: &str) -> FormatError {
+    match code {
+        "subscription_sharing_usage_unavailable" | "subscription_sharing_user_unavailable" => {
+            FormatError::Busy(explain_error(http, code))
+        }
+        "" if http == 408 || http == 429 || http >= 500 => FormatError::Http(http),
+        _ => FormatError::Provider(explain_error(http, code)),
+    }
 }
 
 /// Server-Sent Events を読み、response.completed までの本文を返す
-fn read_stream(reader: impl Read) -> Result<String, String> {
+fn read_stream(reader: impl Read, started: std::time::Instant) -> Result<String, FormatError> {
     let mut text = String::new();
     for line in BufReader::new(reader).lines() {
-        let line = line.map_err(|e| format!("応答が途中で切れました: {e}"))?;
+        let line = line.map_err(|e| crate::format::transport_error(&e))?;
+        if started.elapsed() > crate::format::CEILING {
+            return Err(FormatError::Timeout);
+        }
         let Some(data) = line.strip_prefix("data:") else {
             continue;
         };
@@ -526,13 +542,17 @@ fn read_stream(reader: impl Read) -> Result<String, String> {
             "response.completed" => return Ok(text),
             "response.failed" => {
                 let code = event["response"]["error"]["code"].as_str().unwrap_or("");
-                return Err(explain_error(0, code));
+                return Err(classify(0, code));
             }
-            "response.incomplete" => return Err("応答が最後まで返りませんでした".into()),
+            "response.incomplete" => {
+                return Err(FormatError::Network(
+                    "応答が最後まで返りませんでした".into(),
+                ))
+            }
             _ => {}
         }
     }
-    Err("応答が途中で切れました".into())
+    Err(FormatError::Network("応答が途中で切れました".into()))
 }
 
 fn explain_error(http: u16, code: &str) -> String {
@@ -823,11 +843,24 @@ mod tests {
     #[test]
     fn stream_collects_deltas_until_completed() {
         let sse = "event: x\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"明日\"}\n\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"です。\"}\n\ndata: {\"type\":\"response.completed\"}\n";
-        assert_eq!(read_stream(sse.as_bytes()).unwrap(), "明日です。");
+        assert_eq!(
+            read_stream(sse.as_bytes(), std::time::Instant::now()).unwrap(),
+            "明日です。"
+        );
         let failed = "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"subscription_sharing_usage_limit_exceeded\"}}}\n";
-        assert!(read_stream(failed.as_bytes()).unwrap_err().contains("上限"));
+        let err = read_stream(failed.as_bytes(), std::time::Instant::now()).unwrap_err();
+        assert!(err.to_string().contains("上限"));
+        assert!(!err.retryable(), "利用上限はやり直しても通らない");
+        let busy = "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"subscription_sharing_usage_unavailable\"}}}\n";
+        assert!(
+            read_stream(busy.as_bytes(), std::time::Instant::now())
+                .unwrap_err()
+                .retryable(),
+            "一時的に使えないときはやり直す"
+        );
         assert!(read_stream(
-            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"a\"}\n".as_bytes()
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"a\"}\n".as_bytes(),
+            std::time::Instant::now()
         )
         .is_err());
     }

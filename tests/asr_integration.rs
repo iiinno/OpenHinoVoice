@@ -11,6 +11,8 @@ mod chatgpt;
 mod config;
 #[path = "../src/format.rs"]
 mod format;
+#[path = "../src/lexicon.rs"]
+mod lexicon;
 
 #[test]
 #[ignore = "needs the speech.cpp worker, a Haas model and a test WAV; run explicitly"]
@@ -25,7 +27,7 @@ fn wav_is_transcribed() {
         .and_then(|bytes| String::from_utf8(bytes).ok())
         .unwrap_or_else(|| std::env::var("JV_ASR_EXPECT").unwrap_or_default());
     let bytes = std::fs::read(&wav_path).expect("test WAV must be readable");
-    let wav = asr::parse_wav_pcm16(&bytes).expect("WAV must be 16bit PCM");
+    let wav = asr::parse_wav(&bytes).expect("WAV must be supported PCM");
 
     let cfg = config::load().expect("config must load");
     let exe = std::env::var("JV_SPEECH_EXE").unwrap_or(cfg.speech_exe.clone());
