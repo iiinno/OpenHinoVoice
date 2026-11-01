@@ -74,29 +74,35 @@ pub fn chunk_message(seq: u64, pcm_le: &[u8]) -> String {
     .to_string()
 }
 
-pub fn transcribe_message(sample_rate: u32, words: &str) -> String {
-    serde_json::json!({
+pub fn transcribe_message(sample_rate: u32, words: &str, protocol: u64) -> String {
+    let mut message = serde_json::json!({
         "type": "transcribe",
         "id": "r",
         "sample_rate": sample_rate,
-        "words": words,
-    })
-    .to_string()
+    });
+    // speech.cpp 0.10.0 renamed Haas's "words" option to "keywords".
+    // Omit the option entirely when empty; newer workers reject unknown fields
+    // even if their values are empty.
+    if !words.is_empty() {
+        let name = if protocol == 4 { "keywords" } else { "words" };
+        message[name] = serde_json::Value::String(words.to_string());
+    }
+    message.to_string()
 }
 
 // 0.9.4 installed on Windows uses protocol 3; current speech.cpp uses 4.
-fn parse_ready(line: &str) -> Result<bool, AsrError> {
+fn parse_ready(line: &str) -> Result<Option<u64>, AsrError> {
     let value: serde_json::Value =
         serde_json::from_str(line).map_err(|e| AsrError::Protocol(e.to_string()))?;
     match value["type"].as_str() {
         Some("ready") => match value["protocol"].as_u64() {
-            Some(3 | 4) => Ok(true),
+            Some(protocol @ (3 | 4)) => Ok(Some(protocol)),
             _ => Err(AsrError::Protocol(
                 "未対応の worker protocol です（3 または 4 が必要）".into(),
             )),
         },
         Some("fatal" | "error") => Err(worker_error(&value)),
-        _ => Ok(false),
+        _ => Ok(None),
     }
 }
 
@@ -248,6 +254,7 @@ pub struct Worker {
     lines: Receiver<String>,
     seq: u64,
     ready: bool,
+    protocol: u64,
 }
 
 impl Worker {
@@ -291,6 +298,7 @@ impl Worker {
             lines: rx,
             seq: 0,
             ready: false,
+            protocol: 0,
         })
     }
 
@@ -307,7 +315,8 @@ impl Worker {
             }
             match self.lines.recv_timeout(remain) {
                 Ok(line) => {
-                    if parse_ready(&line)? {
+                    if let Some(protocol) = parse_ready(&line)? {
+                        self.protocol = protocol;
                         self.ready = true;
                         return Ok(());
                     }
@@ -327,7 +336,10 @@ impl Worker {
         }
         match self.lines.try_recv() {
             Ok(line) => {
-                self.ready = parse_ready(&line)?;
+                if let Some(protocol) = parse_ready(&line)? {
+                    self.protocol = protocol;
+                    self.ready = true;
+                }
                 Ok(self.ready)
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => Ok(false),
@@ -348,7 +360,7 @@ impl Worker {
     }
 
     pub fn transcribe(&mut self, sample_rate: u32, words: &str) -> Result<bool, AsrError> {
-        let msg = transcribe_message(sample_rate, words);
+        let msg = transcribe_message(sample_rate, words, self.protocol);
         self.writer.enqueue(msg)
     }
 
@@ -621,8 +633,14 @@ mod tests {
 
     #[test]
     fn ready_checks_installed_and_current_protocols_and_startup_failure() {
-        assert!(parse_ready(r#"{"type":"ready","protocol":3,"version":"0.9.4"}"#).unwrap());
-        assert!(parse_ready(r#"{"type":"ready","protocol":4,"version":"0.10.0"}"#).unwrap());
+        assert_eq!(
+            parse_ready(r#"{"type":"ready","protocol":3,"version":"0.9.4"}"#).unwrap(),
+            Some(3)
+        );
+        assert_eq!(
+            parse_ready(r#"{"type":"ready","protocol":4,"version":"0.10.0"}"#).unwrap(),
+            Some(4)
+        );
         for line in [
             r#"{"type":"ready","protocol":2}"#,
             r#"{"type":"ready","protocol":5}"#,
@@ -634,7 +652,10 @@ mod tests {
             parse_ready(r#"{"type":"fatal","error":{"code":"model_file","message":"missing model"}}"#),
             Err(AsrError::Worker(message)) if message == "missing model"
         ));
-        assert!(!parse_ready(r#"{"type":"progress","done":0.5}"#).unwrap());
+        assert_eq!(
+            parse_ready(r#"{"type":"progress","done":0.5}"#).unwrap(),
+            None
+        );
         assert!(matches!(
             parse_ready("not json"),
             Err(AsrError::Protocol(_))
@@ -814,6 +835,7 @@ mod tests {
             lines,
             seq: 0,
             ready: true,
+            protocol: 3,
         };
         assert!(worker.send_chunk(&vec![1; 256 * 1024]).unwrap());
         std::thread::sleep(Duration::from_millis(100));
@@ -900,11 +922,20 @@ mod tests {
 
     #[test]
     fn transcribe_message_shape() {
-        let msg = transcribe_message(48000, "OpenHinoVoice");
-        let v: serde_json::Value = serde_json::from_str(&msg).unwrap();
-        assert_eq!(v["type"], "transcribe");
-        assert_eq!(v["sample_rate"], 48000);
-        assert_eq!(v["words"], "OpenHinoVoice");
+        for (protocol, option, absent) in [(3, "words", "keywords"), (4, "keywords", "words")] {
+            let msg = transcribe_message(48000, "OpenHinoVoice", protocol);
+            let v: serde_json::Value = serde_json::from_str(&msg).unwrap();
+            assert_eq!(v["type"], "transcribe");
+            assert_eq!(v["sample_rate"], 48000);
+            assert_eq!(v[option], "OpenHinoVoice");
+            assert!(v.get(absent).is_none());
+
+            // Empty hints must not send a stale field to the newer protocol.
+            let empty: serde_json::Value =
+                serde_json::from_str(&transcribe_message(48000, "", protocol)).unwrap();
+            assert!(empty.get("words").is_none());
+            assert!(empty.get("keywords").is_none());
+        }
     }
 
     #[test]
