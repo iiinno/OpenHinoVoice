@@ -1,16 +1,16 @@
-//! Send Unicode text to the original focused control without touching the clipboard.
-//!
-//! Clipboard contents may be delayed-rendered OLE data, images, file lists, HTML, or private
-//! formats that cannot be safely duplicated. Replacing even CF_UNICODETEXT and restoring it
-//! later can destroy that data or overwrite another application's clipboard update.
+//! Paste the final text at once, instead of simulating typing through the IME.
+//! Retain the previous clipboard data object and restore it after Ctrl+V.
 
 use std::ffi::c_void;
 use std::thread;
 use std::time::Duration;
 use windows::Win32::Foundation::HWND;
+use windows::Win32::System::Ole::{
+    OleGetClipboard, OleInitialize, OleSetClipboard, OleUninitialize,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
-    KEYEVENTF_UNICODE, VIRTUAL_KEY,
+    VIRTUAL_KEY, VK_CONTROL, VK_V,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId, GUITHREADINFO,
@@ -25,6 +25,7 @@ extern "system" {
     fn CloseClipboard() -> i32;
     fn EmptyClipboard() -> i32;
     fn SetClipboardData(format: u32, mem: *mut c_void) -> *mut c_void;
+    fn GetClipboardSequenceNumber() -> u32;
 }
 
 #[link(name = "kernel32")]
@@ -117,6 +118,12 @@ pub struct PasteTarget {
     process_id: u32,
 }
 
+impl PasteTarget {
+    pub fn process_id(&self) -> u32 {
+        self.process_id
+    }
+}
+
 fn active_target() -> Result<PasteTarget, String> {
     unsafe {
         let foreground = GetForegroundWindow();
@@ -173,29 +180,27 @@ fn no_modifiers_pressed() -> bool {
         .all(|&key| unsafe { GetAsyncKeyState(key) as u16 & 0x8000 == 0 })
 }
 
-fn unicode_inputs(text: &str) -> Result<Vec<INPUT>, String> {
-    if text.contains('\0') {
-        return Err("入力文字列に NUL 文字が含まれています".into());
-    }
-    let units: Vec<u16> = text.encode_utf16().collect();
-    let mut inputs = Vec::with_capacity(units.len().saturating_mul(2));
-    for unit in units {
-        for flags in [KEYEVENTF_UNICODE, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP] {
-            inputs.push(INPUT {
-                r#type: INPUT_KEYBOARD,
-                Anonymous: INPUT_0 {
-                    ki: KEYBDINPUT {
-                        wVk: VIRTUAL_KEY(0),
-                        wScan: unit,
-                        dwFlags: flags,
-                        time: 0,
-                        dwExtraInfo: 0,
-                    },
+fn paste_shortcut() -> [INPUT; 4] {
+    let key = |key: VIRTUAL_KEY, up| INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: key,
+                dwFlags: if up {
+                    KEYEVENTF_KEYUP
+                } else {
+                    Default::default()
                 },
-            });
-        }
-    }
-    Ok(inputs)
+                ..Default::default()
+            },
+        },
+    };
+    [
+        key(VK_CONTROL, false),
+        key(VK_V, false),
+        key(VK_V, true),
+        key(VK_CONTROL, true),
+    ]
 }
 
 fn validate_injected_count(expected: usize, inserted: u32) -> Result<(), String> {
@@ -208,33 +213,77 @@ fn validate_injected_count(expected: usize, inserted: u32) -> Result<(), String>
     }
 }
 
-/// Deliver text without modifying any clipboard format or racing another clipboard owner.
-/// A control that accepts only Ctrl+V and not Unicode keyboard input will not support this path.
-pub fn paste_text(text: &str, target: PasteTarget) -> Result<(), String> {
-    let inputs = unicode_inputs(text)?;
-    if inputs.is_empty() {
+/// A small, one-time clipboard transaction. Ctrl+V is a shortcut, not character injection.
+/// Preserve all formats through IDataObject, and never overwrite a newer external clipboard.
+pub fn paste_text(text: &str, target: PasteTarget, owner: HWND) -> Result<(), String> {
+    if text.is_empty() {
         return Ok(());
     }
-    if inputs.len() > u32::MAX as usize {
-        return Err("入力文字列が長すぎます".into());
+    if text.contains('\0') {
+        return Err("入力文字列に NUL が含まれています".into());
     }
     check_target(target)?;
     if !no_modifiers_pressed() {
         return Err("修飾キーが押されているため、文字入力を中止しました".into());
     }
-    // A single SendInput inserts the sequence atomically into the keyboard input stream.
-    // Partial delivery must be reported, never blindly retried (which duplicates text).
-    let inserted = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
-    if (inserted as usize) < inputs.len() && inserted % 2 != 0 {
-        // If the last delivered event was key-down, try to release that VK_PACKET key.
-        let _ = unsafe {
-            SendInput(
-                &inputs[inserted as usize..inserted as usize + 1],
-                std::mem::size_of::<INPUT>() as i32,
-            )
-        };
+
+    // This function runs on the window's UI thread (STA). OleInitialize may
+    // fail if the thread was initialized as MTA; in that case do not touch the clipboard.
+    unsafe { OleInitialize(None) }
+        .map_err(|e| format!("クリップボードの初期化に失敗しました: {e}"))?;
+    struct OleScope;
+    impl Drop for OleScope {
+        fn drop(&mut self) {
+            unsafe { OleUninitialize() }
+        }
     }
-    validate_injected_count(inputs.len(), inserted)
+    let _ole = OleScope;
+    let previous = unsafe { OleGetClipboard() }
+        .map_err(|e| format!("既存のクリップボードを保持できません: {e}"))?;
+
+    // Bail out rather than racing with another copy operation.
+    let before = unsafe { GetClipboardSequenceNumber() };
+    check_target(target)?;
+    if !no_modifiers_pressed() {
+        return Err("修飾キーが押されているため、貼り付けを中止しました".into());
+    }
+    if before != unsafe { GetClipboardSequenceNumber() } {
+        return Err("クリップボードが他のアプリで更新されました".into());
+    }
+    let set_result = copy_text_to_clipboard(text, owner);
+    let our_sequence = unsafe { GetClipboardSequenceNumber() };
+    let result = set_result.and_then(|_| {
+        check_target(target)?;
+        if !no_modifiers_pressed() {
+            return Err("修飾キーが押されているため、貼り付けを中止しました".into());
+        }
+        if our_sequence != 0 && our_sequence != unsafe { GetClipboardSequenceNumber() } {
+            return Err("貼り付け前にクリップボードが別のアプリで変更されました".into());
+        }
+        let keys = paste_shortcut();
+        let inserted = unsafe { SendInput(&keys, std::mem::size_of::<INPUT>() as i32) };
+        // Release Ctrl even after a partially accepted shortcut.
+        if inserted != keys.len() as u32 {
+            let _ = unsafe { SendInput(&keys[3..], std::mem::size_of::<INPUT>() as i32) };
+        }
+        validate_injected_count(keys.len(), inserted)?;
+        // The destination processes the shortcut asynchronously. Don't restore
+        // the clipboard until it has had an opportunity to read the text.
+        thread::sleep(Duration::from_millis(250));
+        Ok(())
+    });
+    // External copy during paste takes precedence; never overwrite it.
+    if our_sequence != 0
+        && our_sequence != before
+        && our_sequence == unsafe { GetClipboardSequenceNumber() }
+    {
+        if let Err(e) = unsafe { OleSetClipboard(&previous) } {
+            // Pasting might already have succeeded. Do not report it as a paste
+            // failure and invite a duplicate manual recovery.
+            eprintln!("元のクリップボードを復元できませんでした: {e}");
+        }
+    }
+    result
 }
 
 #[cfg(test)]
@@ -253,6 +302,7 @@ mod tests {
     #[test]
     fn focus_and_window_changes_are_rejected() {
         let t = target();
+        assert_eq!(t.process_id(), 103);
         assert!(unchanged_target(t, t));
         for other in [
             PasteTarget {
@@ -274,30 +324,20 @@ mod tests {
     }
 
     #[test]
-    fn unicode_input_handles_japanese_and_surrogate_pairs() {
-        let inputs = unicode_inputs("漢字😀").unwrap();
-        assert_eq!(inputs.len(), 8);
-        assert!(inputs.iter().all(|input| input.r#type == INPUT_KEYBOARD));
-        let (pairs, remainder) = inputs.as_chunks::<2>();
-        assert!(remainder.is_empty());
-        let units: Vec<_> = pairs
+    fn paste_sends_shortcut_not_text_events() {
+        let keys = paste_shortcut();
+        let vkeys: Vec<_> = keys
             .iter()
-            .map(|pair| unsafe { pair[0].Anonymous.ki.wScan })
+            .map(|key| unsafe { key.Anonymous.ki.wVk })
             .collect();
-        assert_eq!(units, "漢字😀".encode_utf16().collect::<Vec<_>>());
-        for pair in pairs {
-            assert_eq!(unsafe { pair[0].Anonymous.ki.dwFlags }, KEYEVENTF_UNICODE);
-            assert_eq!(
-                unsafe { pair[1].Anonymous.ki.dwFlags },
-                KEYEVENTF_UNICODE | KEYEVENTF_KEYUP
-            );
-        }
+        assert_eq!(vkeys, vec![VK_CONTROL, VK_V, VK_V, VK_CONTROL]);
+        assert_eq!(keys.len(), 4);
     }
 
     #[test]
     fn empty_and_nul_are_handled_without_input() {
-        assert!(unicode_inputs("").unwrap().is_empty());
-        assert!(unicode_inputs("a\0b").is_err());
+        assert!(clipboard_utf16("").len() == 1);
+        assert_eq!(clipboard_utf16("a\0b").len(), 4);
     }
 
     #[test]

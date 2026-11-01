@@ -1,7 +1,8 @@
 use base64::Engine;
 use std::collections::VecDeque;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::windows::process::CommandExt;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{channel, sync_channel, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::time::{Duration, Instant};
@@ -16,6 +17,10 @@ const TRANSCRIPTION_TIMEOUT: Duration = Duration::from_secs(90);
 // slow pipe may hold the UI loop in a synchronous stdin write.
 const WRITE_QUEUE_CAPACITY: usize = 64;
 const WRITE_TIMEOUT: Duration = Duration::from_secs(8);
+const MAX_FILE_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_FILE_SECONDS: u64 = 10 * 60;
+const FILE_FEED_TIMEOUT: Duration = Duration::from_secs(90);
+const FILE_PCM_CHUNK_BYTES: usize = 128 * 1024;
 
 pub fn timeout_phase(
     session_started: Instant,
@@ -408,64 +413,119 @@ impl Worker {
     }
 }
 
-#[allow(dead_code)] // Used by the explicit ASR WAV integration test.
 pub struct WavData {
     pub sample_rate: u32,
     pub pcm_le: Vec<u8>,
 }
 
-#[allow(dead_code)] // Used by the explicit ASR WAV integration test.
-pub fn parse_wav_pcm16(bytes: &[u8]) -> Result<WavData, String> {
-    if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+/// Decodes uncompressed RIFF/WAVE PCM16 or IEEE float32 into mono PCM16.
+/// Unsupported/compressed formats are rejected instead of fed to speech.cpp.
+pub fn parse_wav(bytes: &[u8]) -> Result<WavData, String> {
+    if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
         return Err("WAV ヘッダが不正です".into());
     }
+    if bytes.len() as u64 > MAX_FILE_BYTES {
+        return Err("音声ファイルは128 MiB以下にしてください".into());
+    }
+    let riff_size = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    let riff_end = riff_size.checked_add(8).ok_or("WAV サイズが不正です")?;
+    if riff_size < 4 || riff_end > bytes.len() {
+        return Err("WAV のデータが途中で切れています".into());
+    }
     let mut pos = 12usize;
-    let mut sample_rate = 0u32;
-    let mut channels = 1u16;
-    let mut bits = 0u16;
+    let mut format: Option<(u16, u16, u32, usize)> = None;
     let mut data: Option<&[u8]> = None;
-    while pos + 8 <= bytes.len() {
+    while pos + 8 <= riff_end {
         let id = &bytes[pos..pos + 4];
-        let size = u32::from_le_bytes([
-            bytes[pos + 4],
-            bytes[pos + 5],
-            bytes[pos + 6],
-            bytes[pos + 7],
-        ]) as usize;
+        let size = u32::from_le_bytes(bytes[pos + 4..pos + 8].try_into().unwrap()) as usize;
         let body_start = pos + 8;
-        let body_end = (body_start + size).min(bytes.len());
+        let body_end = body_start
+            .checked_add(size)
+            .ok_or("WAV チャンクの長さが不正です")?;
+        if body_end > riff_end {
+            return Err("WAV チャンクが途中で切れています".into());
+        }
         if id == b"fmt " {
-            if body_end - body_start >= 16 {
-                channels = u16::from_le_bytes([bytes[body_start + 2], bytes[body_start + 3]]);
-                sample_rate = u32::from_le_bytes([
-                    bytes[body_start + 4],
-                    bytes[body_start + 5],
-                    bytes[body_start + 6],
-                    bytes[body_start + 7],
-                ]);
-                bits = u16::from_le_bytes([bytes[body_start + 14], bytes[body_start + 15]]);
+            if size < 16 {
+                return Err("WAV fmt チャンクが短すぎます".into());
             }
-        } else if id == b"data" {
+            let fmt = &bytes[body_start..body_end];
+            let mut kind = u16::from_le_bytes(fmt[0..2].try_into().unwrap());
+            let channels = u16::from_le_bytes(fmt[2..4].try_into().unwrap());
+            let sample_rate = u32::from_le_bytes(fmt[4..8].try_into().unwrap());
+            let block_align = u16::from_le_bytes(fmt[12..14].try_into().unwrap()) as usize;
+            let bits = u16::from_le_bytes(fmt[14..16].try_into().unwrap());
+            if kind == 0xfffe {
+                // WAVE_FORMAT_EXTENSIBLE: only standard PCM/IEEE float GUIDs.
+                if fmt.len() < 40 || u16::from_le_bytes(fmt[16..18].try_into().unwrap()) < 22 {
+                    return Err("WAV 拡張フォーマットが不正です".into());
+                }
+                let valid_bits = u16::from_le_bytes(fmt[18..20].try_into().unwrap());
+                if valid_bits != 0 && valid_bits != bits {
+                    return Err("WAV の有効ビット数に対応していません".into());
+                }
+                let guid = &fmt[24..40];
+                if guid[2..] != [0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71] {
+                    return Err("WAV 拡張フォーマットの種類に対応していません".into());
+                }
+                kind = u16::from_le_bytes(guid[0..2].try_into().unwrap());
+            }
+            if !matches!((kind, bits), (1, 16) | (3, 32)) {
+                return Err("WAV は PCM16 または float32 のみ対応です".into());
+            }
+            if !(1..=8).contains(&channels) || !(8000..=192000).contains(&sample_rate) {
+                return Err("WAV のチャンネル数またはサンプルレートが不正です".into());
+            }
+            let expected_align = channels as usize * (bits as usize / 8);
+            if block_align != expected_align {
+                return Err("WAV のブロックサイズが不正です".into());
+            }
+            format = Some((kind, channels, sample_rate, block_align));
+        } else if id == b"data" && data.is_none() {
             data = Some(&bytes[body_start..body_end]);
         }
-        pos = body_start + size + (size % 2);
+        pos = body_end
+            .checked_add(size % 2)
+            .ok_or("WAV チャンクの長さが不正です")?;
+        if pos > riff_end {
+            return Err("WAV パディングが不足しています".into());
+        }
     }
-    if bits != 16 {
-        return Err(format!("16bit PCM のみ対応です (bits={bits})"));
+    if pos != riff_end {
+        return Err("WAV チャンクヘッダが不完全です".into());
     }
+    let (kind, channels, sample_rate, block_align) = format.ok_or("fmt チャンクがありません")?;
     let raw = data.ok_or("data チャンクがありません")?;
-    let pcm = if channels <= 1 {
+    if raw.is_empty() || raw.len() % block_align != 0 {
+        return Err("WAV の音声データ長が不正です".into());
+    }
+    let frames = raw.len() / block_align;
+    if (frames as u128) > (sample_rate as u128 * MAX_FILE_SECONDS as u128) {
+        return Err("音声ファイルは10分以内にしてください".into());
+    }
+    let pcm = if kind == 1 && channels == 1 {
         raw.to_vec()
     } else {
-        let mut mono = Vec::with_capacity(raw.len() / channels as usize);
-        for frame in raw.chunks_exact(2 * channels as usize) {
-            let mut sum: i32 = 0;
-            for ch in 0..channels as usize {
-                let s = i16::from_le_bytes([frame[ch * 2], frame[ch * 2 + 1]]);
-                sum += s as i32;
-            }
-            let avg = (sum / channels as i32) as i16;
-            mono.extend_from_slice(&avg.to_le_bytes());
+        let mut mono = Vec::with_capacity(frames * 2);
+        for frame in raw.chunks_exact(block_align) {
+            let sample = if kind == 1 {
+                let mut sum = 0i64;
+                for sample in frame.as_chunks::<2>().0 {
+                    sum += i16::from_le_bytes([sample[0], sample[1]]) as i64;
+                }
+                (sum / channels as i64) as i16
+            } else {
+                let mut sum = 0.0f64;
+                for sample in frame.as_chunks::<4>().0 {
+                    let value = f32::from_le_bytes(*sample);
+                    if value.is_finite() {
+                        sum += value as f64;
+                    }
+                }
+                let mono = (sum / channels as f64) as f32;
+                (mono.clamp(-1.0, 1.0) * i16::MAX as f32) as i16
+            };
+            mono.extend_from_slice(&sample.to_le_bytes());
         }
         mono
     };
@@ -473,6 +533,85 @@ pub fn parse_wav_pcm16(bytes: &[u8]) -> Result<WavData, String> {
         sample_rate,
         pcm_le: pcm,
     })
+}
+
+/// Starts file transcription on a dedicated thread; receiving the result is
+/// nonblocking for the settings window. Only the recognized raw text is sent.
+pub fn transcribe_file_async(
+    path: PathBuf,
+    speech_exe: String,
+    model: String,
+    words: String,
+) -> Receiver<Result<String, String>> {
+    let (sender, receiver) = channel();
+    std::thread::spawn(move || {
+        let result = transcribe_file(&path, &speech_exe, &model, &words);
+        let _ = sender.send(result);
+    });
+    receiver
+}
+
+/// Synchronous engine for background jobs and headless callers. Do not call
+/// this from the UI thread: reading WAV and waiting for speech.cpp take time.
+pub fn transcribe_file(
+    path: &Path,
+    speech_exe: &str,
+    model: &str,
+    words: &str,
+) -> Result<String, String> {
+    let file = std::fs::File::open(path).map_err(|e| format!("音声ファイルを開けません: {e}"))?;
+    if file.metadata().map_err(|e| e.to_string())?.len() > MAX_FILE_BYTES {
+        return Err("音声ファイルは128 MiB以下にしてください".into());
+    }
+    // Also enforce the bound if the file grows between metadata and read.
+    let mut bytes = Vec::new();
+    file.take(MAX_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("音声ファイルを読めません: {e}"))?;
+    let wav = parse_wav(&bytes)?;
+    drop(bytes);
+
+    let mut worker = Worker::spawn(speech_exe, model).map_err(|e| e.to_string())?;
+    let result = (|| -> Result<String, AsrError> {
+        worker.wait_ready(READY_TIMEOUT)?;
+        let feed_deadline = Instant::now() + FILE_FEED_TIMEOUT;
+        for chunk in wav.pcm_le.chunks(FILE_PCM_CHUNK_BYTES) {
+            loop {
+                worker.poll_writer()?;
+                if Instant::now() >= feed_deadline {
+                    return Err(AsrError::Timeout("音声送信".into()));
+                }
+                if worker.send_chunk(chunk)? {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        loop {
+            worker.poll_writer()?;
+            if Instant::now() >= feed_deadline {
+                return Err(AsrError::Timeout("音声送信".into()));
+            }
+            if worker.transcribe(wav.sample_rate, words)? {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let end_deadline = Instant::now() + TRANSCRIPTION_TIMEOUT;
+        loop {
+            worker.poll_writer()?;
+            if let Some(result) = worker.poll_end() {
+                return result;
+            }
+            if Instant::now() >= end_deadline {
+                return Err(AsrError::Timeout("end".into()));
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    })();
+    worker.shutdown();
+    result.map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -789,8 +928,89 @@ mod tests {
         for s in samples {
             wav.extend_from_slice(&s.to_le_bytes());
         }
-        let parsed = parse_wav_pcm16(&wav).unwrap();
+        let parsed = parse_wav(&wav).unwrap();
         assert_eq!(parsed.sample_rate, 16000);
         assert_eq!(parsed.pcm_le.len(), 8);
+    }
+
+    fn wav_with_format(kind: u16, bits: u16, channels: u16, samples: &[u8]) -> Vec<u8> {
+        let mut wav = Vec::new();
+        let aligned = channels * (bits / 8);
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + samples.len() as u32).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&kind.to_le_bytes());
+        wav.extend_from_slice(&channels.to_le_bytes());
+        wav.extend_from_slice(&16000u32.to_le_bytes());
+        wav.extend_from_slice(&(16000 * aligned as u32).to_le_bytes());
+        wav.extend_from_slice(&aligned.to_le_bytes());
+        wav.extend_from_slice(&bits.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&(samples.len() as u32).to_le_bytes());
+        wav.extend_from_slice(samples);
+        wav
+    }
+
+    #[test]
+    fn wav_float32_stereo_is_converted_to_mono_pcm16() {
+        let mut samples = Vec::new();
+        for value in [1.0f32, -0.5, -1.0, -1.0] {
+            samples.extend_from_slice(&value.to_le_bytes());
+        }
+        let wav = wav_with_format(3, 32, 2, &samples);
+        let result = parse_wav(&wav).unwrap();
+        assert_eq!(result.sample_rate, 16000);
+        let mono: Vec<_> = result
+            .pcm_le
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| i16::from_le_bytes(*b))
+            .collect();
+        assert_eq!(mono, [8191, -32767]);
+    }
+
+    #[test]
+    fn wav_extensible_pcm16_is_accepted() {
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&62u32.to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&40u32.to_le_bytes());
+        wav.extend_from_slice(&0xfffeu16.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&16000u32.to_le_bytes());
+        wav.extend_from_slice(&32000u32.to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(&22u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(&0u32.to_le_bytes());
+        wav.extend_from_slice(&[
+            1, 0, 0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71,
+        ]);
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&2u32.to_le_bytes());
+        wav.extend_from_slice(&123i16.to_le_bytes());
+        assert_eq!(
+            parse_wav(&wav).unwrap().pcm_le,
+            123i16.to_le_bytes().to_vec()
+        );
+    }
+
+    #[test]
+    fn wav_rejects_truncation_compression_and_broken_frames() {
+        let samples = [0, 0, 1, 0];
+        let valid = wav_with_format(1, 16, 1, &samples);
+        let mut truncated = valid.clone();
+        truncated.pop();
+        assert!(parse_wav(&truncated).is_err());
+        assert!(parse_wav(&wav_with_format(6, 16, 1, &samples)).is_err());
+        assert!(parse_wav(&wav_with_format(1, 16, 2, &[0, 0])).is_err());
+        let mut corrupted = valid;
+        // A claimed chunk larger than its RIFF boundary must not be clamped.
+        corrupted[40..44].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(parse_wav(&corrupted).is_err());
     }
 }

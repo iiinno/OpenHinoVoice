@@ -210,9 +210,7 @@ pub fn format(cfg: &FormatConfig, raw: &str) -> Result<String, FormatError> {
         return Err(FormatError::BadResponse("書き起こしが空です".into()));
     }
     // 旧設定の既定プロンプトに残った <text> の説明も実際のメッセージ構造へ合わせる。
-    let prompt = cfg
-        .prompt
-        .replace("<text> 内の文", "次のユーザーメッセージの文");
+    let prompt = crate::config::current_prompt(&cfg.prompt);
     let timeout = wait_of(cfg);
     let text = match cfg.provider.as_str() {
         "chatgpt" => {
@@ -291,7 +289,7 @@ fn chat_completions(
     let mut body = serde_json::json!({
         "model": model,
         // 推論が止まらないモデルで延々と出力されるのを防ぐ上限。整形は入力とほぼ同じ長さになる
-        "max_tokens": raw_chars * 2 + 64,
+        "max_tokens": raw_chars.saturating_mul(4).saturating_add(256).min(16_384),
         // 少しずつ受け取り、途中で止まったかどうかで打ち切りを判断する
         "stream": true,
         "messages": [
@@ -401,7 +399,7 @@ pub fn list_models(base_url: &str, api_key: &str) -> Result<Vec<(String, String)
 // 書き起こしの内容に答えてしまった応答や、推論だけで本文が空の応答を弾く
 fn plausible_length(raw_chars: usize, out_chars: usize) -> bool {
     let (raw, out) = (raw_chars as f64, out_chars as f64);
-    out >= raw * 0.4 && out <= raw * 1.3 + 8.0
+    out >= raw * 0.15 && out <= raw * 1.8 + 32.0
 }
 
 #[cfg(test)]
@@ -590,7 +588,7 @@ mod tests {
                 req.contains("\"reasoning_effort\":\"minimal\""),
                 "request body: {req}"
             );
-            assert!(req.contains("\"max_tokens\":74"), "request body: {req}");
+            assert!(req.contains("\"max_tokens\":276"), "request body: {req}");
             (
                 200,
                 r#"{"choices":[{"message":{"content":"hello"}}]}"#.to_string(),
@@ -616,6 +614,25 @@ mod tests {
             format(&cfg, "これは何ですか"),
             Err(FormatError::BadResponse(_))
         ));
+    }
+
+    #[test]
+    fn substantial_cleanup_is_allowed_to_be_much_shorter() {
+        let url = serve_once(|_| {
+            (
+                200,
+                serde_json::json!({"choices": [{"message": {"content": "明日です。"}}]})
+                    .to_string(),
+            )
+        });
+        let cfg = cfg_for(url);
+        assert_eq!(
+            format(
+                &cfg,
+                "えーと、明日、いや、明日です。明日、明日、そう、明日です。"
+            ),
+            Ok("明日です。".into())
+        );
     }
 
     #[test]

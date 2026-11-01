@@ -1,6 +1,20 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::{Arc, Mutex};
 
+/// Returns input device names suitable for storing in the user's settings.
+/// A name is stable across reordering, but identical Windows device names
+/// cannot be distinguished; the first matching input is used in that case.
+pub fn input_devices() -> Vec<String> {
+    let host = cpal::default_host();
+    let Ok(devices) = host.input_devices() else {
+        return Vec::new();
+    };
+    let mut names: Vec<_> = devices.filter_map(|device| device.name().ok()).collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
 pub fn f32_to_i16(sample: f32) -> i16 {
     let clamped = sample.clamp(-1.0, 1.0);
     (clamped * i16::MAX as f32) as i16
@@ -23,11 +37,35 @@ pub struct Recorder {
 }
 
 impl Recorder {
+    #[allow(dead_code)] // Kept for standalone integrations that use the default device.
     pub fn start() -> Result<Recorder, String> {
+        Self::start_with_device(None)
+    }
+
+    /// Starts recording from the saved device name, or the system default if
+    /// that device was unplugged, cannot be opened, or no name was configured.
+    pub fn start_with_device(name: Option<&str>) -> Result<Recorder, String> {
         let host = cpal::default_host();
+        let chosen = name.filter(|name| !name.is_empty()).and_then(|name| {
+            host.input_devices().ok()?.find(|device| {
+                device
+                    .name()
+                    .as_deref()
+                    .is_ok_and(|device_name| device_name == name)
+            })
+        });
+        if let Some(device) = chosen {
+            if let Ok(recorder) = Self::start_device(device) {
+                return Ok(recorder);
+            }
+        }
         let device = host
             .default_input_device()
             .ok_or_else(|| "既定のマイクが見つかりません".to_string())?;
+        Self::start_device(device)
+    }
+
+    fn start_device(device: cpal::Device) -> Result<Recorder, String> {
         let config = device
             .default_input_config()
             .map_err(|e| format!("マイクの設定を取得できません: {e}"))?;

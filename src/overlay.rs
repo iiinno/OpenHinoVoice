@@ -232,6 +232,11 @@ pub fn hide() {
     }
 }
 
+/// フェードアウト中も更新が必要なので、完全に非表示になってからアイドル待機する。
+pub fn is_visible() -> bool {
+    lock().visible
+}
+
 /// 録音中のマイクの音を渡す。表示の棒の高さに使う
 pub fn push_level(samples: &[f32]) {
     if samples.is_empty() {

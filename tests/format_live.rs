@@ -9,6 +9,8 @@ mod chatgpt;
 mod config;
 #[path = "../src/format.rs"]
 mod format;
+#[path = "../src/lexicon.rs"]
+mod lexicon;
 
 #[test]
 #[ignore = "calls the real formatting API with the key in the user config; run explicitly"]

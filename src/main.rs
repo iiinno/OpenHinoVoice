@@ -4,8 +4,11 @@ mod asr;
 mod audio;
 mod chatgpt;
 mod config;
+mod context;
 mod format;
+mod history;
 mod hook;
+mod lexicon;
 mod overlay;
 mod paste;
 mod settings;
@@ -102,6 +105,9 @@ struct Session {
     worker: Option<Worker>,
     recorder: Option<Recorder>,
     paste_target: Option<paste::PasteTarget>,
+    input_app: Option<String>,
+    recovery_id: Option<u64>,
+    recovery_write_failed: bool,
     pending_pcm: VecDeque<Vec<u8>>,
     recorded_pcm_bytes: usize,
     sample_rate: u32,
@@ -119,6 +125,9 @@ impl Session {
             worker: None,
             recorder: None,
             paste_target: None,
+            input_app: None,
+            recovery_id: None,
+            recovery_write_failed: false,
             pending_pcm: VecDeque::new(),
             recorded_pcm_bytes: 0,
             sample_rate: 16000,
@@ -210,7 +219,10 @@ impl App {
             Action::StartSession => {
                 self.session = Session::new();
                 match paste::capture_target() {
-                    Ok(target) => self.session.paste_target = Some(target),
+                    Ok(target) => {
+                        self.session.input_app = context::process_name(target.process_id());
+                        self.session.paste_target = Some(target);
+                    }
                     Err(e) => {
                         self.fail_session(e);
                         return false;
@@ -225,7 +237,7 @@ impl App {
                         return false;
                     }
                 }
-                match Recorder::start() {
+                match Recorder::start_with_device(Some(self.cfg.microphone.as_str())) {
                     Ok(recorder) => {
                         self.session.sample_rate = recorder.sample_rate;
                         self.session.recorder = Some(recorder);
@@ -262,18 +274,30 @@ impl App {
                 self.teardown_session();
             }
             Action::CallFormat { raw } => {
-                let cfg = self.cfg.format.clone();
+                let mut cfg = self.cfg.format.clone();
+                cfg.prompt = lexicon::prompt_with_terms(
+                    &cfg.prompt,
+                    &self.cfg.terms,
+                    self.session.input_app.as_deref(),
+                );
                 let tx = self.format_tx.clone();
                 let generation = self.format_generation.start();
                 let cancel = self.format_generation.cancel_flag();
                 std::thread::spawn(move || {
                     let cancelled = || cancel.load(Ordering::SeqCst);
+                    let started = Instant::now();
                     let result = format::format_with_retry(&cfg, &raw, &cancelled, |attempt| {
                         let _ = tx.send(FormatOutcome::Retrying {
                             generation,
                             attempt,
                         });
                     });
+                    if !cancelled() {
+                        // 履歴の保存が失敗しても、完成した整形テキストは失わない。
+                        if let Err(e) = history::record(&cfg, &raw, &result, started.elapsed()) {
+                            eprintln!("整形履歴を書き込めません: {e}");
+                        }
+                    }
                     let outcome = match result {
                         Ok(text) => FormatOutcome::Done { generation, text },
                         Err(e) => FormatOutcome::Failed {
@@ -285,15 +309,43 @@ impl App {
                 });
             }
             Action::Paste { text } => {
+                // Only user-specified exact aliases are replaced, even if AI is off.
+                let text = lexicon::replace_explicit(&text, &self.cfg.terms);
+                if let Some(id) = self.session.recovery_id {
+                    if let Err(e) = history::update_formatted(id, &text) {
+                        eprintln!("復旧履歴の更新に失敗しました: {e}");
+                    }
+                }
                 let result = self
                     .session
                     .paste_target
                     .take()
                     .ok_or_else(|| "録音開始時の入力先が不明です".to_string())
-                    .and_then(|target| paste::paste_text(&text, target));
+                    .and_then(|target| paste::paste_text(&text, target, overlay::hwnd()));
                 match result {
-                    Ok(()) => self.sfx(Sound::Done),
+                    Ok(()) => {
+                        if let Some(id) = self.session.recovery_id {
+                            if let Err(e) =
+                                history::update_paste_status(id, history::PasteStatus::ShortcutSent)
+                            {
+                                eprintln!("貼り付け履歴の更新に失敗しました: {e}");
+                            }
+                        }
+                        self.sfx(Sound::Done);
+                        if self.session.recovery_write_failed {
+                            self.show_overlay(OverlayKind::Error {
+                                message: "履歴保存に失敗。原文はトレイから回収できます".into(),
+                            });
+                        }
+                    }
                     Err(e) => {
+                        if let Some(id) = self.session.recovery_id {
+                            if let Err(err) =
+                                history::update_paste_status(id, history::PasteStatus::Failed)
+                            {
+                                eprintln!("失敗履歴の更新に失敗しました: {err}");
+                            }
+                        }
                         self.failed_pastes.push_back(text);
                         overlay::set_recovery_count(self.failed_pastes.len());
                         self.show_overlay(OverlayKind::Error {
@@ -501,7 +553,7 @@ impl App {
             && !self.session.transcribe_sent
         {
             let sample_rate = self.session.sample_rate;
-            let words = self.cfg.words.clone();
+            let words = lexicon::asr_hints(&self.cfg.words, &self.cfg.terms);
             let worker = self.session.worker.as_mut().unwrap();
             match worker.transcribe(sample_rate, &words) {
                 Ok(true) => {
@@ -530,6 +582,19 @@ impl App {
                 self.session.pending_pcm.clear();
                 match result {
                     Ok(text) => {
+                        self.session.recovery_id = match history::save_recognized_if_enabled(
+                            &text,
+                            self.cfg.recovery_history,
+                        ) {
+                            Ok(id) => id,
+                            Err(e) => {
+                                eprintln!("復旧履歴を書き込めません: {e}");
+                                self.session.recovery_write_failed = true;
+                                self.failed_pastes.push_back(text.clone());
+                                overlay::set_recovery_count(self.failed_pastes.len());
+                                None
+                            }
+                        };
                         let has_api_key = self.cfg.has_api_key();
                         self.dispatch(Event::AsrDone { text, has_api_key });
                     }
@@ -550,7 +615,14 @@ impl App {
             return;
         }
         match outcome {
-            FormatOutcome::Done { text, .. } => self.dispatch(Event::FormatDone { text }),
+            FormatOutcome::Done { text, .. } => {
+                if let Some(id) = self.session.recovery_id {
+                    if let Err(e) = history::update_formatted(id, &text) {
+                        eprintln!("整形結果の復旧履歴保存に失敗しました: {e}");
+                    }
+                }
+                self.dispatch(Event::FormatDone { text });
+            }
             FormatOutcome::Failed { reason, .. } => self.dispatch(Event::FormatFailed { reason }),
             FormatOutcome::Retrying { attempt, .. } => overlay::show(Mode::Busy {
                 label: "整形中".into(),
@@ -692,7 +764,12 @@ fn main() {
             }
         }
 
-        std::thread::sleep(Duration::from_millis(10));
+        // 何も表示していない待機中だけ起床回数を減らす。録音と表示の応答は従来どおり。
+        std::thread::sleep(idle_sleep_duration(
+            &app.state,
+            app.transient_until.is_some(),
+            overlay::is_visible(),
+        ));
     }
 
     app.teardown_session();
@@ -700,6 +777,14 @@ fn main() {
     overlay::remove_tray();
     let _ = LPARAM(0);
     let _ = WPARAM(0);
+}
+
+fn idle_sleep_duration(state: &State, transient: bool, overlay_visible: bool) -> Duration {
+    if matches!(state, State::Idle) && !transient && !overlay_visible {
+        Duration::from_millis(30)
+    } else {
+        Duration::from_millis(10)
+    }
 }
 
 fn config_modified() -> Option<std::time::SystemTime> {
@@ -711,6 +796,26 @@ fn config_modified() -> Option<std::time::SystemTime> {
 #[cfg(test)]
 mod flow_tests {
     use super::*;
+
+    #[test]
+    fn idle_loop_slows_only_when_nothing_is_on_screen() {
+        assert_eq!(
+            idle_sleep_duration(&State::Idle, false, false),
+            Duration::from_millis(30)
+        );
+        assert_eq!(
+            idle_sleep_duration(&State::Idle, true, false),
+            Duration::from_millis(10)
+        );
+        assert_eq!(
+            idle_sleep_duration(&State::Idle, false, true),
+            Duration::from_millis(10)
+        );
+        assert_eq!(
+            idle_sleep_duration(&State::Recording, false, false),
+            Duration::from_millis(10)
+        );
+    }
 
     #[test]
     fn recording_limits_keep_pcm_bounded_and_use_existing_stop_transition() {
