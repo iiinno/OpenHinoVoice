@@ -248,7 +248,7 @@ fn send_paste_command(target: PasteTarget) -> Result<(), String> {
             )
         };
         if delivered.0 == 0 {
-            return Err("入力先の貼り付けコマンドが処理されませんでした。再送せず、復旧テキストを保持します".into());
+            return Err("入力先の応答を確認できませんでした。貼り付いた可能性もあるため再送せず、復旧テキストを保持します".into());
         }
         return Ok(());
     }
