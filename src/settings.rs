@@ -111,21 +111,36 @@ fn take<T>(job: &mut Option<Job<T>>) -> Option<T> {
     result
 }
 
-/// 履歴を選んだあとユーザーが貼り付け先へ切り替える時間を確保する。
-/// 設定ウィンドウ自身が前面のままなら入力しない。失敗しても元データは履歴に残る。
-fn repaste_after_switch(text: String) -> Result<String, String> {
-    std::thread::sleep(Duration::from_secs(3));
+/// 設定画面上のボタンからのみ呼ぶ。実在する自プロセスのウィンドウを
+/// clipboard owner に渡す（HWND::default() では SetClipboardData が失敗する）。
+fn settings_clipboard_owner() -> Result<HWND, String> {
     let window = unsafe { GetForegroundWindow() };
+    check_settings_clipboard_owner(window)?;
+    Ok(window)
+}
+
+fn check_settings_clipboard_owner(window: HWND) -> Result<(), String> {
     if window.0.is_null() {
-        return Err("前面の入力先を取得できません".into());
+        return Err("設定ウィンドウを取得できません".into());
     }
     let mut pid = 0;
-    unsafe { GetWindowThreadProcessId(window, Some(&mut pid)) };
-    if pid == std::process::id() {
+    let thread = unsafe { GetWindowThreadProcessId(window, Some(&mut pid)) };
+    if thread == 0 || pid != std::process::id() {
+        return Err("設定画面が前面にありません。設定画面を選び直してください".into());
+    }
+    Ok(())
+}
+
+/// 3秒の待機は別スレッド、実際の貼り付けは設定画面のUIスレッド(STA)で行う。
+/// OLEクリップボードの参照を一時ワーカースレッドに残さないため。
+fn repaste_after_switch(text: &str, owner: HWND) -> Result<String, String> {
+    // 待機中に設定ウィンドウが閉じられていたら、安全に中断する。
+    check_settings_clipboard_owner(owner)?;
+    let target = paste::capture_target()?;
+    if target.process_id() == std::process::id() {
         return Err("貼り付け先のアプリに切り替えてください".into());
     }
-    let target = paste::capture_target()?;
-    paste::paste_text(&text, target, HWND::default())?;
+    paste::paste_text(text, target, owner)?;
     Ok("履歴のテキストを貼り付けました".into())
 }
 
@@ -148,7 +163,7 @@ struct Settings {
     file_job: Option<Job<Result<String, String>>>,
     file_result: Option<Result<String, String>>,
     history_message: Option<String>,
-    history_paste_job: Option<Job<Result<String, String>>>,
+    history_paste_job: Option<Job<(String, isize)>>,
     microphones: Vec<String>,
     history_entries: Vec<history::RecoveryEntry>,
     history_loaded: bool,
@@ -314,8 +329,9 @@ impl eframe::App for Settings {
                 normalized
             }));
         }
-        if let Some(r) = take(&mut self.history_paste_job) {
-            self.history_message = Some(match r {
+        if let Some((text, owner)) = take(&mut self.history_paste_job) {
+            let owner = HWND(owner as *mut std::ffi::c_void);
+            self.history_message = Some(match repaste_after_switch(&text, owner) {
                 Ok(message) => message,
                 Err(message) => format!("貼り直せませんでした: {message}。履歴は残っています"),
             });
@@ -930,13 +946,14 @@ impl Settings {
                     ui.label(RichText::new("認識完了").color(OK_GREEN));
                     ui.horizontal(|ui| {
                         if ui.button("全文をコピー").clicked() {
-                            self.message =
-                                match paste::copy_text_to_clipboard(text, HWND::default()) {
-                                    Ok(()) => {
-                                        Some((true, "文章をクリップボードにコピーしました".into()))
-                                    }
-                                    Err(e) => Some((false, format!("コピーに失敗: {e}"))),
-                                };
+                            self.message = match settings_clipboard_owner()
+                                .and_then(|owner| paste::copy_text_to_clipboard(text, owner))
+                            {
+                                Ok(()) => {
+                                    Some((true, "文章をクリップボードにコピーしました".into()))
+                                }
+                                Err(e) => Some((false, format!("コピーに失敗: {e}"))),
+                            };
                         }
                         hint(ui, "内容は下の欄から確認できます");
                     });
@@ -1038,11 +1055,14 @@ impl Settings {
                         entry.id, when, entry.paste_status
                     ));
                     if ui.small_button("コピー").clicked() {
-                        self.history_message =
-                            Some(match paste::copy_text_to_clipboard(text, HWND::default()) {
+                        self.history_message = Some(
+                            match settings_clipboard_owner()
+                                .and_then(|owner| paste::copy_text_to_clipboard(text, owner))
+                            {
                                 Ok(()) => "文章をクリップボードにコピーしました".into(),
                                 Err(e) => format!("コピーに失敗: {e}"),
-                            });
+                            },
+                        );
                     }
                     if ui
                         .add_enabled(
@@ -1052,9 +1072,20 @@ impl Settings {
                         .clicked()
                     {
                         let text = text.to_owned();
-                        self.history_message = Some("貼り付け先へ切り替えてください".into());
-                        self.history_paste_job =
-                            Some(spawn(ui.ctx(), move || repaste_after_switch(text)));
+                        match settings_clipboard_owner() {
+                            Ok(owner) => {
+                                self.history_message =
+                                    Some("貼り付け先へ切り替えてください".into());
+                                let owner = owner.0 as isize;
+                                self.history_paste_job = Some(spawn(ui.ctx(), move || {
+                                    std::thread::sleep(Duration::from_secs(3));
+                                    (text, owner)
+                                }));
+                            }
+                            Err(e) => {
+                                self.history_message = Some(format!("貼り直せませんでした: {e}"))
+                            }
+                        }
                     }
                 });
                 let preview: String = text.chars().take(170).collect();
@@ -1122,5 +1153,40 @@ impl Settings {
         );
         hint(ui, "効果音: earshot(MIT)で作成");
         hint(ui, "画面: egui(MIT / Apache-2.0)");
+    }
+}
+
+#[cfg(test)]
+mod clipboard_tests {
+    use super::*;
+    use windows::core::w;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_POPUP,
+    };
+
+    #[test]
+    fn clipboard_owner_requires_a_live_window_in_this_process() {
+        assert!(check_settings_clipboard_owner(HWND::default()).is_err());
+        // The built-in STATIC class allows a hidden test window without a GUI event loop.
+        let owner = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                w!("STATIC"),
+                w!("OpenHinoVoice clipboard owner test"),
+                WS_POPUP,
+                0,
+                0,
+                1,
+                1,
+                None,
+                None,
+                None,
+                None,
+            )
+        }
+        .expect("create a hidden owner window");
+        assert!(check_settings_clipboard_owner(owner).is_ok());
+        unsafe { DestroyWindow(owner) }.expect("destroy the owner window");
+        assert!(check_settings_clipboard_owner(owner).is_err());
     }
 }
