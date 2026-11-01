@@ -1,6 +1,6 @@
 [package]
 name = "openhinovoice"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 license = "MIT"
 description = "Japanese voice input for Windows with local speech recognition"
