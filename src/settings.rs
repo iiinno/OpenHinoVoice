@@ -820,11 +820,15 @@ impl Settings {
             ui.label("語彙ヒント");
             ui.vertical(|ui| {
                 ui.add(
-                    egui::TextEdit::singleline(&mut self.cfg.words)
-                        .hint_text("共有フォルダ,OpenHinoVoice")
+                    egui::TextEdit::multiline(&mut self.cfg.words)
+                        .desired_rows(3)
+                        .hint_text("共有フォルダ\nOpenHinoVoice")
                         .desired_width(340.0),
                 );
-                hint(ui, "聞き間違えやすい言葉をカンマで区切って並べます");
+                hint(
+                    ui,
+                    "1行に1語。読みを指定する場合は Haas=ハース,ハウス のようにカンマで区切ります",
+                );
             });
             ui.end_row();
 
