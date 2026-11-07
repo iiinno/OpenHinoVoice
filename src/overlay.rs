@@ -58,9 +58,22 @@ pub enum Tone {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Mode {
-    Recording { started: Instant },
-    Busy { label: String, hint: Option<String> },
-    Notice { tone: Tone, text: String },
+    Recording {
+        started: Instant,
+    },
+    /// Edit モードの録音。「編集」と選んだ文の先頭を出す
+    Editing {
+        started: Instant,
+        head: String,
+    },
+    Busy {
+        label: String,
+        hint: Option<String>,
+    },
+    Notice {
+        tone: Tone,
+        text: String,
+    },
 }
 
 const FADE_IN: Duration = Duration::from_millis(140);
@@ -795,6 +808,19 @@ unsafe fn present(
                 None,
             )
         }
+        Mode::Editing { started, head } => {
+            let secs = started.elapsed().as_secs();
+            (
+                Some(render_text(
+                    &format!("編集 {}:{:02}", secs / 60, secs % 60),
+                    font_px,
+                    true,
+                    max_text,
+                )),
+                Some(render_text(head, font_px, false, max_text)),
+                None,
+            )
+        }
         Mode::Busy { label, hint } => (
             Some(render_text(label, font_px, true, max_text)),
             hint.as_deref()
@@ -812,7 +838,7 @@ unsafe fn present(
         ),
     };
     let lead_w = match mode {
-        Mode::Recording { .. } => {
+        Mode::Recording { .. } | Mode::Editing { .. } => {
             px(10.0) + gap + px(3.0) * BARS as f32 + px(3.0) * (BARS as f32 - 1.0)
         }
         Mode::Busy { .. } => px(22.0),
@@ -886,7 +912,7 @@ unsafe fn present(
     let mut x = x0 + pad;
     let phase = start_phase();
     match mode {
-        Mode::Recording { .. } => {
+        Mode::Recording { .. } | Mode::Editing { .. } => {
             // 脈打つ赤い点。外側の輪が広がって消える
             let p = (phase % 1.4) / 1.4;
             c.circle(

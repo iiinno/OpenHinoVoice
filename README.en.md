@@ -13,6 +13,11 @@ Speech recognition runs entirely on your PC; audio is never sent anywhere. Optio
 - While recording, a small Hinomaru-style pill appears near the top of the screen. Its bars follow your voice, so you can see it is listening
 - A live caption band on the screen shows the words as you speak and each settled phrase as it is recognized. The input field only receives the final text
 - Speech is recognized utterance by utterance, so long recordings drop fewer sentences and the wait after Enter stays roughly constant
+- Edit mode: select text, then start recording as usual, and say an instruction like "make it polite" — the selected part is rewritten. No dedicated key needed
+
+## Edit mode
+
+Select text, press the usual recording key, say what to change, then press Enter. With no selection, recording works exactly as before. The selection is read only through Windows UI Automation (TextPattern): no key events are sent and the clipboard is untouched. Apps whose selection cannot be read show a short notice and fall back to normal voice input. Selections over 6000 characters are not edited, and both the before and after texts are kept in the recovery history. Turn Edit mode off to skip the selection check entirely.
 - Short sound effects on start and paste (can be turned off)
 
 ## Install

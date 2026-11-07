@@ -2,8 +2,25 @@
 pub enum State {
     Idle,
     Recording,
-    Recognizing { raw_requested: bool },
-    Formatting { raw: String },
+    Recognizing {
+        raw_requested: bool,
+    },
+    Formatting {
+        raw: String,
+    },
+    /// Edit モード。選んだ文を書き換える指示を録音している
+    Editing {
+        selection: String,
+    },
+    /// Edit モードの認識。2 回目の Enter(生テキストで貼る)は無効
+    EditRecognizing {
+        selection: String,
+    },
+    /// Edit モードの整形。失敗しても指示の文は貼らない
+    EditFormatting {
+        selection: String,
+        instruction: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11,10 +28,30 @@ pub enum Event {
     F8,
     Enter,
     Esc,
-    AsrDone { text: String, has_api_key: bool },
-    AsrError { message: String },
-    FormatDone { text: String },
-    FormatFailed { reason: String },
+    /// 録音の開始時に選んだ文があった。Recording から Edit に入る
+    EditModeStarted {
+        selection: String,
+    },
+    /// Edit を使えない理由。Recording のまま注意を表示する
+    EditNotice {
+        message: String,
+    },
+    AsrDone {
+        text: String,
+        has_api_key: bool,
+    },
+    AsrError {
+        message: String,
+    },
+    FormatDone {
+        text: String,
+    },
+    FormatFailed {
+        reason: String,
+    },
+    EditFormatDone {
+        text: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,9 +59,21 @@ pub enum OverlayKind {
     Recording,
     Recognizing,
     Formatting,
-    FormatSkipped { reason: String },
+    FormatSkipped {
+        reason: String,
+    },
     ApiKeyMissing,
-    Error { message: String },
+    Error {
+        message: String,
+    },
+    /// Edit の録音中。「編集」と選んだ文の先頭を出す
+    Editing {
+        head: String,
+    },
+    /// Edit を使えないことと、その理由
+    EditUnavailable {
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,8 +81,16 @@ pub enum Action {
     StartSession,
     StopRecordingAndTranscribe,
     DiscardSession,
-    CallFormat { raw: String },
-    Paste { text: String },
+    CallFormat {
+        raw: String,
+    },
+    CallEditFormat {
+        selection: String,
+        instruction: String,
+    },
+    Paste {
+        text: String,
+    },
     ShowOverlay(OverlayKind),
     HideOverlay,
 }
@@ -61,6 +118,19 @@ pub fn step(state: State, event: Event) -> (State, Vec<Action>) {
             _ => (State::Idle, Vec::new()),
         },
         State::Recording => match event {
+            Event::EditModeStarted { selection } => {
+                let head = selection.chars().take(24).collect();
+                (
+                    State::Editing { selection },
+                    vec![Action::ShowOverlay(OverlayKind::Editing { head })],
+                )
+            }
+            Event::EditNotice { message } => (
+                State::Recording,
+                vec![Action::ShowOverlay(OverlayKind::EditUnavailable {
+                    message,
+                })],
+            ),
             Event::Enter => (
                 State::Recognizing {
                     raw_requested: false,
@@ -149,6 +219,88 @@ pub fn step(state: State, event: Event) -> (State, Vec<Action>) {
                 ],
             ),
             _ => (State::Formatting { raw }, Vec::new()),
+        },
+        State::Editing { selection } => match event {
+            Event::Enter => (
+                State::EditRecognizing { selection },
+                vec![
+                    Action::StopRecordingAndTranscribe,
+                    Action::ShowOverlay(OverlayKind::Recognizing),
+                ],
+            ),
+            Event::Esc => (
+                State::Idle,
+                vec![Action::DiscardSession, Action::HideOverlay],
+            ),
+            Event::AsrError { message } => (
+                State::Idle,
+                vec![
+                    Action::DiscardSession,
+                    Action::ShowOverlay(OverlayKind::Error { message }),
+                ],
+            ),
+            _ => (State::Editing { selection }, Vec::new()),
+        },
+        State::EditRecognizing { selection } => match event {
+            // 指示の文をそのまま貼ってしまうので、2 回目の Enter は無効にする
+            Event::Enter | Event::F8 => (State::EditRecognizing { selection }, Vec::new()),
+            Event::Esc => (
+                State::Idle,
+                vec![Action::DiscardSession, Action::HideOverlay],
+            ),
+            Event::AsrDone { text, .. } => (
+                State::EditFormatting {
+                    selection: selection.clone(),
+                    instruction: text.clone(),
+                },
+                vec![Action::CallEditFormat {
+                    selection,
+                    instruction: text,
+                }],
+            ),
+            Event::AsrError { message } => (
+                State::Idle,
+                vec![
+                    Action::DiscardSession,
+                    Action::ShowOverlay(OverlayKind::Error { message }),
+                ],
+            ),
+            _ => (State::EditRecognizing { selection }, Vec::new()),
+        },
+        State::EditFormatting {
+            selection,
+            instruction,
+        } => match event {
+            // 指示の文をそのまま貼ってしまうので、Enter は無効にする
+            Event::Enter | Event::F8 => (
+                State::EditFormatting {
+                    selection,
+                    instruction,
+                },
+                Vec::new(),
+            ),
+            Event::Esc => (State::Idle, vec![Action::HideOverlay]),
+            Event::EditFormatDone { text } => (
+                State::Idle,
+                vec![Action::Paste { text }, Action::HideOverlay],
+            ),
+            Event::FormatFailed { reason } => (
+                State::Idle,
+                vec![Action::ShowOverlay(OverlayKind::EditUnavailable {
+                    message: format!("Edit を行えませんでした（{reason}）"),
+                })],
+            ),
+            Event::AsrError { message } => (
+                State::Idle,
+                vec![Action::ShowOverlay(OverlayKind::Error { message })],
+            ),
+            _ => (
+                State::EditFormatting {
+                    selection,
+                    instruction,
+                },
+                Vec::new(),
+            ),
         },
     }
 }
@@ -366,6 +518,174 @@ mod tests {
         assert!(a.contains(&Action::ShowOverlay(OverlayKind::FormatSkipped {
             reason: "timeout".into()
         })));
+    }
+
+    // ---- Edit モードの遷移(先にテストを書く) ----
+
+    fn edit() -> State {
+        State::Editing {
+            selection: "選んだ文".to_string(),
+        }
+    }
+    fn edit_recog() -> State {
+        State::EditRecognizing {
+            selection: "選んだ文".to_string(),
+        }
+    }
+    fn edit_fmt() -> State {
+        State::EditFormatting {
+            selection: "選んだ文".to_string(),
+            instruction: "丁寧にして".to_string(),
+        }
+    }
+
+    #[test]
+    fn edit_mode_starts_from_recording_and_shows_the_head() {
+        let (s, a) = step(
+            rec(),
+            Event::EditModeStarted {
+                selection: "選んだ文".into(),
+            },
+        );
+        assert_eq!(
+            s,
+            State::Editing {
+                selection: "選んだ文".into()
+            }
+        );
+        assert!(a.contains(&Action::ShowOverlay(OverlayKind::Editing {
+            head: "選んだ文".into()
+        })));
+    }
+
+    #[test]
+    fn edit_recording_enter_goes_to_edit_recognizing() {
+        let (s, a) = step(edit(), Event::Enter);
+        assert_eq!(s, edit_recog());
+        assert!(a.contains(&Action::StopRecordingAndTranscribe));
+    }
+
+    #[test]
+    fn edit_recognizing_ignores_the_second_enter() {
+        // 指示の文をそのまま貼ってしまうので、2 回目の Enter は無効にする
+        assert_eq!(step(edit_recog(), Event::Enter), (edit_recog(), vec![]));
+    }
+
+    #[test]
+    fn edit_recognizing_done_goes_to_edit_formatting() {
+        let (s, a) = step(
+            edit_recog(),
+            Event::AsrDone {
+                text: "丁寧にして".into(),
+                has_api_key: true,
+            },
+        );
+        assert_eq!(s, edit_fmt());
+        assert!(a.contains(&Action::CallEditFormat {
+            selection: "選んだ文".into(),
+            instruction: "丁寧にして".into(),
+        }));
+    }
+
+    #[test]
+    fn edit_format_done_replaces_the_selection() {
+        let (s, a) = step(
+            edit_fmt(),
+            Event::EditFormatDone {
+                text: "丁寧な文".into(),
+            },
+        );
+        assert_eq!(s, State::Idle);
+        assert!(a.contains(&Action::Paste {
+            text: "丁寧な文".into()
+        }));
+    }
+
+    #[test]
+    fn edit_format_failure_does_not_paste_anything() {
+        // 指示の文や失敗した応答を選択部分に貼ってはいけない
+        let (s, a) = step(
+            edit_fmt(),
+            Event::FormatFailed {
+                reason: "timeout".into(),
+            },
+        );
+        assert_eq!(s, State::Idle);
+        assert!(!a.iter().any(|x| matches!(x, Action::Paste { .. })));
+        assert!(a
+            .iter()
+            .any(|x| matches!(x, Action::ShowOverlay(OverlayKind::EditUnavailable { .. }))));
+    }
+
+    #[test]
+    fn edit_formatting_enter_and_second_enter_do_not_paste_the_instruction() {
+        assert_eq!(
+            step(edit_fmt(), Event::Enter),
+            (
+                State::EditFormatting {
+                    selection: "選んだ文".into(),
+                    instruction: "丁寧にして".into(),
+                },
+                vec![]
+            )
+        );
+    }
+
+    #[test]
+    fn edit_states_escape_to_idle_and_discard() {
+        for state in [edit(), edit_recog()] {
+            let (s, a) = step(state.clone(), Event::Esc);
+            assert_eq!(s, State::Idle);
+            assert!(a.contains(&Action::DiscardSession));
+        }
+        // 整形の途中の Esc は貼り付けも破棄もしない。整形中の通常の Esc と同じ
+        let (s, a) = step(edit_fmt(), Event::Esc);
+        assert_eq!(s, State::Idle);
+        assert!(!a.iter().any(|x| matches!(x, Action::Paste { .. })));
+        assert!(!a.iter().any(|x| matches!(x, Action::DiscardSession)));
+    }
+
+    #[test]
+    fn edit_recognizing_asr_error_discards() {
+        let (s, a) = step(
+            edit_recog(),
+            Event::AsrError {
+                message: "boom".into(),
+            },
+        );
+        assert_eq!(s, State::Idle);
+        assert!(a.contains(&Action::DiscardSession));
+    }
+
+    #[test]
+    fn editing_ignores_late_edit_mode_started_and_f8() {
+        assert_eq!(step(edit(), Event::F8), (edit(), vec![]));
+        assert_eq!(
+            step(
+                edit(),
+                Event::EditModeStarted {
+                    selection: "別の文".into()
+                }
+            ),
+            (edit(), vec![])
+        );
+    }
+
+    #[test]
+    fn edit_notice_keeps_recording_and_shows_the_reason() {
+        // TextPattern を読めないアプリでは、Edit を使えないことを出して通常録音
+        let (s, a) = step(
+            rec(),
+            Event::EditNotice {
+                message: "このアプリでは Edit を使えません".into(),
+            },
+        );
+        assert_eq!(s, State::Recording);
+        assert!(
+            a.contains(&Action::ShowOverlay(OverlayKind::EditUnavailable {
+                message: "このアプリでは Edit を使えません".into(),
+            }))
+        );
     }
 
     #[test]

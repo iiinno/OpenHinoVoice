@@ -62,6 +62,10 @@ partial_caption = true
 # 帯の場所。"top"(画面の上端)か "caret"(入力中の位置の近く。取れない画面では上端に出る)
 caption_position = "top"
 
+# Edit モード。文を選んだ状態で録音を始めると、話した指示で選んだ部分を
+# 書き換える。専用のキーはなく、いつもの録音開始キーを使う
+edit_mode = true
+
 [format]
 base_url = "https://opencode.ai/inference/go/openai/v1"
 api_key = ""
@@ -198,6 +202,10 @@ pub struct Config {
     /// 表示の場所。"top"(画面の上端)か "caret"(入力中の位置の近く)
     #[serde(default = "default_caption_position")]
     pub caption_position: String,
+    /// Edit モード。文を選んだ状態で録音を始めると、話した指示で
+    /// 選んだ部分を書き換える。オフのときは選択の確認そのものをしない
+    #[serde(default = "default_true")]
+    pub edit_mode: bool,
     #[serde(default)]
     pub format: FormatConfig,
 }

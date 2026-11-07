@@ -244,6 +244,7 @@ impl Settings {
                 "caption_position",
                 V::from(self.cfg.caption_position.as_str()),
             ),
+            (None, "edit_mode", V::from(self.cfg.edit_mode)),
             (Some("format"), "provider", V::from(f.provider.as_str())),
             (Some("format"), "offline", V::from(f.offline)),
             (Some("format"), "base_url", V::from(f.base_url.trim())),
@@ -553,6 +554,16 @@ impl Settings {
                         );
                     });
                 });
+            });
+            ui.end_row();
+
+            ui.label("Edit モード");
+            ui.vertical(|ui| {
+                ui.checkbox(
+                    &mut self.cfg.edit_mode,
+                    "文を選んだ状態で録音を始めると、話した指示で選んだ部分を書き換える",
+                );
+                hint(ui, "専用のキーはありません。選択の確認は画面の部品の情報(UI Automation)だけで行い、キー操作を送らず、クリップボードにも触れません。選択を読めないアプリでは Edit を使えないことを表示して、通常の音声入力になります。整形(AI)の接続先が必要です");
             });
             ui.end_row();
 

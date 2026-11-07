@@ -17,6 +17,7 @@ mod settings;
 mod sound;
 mod startup;
 mod state;
+mod uia;
 
 use asr::Worker;
 use audio::Recorder;
@@ -44,6 +45,8 @@ const MAX_RECORDING_PCM_BYTES: usize = 128 * 1024 * 1024;
 const PCM_LIMIT_MESSAGE: &str = "録音データが128 MiBの安全上限を超えました（高サンプルレートのマイクでは設定時間より早く終了する場合があります）";
 /// worker の死亡や時間切れで送り直す限界。連続でこれを超えたら録音を諦める
 const MAX_ASR_FAILURES: u32 = 4;
+/// Edit で選べる文の上限。これを超える選択は Edit にしない
+const MAX_EDIT_SELECTION_CHARS: usize = 6000;
 
 enum FormatOutcome {
     Done {
@@ -64,6 +67,11 @@ enum FormatOutcome {
         generation: u64,
         text: String,
     },
+    /// Edit の書き換え結果
+    EditDone {
+        generation: u64,
+        text: String,
+    },
 }
 
 impl FormatOutcome {
@@ -72,7 +80,8 @@ impl FormatOutcome {
             Self::Done { generation, .. }
             | Self::Failed { generation, .. }
             | Self::Retrying { generation, .. }
-            | Self::Delta { generation, .. } => *generation,
+            | Self::Delta { generation, .. }
+            | Self::EditDone { generation, .. } => *generation,
         }
     }
 }
@@ -301,6 +310,8 @@ struct App {
     state: State,
     session: Session,
     format_tx: Sender<FormatOutcome>,
+    /// 整形の結果の受け口。main のループが読み、テストも使う
+    format_rx: std::sync::Mutex<Option<Receiver<FormatOutcome>>>,
     format_generation: FormatGeneration,
     transient_until: Option<Instant>,
     failed_pastes: VecDeque<String>,
@@ -309,9 +320,9 @@ struct App {
 fn mirror_of(state: &State) -> u8 {
     match state {
         State::Idle => hook::MIRROR_IDLE,
-        State::Recording => hook::MIRROR_RECORDING,
-        State::Recognizing { .. } => hook::MIRROR_RECOGNIZING,
-        State::Formatting { .. } => hook::MIRROR_FORMATTING,
+        State::Recording | State::Editing { .. } => hook::MIRROR_RECORDING,
+        State::Recognizing { .. } | State::EditRecognizing { .. } => hook::MIRROR_RECOGNIZING,
+        State::Formatting { .. } | State::EditFormatting { .. } => hook::MIRROR_FORMATTING,
     }
 }
 
@@ -328,7 +339,11 @@ impl App {
         // Abort an action batch when StartSession or Paste fails. Otherwise a
         // subsequent recording/success notification could overwrite the error.
         state::run_actions(actions, |action| self.execute(action));
-        if !matches!(self.state, State::Formatting { .. }) {
+        // Edit の整形も同じ世代の受け口で続くので、無効化しない
+        if !matches!(
+            self.state,
+            State::Formatting { .. } | State::EditFormatting { .. }
+        ) {
             self.format_generation.invalidate();
         }
     }
@@ -483,6 +498,60 @@ impl App {
                     let _ = tx.send(outcome);
                 });
             }
+            Action::CallEditFormat {
+                selection,
+                instruction,
+            } => {
+                // 置き換える前の文と後の文を、復旧用の履歴に両方残す。
+                // うまくいかなかったときに元へ戻せる
+                match history::save_recognized(&selection) {
+                    Ok(id) => self.session.recovery_id = Some(id),
+                    Err(e) => {
+                        eprintln!("Edit の復旧履歴を書き込めません: {e}");
+                        self.session.recovery_write_failed = true;
+                    }
+                }
+                let mut cfg = self.cfg.format.clone();
+                cfg.prompt = lexicon::prompt_with_terms(
+                    &cfg.prompt,
+                    &self.cfg.terms,
+                    self.session.input_app.as_deref(),
+                );
+                let tx = self.format_tx.clone();
+                let generation = self.format_generation.start();
+                let cancel = self.format_generation.cancel_flag();
+                std::thread::spawn(move || {
+                    let cancelled = || cancel.load(Ordering::SeqCst);
+                    let started = Instant::now();
+                    let result = format::format_edit(
+                        &cfg,
+                        &selection,
+                        &instruction,
+                        &cancelled,
+                        |attempt| {
+                            let _ = tx.send(FormatOutcome::Retrying {
+                                generation,
+                                attempt,
+                            });
+                        },
+                    );
+                    if !cancelled() {
+                        if let Err(e) =
+                            history::record(&cfg, &selection, &result, started.elapsed())
+                        {
+                            eprintln!("Edit の整形履歴を書き込めません: {e}");
+                        }
+                    }
+                    let outcome = match result {
+                        Ok(text) => FormatOutcome::EditDone { generation, text },
+                        Err(e) => FormatOutcome::Failed {
+                            generation,
+                            reason: e.to_string(),
+                        },
+                    };
+                    let _ = tx.send(outcome);
+                });
+            }
             Action::Paste { text } => {
                 // Only user-specified exact aliases are replaced, even if AI is off.
                 overlay::clear_caption();
@@ -624,12 +693,29 @@ impl App {
                 });
                 self.transient_until = Some(Instant::now() + Duration::from_millis(3500));
             }
+            OverlayKind::Editing { head } => {
+                self.transient_until = None;
+                overlay::show(Mode::Editing {
+                    started: self.session.started_at,
+                    head,
+                });
+            }
+            OverlayKind::EditUnavailable { message } => {
+                overlay::show(Mode::Notice {
+                    tone: Tone::Warn,
+                    text: message,
+                });
+                self.transient_until = Some(Instant::now() + Duration::from_millis(2500));
+            }
         }
     }
 
     fn tick_session(&mut self) {
-        let in_recording = matches!(self.state, State::Recording);
-        let in_recognizing = matches!(self.state, State::Recognizing { .. });
+        let in_recording = matches!(self.state, State::Recording | State::Editing { .. });
+        let in_recognizing = matches!(
+            self.state,
+            State::Recognizing { .. } | State::EditRecognizing { .. }
+        );
         if !in_recording && !in_recognizing {
             return;
         }
@@ -968,10 +1054,15 @@ impl App {
     }
 
     fn receive_format(&mut self, outcome: FormatOutcome) {
-        if !self.format_generation.accepts(
-            outcome.generation(),
-            matches!(self.state, State::Formatting { .. }),
-        ) {
+        // Edit の整形(EditFormatting)も同じ受け口を使う
+        let formatting = matches!(
+            self.state,
+            State::Formatting { .. } | State::EditFormatting { .. }
+        );
+        if !self
+            .format_generation
+            .accepts(outcome.generation(), formatting)
+        {
             return;
         }
         match outcome {
@@ -982,6 +1073,14 @@ impl App {
                     }
                 }
                 self.dispatch(Event::FormatDone { text });
+            }
+            FormatOutcome::EditDone { text, .. } => {
+                if let Some(id) = self.session.recovery_id {
+                    if let Err(e) = history::update_formatted(id, &text) {
+                        eprintln!("Edit の復旧履歴の保存に失敗しました: {e}");
+                    }
+                }
+                self.dispatch(Event::EditFormatDone { text });
             }
             FormatOutcome::Failed { reason, .. } => self.dispatch(Event::FormatFailed { reason }),
             FormatOutcome::Delta { text, .. } => {
@@ -1064,6 +1163,7 @@ fn main() {
         state: State::Idle,
         session: Session::new(),
         format_tx,
+        format_rx: std::sync::Mutex::new(Some(format_rx)),
         format_generation: FormatGeneration::default(),
         transient_until: None,
         failed_pastes: VecDeque::new(),
@@ -1104,16 +1204,65 @@ fn main() {
         }
 
         while let Ok(key) = key_rx.try_recv() {
-            let event = match key {
-                hook::KeyEvent::Hotkey => Event::F8,
-                hook::KeyEvent::Enter => Event::Enter,
-                hook::KeyEvent::Esc => Event::Esc,
-            };
-            app.dispatch(event);
+            match key {
+                hook::KeyEvent::Hotkey => {
+                    // Edit モード。文を選んだ状態でいつもの録音開始キーを押すと
+                    // Edit になる。選択の確認は録音の開始を遅らせるので、
+                    // 100 ミリ秒で打ち切る。読めなければ通常の音声入力になる
+                    let edit_selection = if app.cfg.edit_mode && matches!(app.state, State::Idle) {
+                        match uia::probe_selected_text(Duration::from_millis(100)) {
+                            uia::SelectionProbe::Selected(text) => {
+                                if text.chars().count() > MAX_EDIT_SELECTION_CHARS {
+                                    Some(Err("選択が長すぎるため Edit を使えません".into()))
+                                } else {
+                                    Some(Ok(text))
+                                }
+                            }
+                            uia::SelectionProbe::Unavailable => {
+                                Some(Err("このアプリでは Edit を使えません".into()))
+                            }
+                            uia::SelectionProbe::None => None,
+                        }
+                    } else {
+                        None
+                    };
+                    app.dispatch(Event::F8);
+                    match edit_selection {
+                        Some(Ok(text)) => {
+                            if app.cfg.has_api_key() {
+                                app.dispatch(Event::EditModeStarted { selection: text });
+                            } else {
+                                app.dispatch(Event::EditNotice {
+                                    message: "Edit には整形(AI)の接続先が必要です".into(),
+                                });
+                            }
+                        }
+                        Some(Err(message)) => {
+                            app.dispatch(Event::EditNotice { message });
+                        }
+                        None => {}
+                    }
+                }
+                hook::KeyEvent::Enter => app.dispatch(Event::Enter),
+                hook::KeyEvent::Esc => app.dispatch(Event::Esc),
+            }
         }
 
-        while let Ok(outcome) = format_rx.try_recv() {
-            app.receive_format(outcome);
+        let receiver = app
+            .format_rx
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        if let Some(receiver) = &receiver {
+            while let Ok(outcome) = receiver.try_recv() {
+                app.receive_format(outcome);
+            }
+        }
+        if let Some(receiver) = receiver {
+            app.format_rx
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .replace(receiver);
         }
 
         app.tick_session();
@@ -1144,8 +1293,15 @@ fn main() {
         if let Some(until) = app.transient_until {
             if Instant::now() >= until {
                 app.transient_until = None;
-                if matches!(app.state, State::Idle) {
-                    overlay::hide();
+                match app.state {
+                    State::Idle => overlay::hide(),
+                    // 録音中の一時的な注意が消えたら、録音の表示に戻す
+                    State::Recording | State::Editing { .. } => {
+                        overlay::show(Mode::Recording {
+                            started: app.session.started_at,
+                        });
+                    }
+                    _ => {}
                 }
             }
         }
@@ -1422,6 +1578,76 @@ mod flow_tests {
         );
     }
 
+    #[test]
+    fn edit_flow_recognizes_an_instruction_and_formats_it() {
+        let mut app = test_app();
+        // 整形の結果の受け口を、本編と同じ仕組みで用意する
+        let (fmt_tx, fmt_rx) = channel();
+        app.format_tx = fmt_tx;
+        *app.format_rx.lock().unwrap_or_else(|p| p.into_inner()) = Some(fmt_rx);
+        let (tx, rx) = channel();
+        // 認識の終端として、指示の文を返す worker
+        tx.send(r#"{"type":"end","id":"s0","text":"丁寧にして","stop":"complete"}"#.to_string())
+            .unwrap();
+        // 指示を話した区間(閉じた区間として返るように無音を足す)
+        let mut audio = vec![0.3f32; 16000];
+        audio.extend(std::iter::repeat_n(0.0f32, 16000));
+        assert!(app.session.feed_segmenter(&audio));
+        app.session.worker = Some(asr::test_worker(rx, false));
+        // オフラインモードなので Edit の整形はすぐ失敗する。指示の文は貼られない
+        app.cfg.format.offline = true;
+        // Enter を押したあとの Edit の認識として進める
+        app.set_state(State::EditRecognizing {
+            selection: "えーと明日です".into(),
+        });
+        app.session.stop_requested = true;
+        app.tick_session();
+        // 指示の認識が終わると Edit の整形に入る
+        assert_eq!(
+            app.state,
+            State::EditFormatting {
+                selection: "えーと明日です".into(),
+                instruction: "丁寧にして".into(),
+            }
+        );
+        for _ in 0..50 {
+            std::thread::sleep(Duration::from_millis(50));
+            let receiver = app
+                .format_rx
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .take();
+            let mut got = false;
+            if let Some(receiver) = &receiver {
+                loop {
+                    match receiver.try_recv() {
+                        Ok(outcome) => {
+                            got = true;
+                            app.receive_format(outcome);
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                        Err(_) => break,
+                    }
+                }
+            }
+            if let Some(receiver) = receiver {
+                app.format_rx
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .replace(receiver);
+            }
+            if got && app.state == State::Idle {
+                break;
+            }
+        }
+        assert_eq!(app.state, State::Idle);
+        assert!(
+            app.failed_pastes.is_empty(),
+            "失敗したときは何も貼らない: {:?}",
+            app.failed_pastes
+        );
+    }
+
     fn test_app() -> App {
         let mut cfg: Config = toml::from_str("").unwrap();
         cfg.speech_exe = "__openhinovoice_missing_test_worker__.exe".into();
@@ -1432,6 +1658,7 @@ mod flow_tests {
             state: State::Idle,
             session: Session::new(),
             format_tx,
+            format_rx: std::sync::Mutex::new(None),
             format_generation: FormatGeneration::default(),
             transient_until: None,
             failed_pastes: VecDeque::new(),
