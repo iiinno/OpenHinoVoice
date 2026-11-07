@@ -29,7 +29,7 @@ fn session_id() -> &'static str {
 pub enum FormatError {
     MissingApiKey,
     MissingModel,
-    /// 第2要素はサーバーが返したエラー本文の要点。APIキーなどの秘密は除く(#12)
+    /// 第2要素はサーバーが返したエラー本文の要点。APIキーなどの秘密は除く
     Http(u16, Option<String>),
     Timeout,
     Network(String),
@@ -153,7 +153,7 @@ pub(crate) fn transport_error(err: &(dyn std::error::Error + 'static)) -> Format
     FormatError::Network(err.to_string())
 }
 
-/// HTTP エラーに、サーバーが返した本文の要点を添える(#12)。本文は先頭 4KB までしか読まない
+/// HTTP エラーに、サーバーが返した本文の要点を添える。本文は先頭 4KB までしか読まない
 pub(crate) fn http_error(code: u16, resp: ureq::Response, api_key: &str) -> FormatError {
     let mut body = String::new();
     let _ = resp.into_reader().take(4096).read_to_string(&mut body);
@@ -163,7 +163,7 @@ pub(crate) fn http_error(code: u16, resp: ureq::Response, api_key: &str) -> Form
 /// サーバーのエラー本文から、記録と画面に見せられる要点を 1 つ取る。
 /// JSON なら error.message → message → error → detail の順に探し、どれもなければ最初の 1 行。
 /// 秘密(APIキー、Bearer トークン)は必ず取り除く
-pub(crate) fn error_summary(body: &str, api_key: &str) -> Option<String> {
+fn error_summary(body: &str, api_key: &str) -> Option<String> {
     let trimmed = body.trim();
     if trimmed.is_empty() {
         return None;
@@ -182,60 +182,48 @@ pub(crate) fn error_summary(body: &str, api_key: &str) -> Option<String> {
         .find(|s| !s.is_empty())
         .map(str::to_string),
         // JSONでなければ、最初の 1 行をそのまま見せる
-        Err(_) => {
-            let line = trimmed.lines().next().unwrap_or("").trim();
-            Some(line.chars().take(200).collect::<String>())
-        }
+        Err(_) => trimmed.lines().next().map(str::trim).map(str::to_string),
     };
-    // JSON に要点がなければ、本文そのもの(「{}」など)より「なし」を選ぶ
     let message = message?;
+    // 切る前に秘密を取り除く。切った後だと鍵が境界を跨いで断片が残る
     let scrubbed = scrub_secrets(&message, api_key);
-    let scrubbed: String = scrubbed.chars().take(300).collect();
-    if scrubbed.trim().is_empty() {
-        None
-    } else {
-        Some(scrubbed)
-    }
+    Some(scrubbed.chars().take(300).collect())
 }
 
 /// 文面から API キーと Bearer トークンを取り除く。記録ファイルは平文なので漏らさない
 fn scrub_secrets(text: &str, api_key: &str) -> String {
-    let mut out = text.to_string();
     let key = api_key.trim();
     // 短い文字列を置換すると本文を壊すので、鍵らしい長さのときだけ
-    if key.chars().count() >= 8 {
-        out = out.replace(key, "***");
-    }
-    scrub_bearer_tokens(&out)
-}
-
-/// "Bearer <値>" の値を、キーと一致しない文字列でも取り除く
-fn scrub_bearer_tokens(text: &str) -> String {
-    let lower = text.to_lowercase();
-    let mut out = String::with_capacity(text.len());
+    let out = if key.chars().count() >= 8 {
+        text.replace(key, "***")
+    } else {
+        text.to_string()
+    };
+    // "Bearer <値>" の値は、キーと一致しない文字列でも取り除く
+    let lower = out.to_lowercase();
+    let mut scrubbed = String::with_capacity(out.len());
     let mut i = 0;
-    while i < text.len() {
+    while i < out.len() {
         if lower[i..].starts_with("bearer") {
-            // "Bearer" と値の間の空白を読み飛ばしてから、値の終わりを探す
             let mut j = i + "bearer".len();
             while lower[j..].starts_with([' ', '\t']) {
                 j += 1;
             }
             let token_end = lower[j..]
                 .find(|c: char| c.is_whitespace() || matches!(c, '"' | ',' | '}' | ']'))
-                .map_or(text.len(), |p| j + p);
+                .map_or(out.len(), |p| j + p);
             if token_end > j {
-                out.push_str(&text[i..i + "bearer".len()]);
-                out.push_str(" ***");
+                scrubbed.push_str(&out[i..i + "bearer".len()]);
+                scrubbed.push_str(" ***");
                 i = token_end;
                 continue;
             }
         }
-        let ch = text[i..].chars().next().unwrap_or('\u{fffd}');
-        out.push(ch);
+        let ch = out[i..].chars().next().unwrap_or('\u{fffd}');
+        scrubbed.push(ch);
         i += ch.len_utf8();
     }
-    out
+    scrubbed
 }
 
 /// API キーと文字起こしを任意の平文 HTTP サーバーへ送らない。
@@ -815,7 +803,6 @@ mod tests {
 
     #[test]
     fn groq_style_error_body_is_surfaced() {
-        // #12: サーバーからのエラーメッセージが記録に残る。#11 の Groq / Gemini の切り分けにも使う
         let url = serve_once(|_| {
             (
                 400,
@@ -853,12 +840,26 @@ mod tests {
     }
 
     #[test]
-    fn bearer_token_is_scrubbed_even_when_not_the_configured_key() {
-        let scrubbed = scrub_bearer_tokens("denied for Bearer eyJhbGciOi.abc123, retry");
-        assert!(!scrubbed.contains("eyJ"), "{scrubbed}");
-        assert!(scrubbed.contains("Bearer ***"), "{scrubbed}");
-        // 置換しても残りの本文は壊さない
-        assert!(scrubbed.contains("retry"));
+    fn error_detail_never_carries_a_bearer_token() {
+        let url = serve_once(|_| (401, "denied: Bearer eyJhbGciOi.abc123, retry".to_string()));
+        let cfg = cfg_for(url);
+        match format(&cfg, "hello") {
+            Err(FormatError::Http(401, Some(detail))) => {
+                assert!(!detail.contains("eyJ"), "{detail}");
+                assert!(detail.contains("Bearer ***"), "{detail}");
+                assert!(detail.contains("retry"), "{detail}");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn http_error_display_carries_the_server_detail() {
+        // オーバーレイと記録で読む文面が、サーバー応答の要点を欠かないこと
+        let e = FormatError::Http(400, Some("The model does not exist".into()));
+        let text = e.to_string();
+        assert!(text.contains("整形APIエラー HTTP 400"), "{text}");
+        assert!(text.contains("The model does not exist"), "{text}");
     }
 
     #[test]
