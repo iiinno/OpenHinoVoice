@@ -12,7 +12,7 @@ Speech recognition runs entirely on your PC; audio is never sent anywhere. Optio
 - Press Enter once to paste cleaned-up text. Press it again without waiting to paste the raw transcript immediately
 - While recording, a small Hinomaru-style pill appears near the top of the screen. Its bars follow your voice, so you can see it is listening
 - A live caption band on the screen shows the words as you speak and each settled phrase as it is recognized. The input field only receives the final text
-- Speech is recognized utterance by utterance, so long recordings drop fewer sentences and the wait after Enter stays roughly constant
+- Speech is recognized utterance by utterance. If recognition falls behind recording, Enter waits for all remaining intervals
 - Edit mode: select text, then start recording as usual, and say an instruction like "make it polite" — the selected part is rewritten. No dedicated key needed
 
 ## Edit mode
@@ -46,8 +46,8 @@ An icon appears in the notification area at the bottom right. If you don't see i
 
 Right-click the icon and choose 設定 (Settings).
 
-1. On 一般 (General), choose the hotkey (F8 by default). Tick the start-at-sign-in box if you want it to start automatically
-2. To clean up text with AI, choose a provider on 整形(AI). With ChatGPT Plus or Pro, pick the ChatGPT plan and press "Continue with ChatGPT"
+1. On 入力 (Input), choose the hotkey (F8 by default). Tick the start-at-sign-in box if you want it to start automatically
+2. To clean up text with AI, choose a provider on AI. With ChatGPT Plus or Pro, pick the ChatGPT plan and press "Continue with ChatGPT"
 3. Press 接続テスト (connection test) to check, then 保存 (Save)
 
 ### 4. Try it

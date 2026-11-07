@@ -1467,15 +1467,8 @@ impl Settings {
             ui.end_row();
         });
         ui.add_space(14.0);
-        ui.label(RichText::new("性能の測定値(この PC での実測)").strong());
-        hint(
-            ui,
-            "待機中の CPU: 0.000 秒/分。待機中のメモリ: 約 2.4 MB(Private)",
-        );
-        hint(
-            ui,
-            "Enter を押してから認識結果まで: 0.5〜1.4 秒(録音の長さによらない)",
-        );
+        ui.label(RichText::new("性能の確認").strong());
+        hint(ui, "性能は PC と認識モデルによって変わります。現行版の録音中の待ち時間とメモリ予算は、実機での確認待ちです");
         hint(
             ui,
             "測定の手順と版ごとの記録は、ソースの reports/perf/ にあります",

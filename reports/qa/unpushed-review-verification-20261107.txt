@@ -1,0 +1,53 @@
+検証日 2026-11-07
+対象 feat/v0.4.0
+修正コードの最終コミット 40ef848
+情報ページの未確認な性能表示の削除も含めて検証した。
+
+cargo fmt --all -- --check
+終了コード 0
+
+cargo clippy --all-targets --locked -- -D warnings
+終了コード 0
+
+cargo test --all-targets --locked
+終了コード 0
+APPDATA は実行ごとに作成した専用の一時領域。
+全ターゲット合計 480 passed, 0 failed, 8 ignored。
+同じproductionモジュールを複数のintegration crateが含むため、480は重複実行を含む。
+生の出力 %TEMP%\ohv-final-tests.log
+
+修正前の失敗を確認したテスト
+- caption_draws_a_partial_before_the_first_confirmed_interval は 0xc0000005 でプロセス終了。
+- workerの終了時点、送信途中の仮認識の取り消し、確定の優先、字幕の順序、ファイル認識のエラー扱いの5件。
+- 冒頭と末尾のサンプル保持、同じ音量のときの分割位置の2件。
+- キーなしのローカル接続とその有効判定、実送信先によるオフライン判定、長文の部分的な失敗処理、Editの極端な短縮、Anthropicの上限到達の6件。
+- 確定区間の同時送信、再送回数の二重計上、model_limitの成功扱い、字幕キャッシュの保持の4件。
+- 長文の分割位置で段落の空行が消える問題。
+
+追加で確認した境界
+- localhostへのHTTPリダイレクトを追わず、転送先へ接続しない。
+- オフラインのモデル一覧でChatGPTの認証更新を呼ばない。
+- ChatGPT ResponsesのJSONでも、選択文と指示を別メッセージとして送る。
+- UIAの未対応分類と、応答しない照会の重複防止。
+- extra_bodyの入れ子のコメント保持と、TOMLに変換できないJSONの拒否。
+- 現地の午前0時のUTC変換。東京、西側の地域、夏時間終了日。
+
+cargo build --release --locked
+終了コード 0。optimized profile のビルド完了。
+
+JV_PREVIEW_HOLD_MS=200 cargo test --test overlay_preview cycle_overlay_states --locked -- --ignored --exact
+終了コード 0。実際のlayered windowに、最初の仮字幕と長い確定字幕を順に表示した。
+実マイクや実アプリへの貼り付けは使っていない。
+
+インストール確認
+2026-11-07T21:51:39+09:00
+PID 35404 の起動と生存を確認。
+インストール前のexeを別フォルダへ退避。
+ビルドしたexeとインストール先のSHA-256は一致。
+2DE0CD2B729DF658D2806FC9AF3AA12B543A7ABE868ED0224FA66742919C86CE
+起動前後で config.toml のSHA-256が不変。
+確認記録 %TEMP%\ohv-review-install-ee88ced4280f4279bd9a04402b17f614.json
+
+修正前の失敗を確認したテストは上に列挙した。それ以外の修正はコードの比較と修正後のテストによる確認である。
+独立した別モデルによるレビューはprovider-not-foundで実施できていない。
+実マイク、実アプリへの貼り付け、実際のクラウドAPI、2種類のローカルLLM、長時間録音とメモリ予算は未確認。
