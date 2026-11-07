@@ -99,6 +99,7 @@ struct TtsWorker {
     stdin: std::process::ChildStdin,
     lines: Receiver<String>,
     sample_rate: u32,
+    default_voice: Option<String>,
     next_id: u64,
     pending: VecDeque<String>,
 }
@@ -135,6 +136,7 @@ impl TtsWorker {
             stdin,
             lines: rx,
             sample_rate: 48000,
+            default_voice: None,
             next_id: 1,
             pending: VecDeque::new(),
         }
@@ -157,6 +159,10 @@ impl TtsWorker {
                 Some("ready") => {
                     self.sample_rate =
                         value["model"]["sample_rate"].as_u64().unwrap_or(48000) as u32;
+                    // voice が必須のモデルは、用意されている最初の voice を既定として使う
+                    self.default_voice = value["model"]["voices"][0]["name"]
+                        .as_str()
+                        .map(str::to_string);
                     return;
                 }
                 Some("fatal") => panic!("worker を起動できません: {value}"),
@@ -169,12 +175,15 @@ impl TtsWorker {
     fn synthesize(&mut self, text: &str) -> Vec<i16> {
         let id = self.next_id.to_string();
         self.next_id += 1;
-        let request = serde_json::json!({
+        let mut request = serde_json::json!({
             "type": "synthesize",
             "id": id,
             "text": text,
-        })
-        .to_string();
+        });
+        if let Some(voice) = &self.default_voice {
+            request["voice"] = serde_json::Value::String(voice.clone());
+        }
+        let request = request.to_string();
         writeln!(self.stdin, "{request}").expect("worker への書き込みに失敗しました");
         let mut pcm: Vec<u8> = Vec::new();
         loop {
