@@ -521,7 +521,10 @@ fn classify(http: u16, code: &str, message: &str) -> FormatError {
         }
         "" if http == 408 || http == 429 || http >= 500 => {
             let detail = message.trim();
-            FormatError::Http(http, (!detail.is_empty()).then(|| detail.chars().take(300).collect()))
+            FormatError::Http(
+                http,
+                (!detail.is_empty()).then(|| detail.chars().take(300).collect()),
+            )
         }
         _ => FormatError::Provider(explain_error(http, code)),
     }

@@ -156,10 +156,7 @@ pub(crate) fn transport_error(err: &(dyn std::error::Error + 'static)) -> Format
 /// HTTP エラーに、サーバーが返した本文の要点を添える(#12)。本文は先頭 4KB までしか読まない
 pub(crate) fn http_error(code: u16, resp: ureq::Response, api_key: &str) -> FormatError {
     let mut body = String::new();
-    let _ = resp
-        .into_reader()
-        .take(4096)
-        .read_to_string(&mut body);
+    let _ = resp.into_reader().take(4096).read_to_string(&mut body);
     FormatError::Http(code, error_summary(&body, api_key))
 }
 
