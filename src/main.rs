@@ -166,6 +166,7 @@ struct App {
     format_generation: FormatGeneration,
     transient_until: Option<Instant>,
     failed_pastes: VecDeque<String>,
+    last_paste_text: Option<String>,
 }
 
 fn mirror_of(state: &State) -> u8 {
@@ -311,6 +312,10 @@ impl App {
             Action::Paste { text } => {
                 // Only user-specified exact aliases are replaced, even if AI is off.
                 let text = lexicon::replace_explicit(&text, &self.cfg.terms);
+                // SendInput may report success even if a remapper causes only "V" to appear.
+                // Always retain one recoverable copy independent of the optional history log.
+                self.last_paste_text = Some(text.clone());
+                overlay::set_last_text_available(true);
                 if let Some(id) = self.session.recovery_id {
                     if let Err(e) = history::update_formatted(id, &text) {
                         eprintln!("復旧履歴の更新に失敗しました: {e}");
@@ -389,6 +394,26 @@ impl App {
                             self.failed_pastes.len()
                         )
                     },
+                });
+                self.transient_until = Some(Instant::now() + Duration::from_millis(2500));
+            }
+            Err(e) => self.show_overlay(OverlayKind::Error {
+                message: format!("コピーできませんでした（{e}）。トレイから再試行できます"),
+            }),
+        }
+    }
+
+    /// Explicit user action: copy the latest recognized text even if SendInput reported success.
+    /// A successful synthetic key sequence does not prove the destination pasted the text.
+    fn copy_last_text(&mut self) {
+        let Some(text) = self.last_paste_text.as_ref() else {
+            return;
+        };
+        match paste::copy_text_to_clipboard(text, overlay::hwnd()) {
+            Ok(()) => {
+                overlay::show(Mode::Notice {
+                    tone: Tone::Warn,
+                    text: "直近の認識テキストをコピーしました".into(),
                 });
                 self.transient_until = Some(Instant::now() + Duration::from_millis(2500));
             }
@@ -692,6 +717,7 @@ fn main() {
         format_generation: FormatGeneration::default(),
         transient_until: None,
         failed_pastes: VecDeque::new(),
+        last_paste_text: None,
     };
     hook::set_mirror(hook::MIRROR_IDLE);
 
@@ -703,6 +729,9 @@ fn main() {
 
         if overlay::take_recovery_request() {
             app.copy_failed_text();
+        }
+        if overlay::take_last_text_request() {
+            app.copy_last_text();
         }
         unsafe {
             while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
@@ -853,6 +882,7 @@ mod flow_tests {
             format_generation: FormatGeneration::default(),
             transient_until: None,
             failed_pastes: VecDeque::new(),
+            last_paste_text: None,
         }
     }
 

@@ -31,10 +31,13 @@ pub const WM_TRAY: u32 = WM_APP + 1;
 pub const CMD_EXIT: usize = 1001;
 pub const CMD_SETTINGS: usize = 1002;
 pub const CMD_RECOVER_TEXT: usize = 1003;
+pub const CMD_COPY_LAST_TEXT: usize = 1004;
 
 pub static EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 static RECOVERY_COUNT: AtomicUsize = AtomicUsize::new(0);
 static RECOVERY_REQUESTED: AtomicBool = AtomicBool::new(false);
+static LAST_TEXT_AVAILABLE: AtomicBool = AtomicBool::new(false);
+static LAST_TEXT_REQUESTED: AtomicBool = AtomicBool::new(false);
 static TASKBAR_CREATED: OnceLock<u32> = OnceLock::new();
 
 pub fn set_recovery_count(count: usize) {
@@ -43,6 +46,14 @@ pub fn set_recovery_count(count: usize) {
 
 pub fn take_recovery_request() -> bool {
     RECOVERY_REQUESTED.swap(false, Ordering::SeqCst)
+}
+
+pub fn set_last_text_available(available: bool) {
+    LAST_TEXT_AVAILABLE.store(available, Ordering::SeqCst);
+}
+
+pub fn take_last_text_request() -> bool {
+    LAST_TEXT_REQUESTED.swap(false, Ordering::SeqCst)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -788,6 +799,15 @@ unsafe fn show_exit_menu(window: HWND) {
         let recover = wide(&format!("未入力テキストをコピー（残り{count}件）"));
         let _ = AppendMenuW(menu, MF_STRING, CMD_RECOVER_TEXT, PCWSTR(recover.as_ptr()));
     }
+    if LAST_TEXT_AVAILABLE.load(Ordering::SeqCst) {
+        let recover_last = wide("直近の認識テキストをコピー");
+        let _ = AppendMenuW(
+            menu,
+            MF_STRING,
+            CMD_COPY_LAST_TEXT,
+            PCWSTR(recover_last.as_ptr()),
+        );
+    }
     let label = wide("終了");
     let _ = AppendMenuW(menu, MF_STRING, CMD_EXIT, PCWSTR(label.as_ptr()));
     let mut pt = POINT::default();
@@ -803,6 +823,9 @@ unsafe fn show_exit_menu(window: HWND) {
     }
     if cmd.0 as usize == CMD_RECOVER_TEXT && count > 0 {
         RECOVERY_REQUESTED.store(true, Ordering::SeqCst);
+    }
+    if cmd.0 as usize == CMD_COPY_LAST_TEXT && LAST_TEXT_AVAILABLE.load(Ordering::SeqCst) {
+        LAST_TEXT_REQUESTED.store(true, Ordering::SeqCst);
     }
     if cmd.0 as usize == CMD_EXIT {
         EXIT_REQUESTED.store(true, Ordering::SeqCst);
@@ -841,6 +864,8 @@ unsafe extern "system" fn wnd_proc(
                 EXIT_REQUESTED.store(true, Ordering::SeqCst);
             } else if wparam.0 == CMD_RECOVER_TEXT && RECOVERY_COUNT.load(Ordering::SeqCst) > 0 {
                 RECOVERY_REQUESTED.store(true, Ordering::SeqCst);
+            } else if wparam.0 == CMD_COPY_LAST_TEXT && LAST_TEXT_AVAILABLE.load(Ordering::SeqCst) {
+                LAST_TEXT_REQUESTED.store(true, Ordering::SeqCst);
             }
             LRESULT(0)
         }
