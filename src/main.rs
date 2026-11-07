@@ -18,6 +18,7 @@ mod sound;
 mod startup;
 mod state;
 mod uia;
+mod usage;
 
 use asr::Worker;
 use audio::Recorder;
@@ -182,6 +183,8 @@ struct Session {
     intervals: Vec<Interval>,
     next_interval_index: usize,
     sending: Option<Sending>,
+    /// Enter を押した時点。Enter から結果までの時間を記録するのに使う
+    enter_at: Option<Instant>,
     /// 送った仮の認識と、確定した文章。帯の表示に使う
     partial: Option<Partial>,
     next_partial_index: usize,
@@ -212,6 +215,7 @@ impl Session {
             intervals: Vec::new(),
             next_interval_index: 0,
             sending: None,
+            enter_at: None,
             partial: None,
             next_partial_index: 0,
             last_partial_at: None,
@@ -258,6 +262,14 @@ impl Session {
         let id = format!("s{}", self.next_interval_index);
         self.next_interval_index += 1;
         self.unaccounted_bytes += bytes;
+        usage::log(
+            "interval_closed",
+            serde_json::json!({
+                "id": id,
+                "ms": bytes as u64 * 500 / self.sample_rate.max(1) as u64,
+                "bytes": bytes,
+            }),
+        );
         self.intervals.push(Interval {
             id,
             pcm,
@@ -284,6 +296,18 @@ impl Session {
         self.unaccounted_bytes = self.unaccounted_bytes.saturating_sub(interval.pcm.len());
         interval.pcm = Vec::new();
         self.asr_failures = 0;
+        usage::log(
+            "interval_result",
+            serde_json::json!({
+                "id": interval.id,
+                "latency_ms": interval
+                    .transcribe_at
+                    .map(|at| at.elapsed().as_millis() as u64)
+                    .unwrap_or(0),
+                "empty": text.is_empty(),
+                "chars": text.chars().count(),
+            }),
+        );
         // 仮の文字があれば確定に置き換わる(仮は空に戻す)
         let partial = if self.partial.as_ref().is_some_and(|p| p.id != id) {
             String::new()
@@ -323,6 +347,22 @@ struct App {
     format_generation: FormatGeneration,
     transient_until: Option<Instant>,
     failed_pastes: VecDeque<String>,
+}
+
+/// 整形の結果の記録に使う、成功かどうか
+fn outcome_ok(outcome: &FormatOutcome) -> bool {
+    matches!(
+        outcome,
+        FormatOutcome::Done { .. } | FormatOutcome::EditDone { .. }
+    )
+}
+
+/// 整形の結果の記録に使う、失敗の理由
+fn outcome_reason(outcome: &FormatOutcome) -> Option<String> {
+    match outcome {
+        FormatOutcome::Failed { reason, .. } => Some(reason.clone()),
+        _ => None,
+    }
 }
 
 fn mirror_of(state: &State) -> u8 {
@@ -399,10 +439,12 @@ impl App {
                     }
                 }
                 // 残しておいた worker があれば、起動とモデルの読み込みを飛ばして使う
+                let mut reused_worker = false;
                 let kept = match self.kept_worker.take() {
                     Some((worker, expires)) if Instant::now() < expires => {
                         let mut worker = worker;
                         worker.forget_ids();
+                        reused_worker = true;
                         Some(worker)
                     }
                     Some((worker, _)) => {
@@ -451,6 +493,14 @@ impl App {
                         return false;
                     }
                 }
+                usage::log(
+                    "session_start",
+                    serde_json::json!({
+                        "sample_rate": self.session.sample_rate,
+                        "reused_worker": reused_worker,
+                        "edit_mode": self.cfg.edit_mode,
+                    }),
+                );
                 if self.cfg.has_api_key() {
                     let cfg = self.cfg.format.clone();
                     std::thread::spawn(move || format::prewarm(&cfg));
@@ -475,6 +525,7 @@ impl App {
                 if self.cfg.live_caption {
                     overlay::set_caption(&self.session.confirmed_text, "");
                 }
+                self.session.enter_at = Some(Instant::now());
                 self.session.stop_requested = true;
                 self.sfx(Sound::Stop);
             }
@@ -531,6 +582,14 @@ impl App {
                             reason: e.to_string(),
                         },
                     };
+                    usage::log(
+                        "format_result",
+                        serde_json::json!({
+                            "ok": outcome_ok(&outcome),
+                            "ms": started.elapsed().as_millis() as u64,
+                            "reason": outcome_reason(&outcome),
+                        }),
+                    );
                     let _ = tx.send(outcome);
                 });
             }
@@ -603,6 +662,13 @@ impl App {
                     .take()
                     .ok_or_else(|| "録音開始時の入力先が不明です".to_string())
                     .and_then(|target| paste::paste_text(&text, target, overlay::hwnd()));
+                usage::log(
+                    "paste",
+                    serde_json::json!({
+                        "ok": result.is_ok(),
+                        "error": result.as_ref().err().map(ToString::to_string),
+                    }),
+                );
                 match result {
                     Ok(()) => {
                         if let Some(id) = self.session.recovery_id {
@@ -722,6 +788,7 @@ impl App {
                 self.transient_until = Some(Instant::now() + Duration::from_millis(2500));
             }
             OverlayKind::Error { message } => {
+                usage::log("error", serde_json::json!({"message": message}));
                 self.sfx(Sound::Error);
                 overlay::show(Mode::Notice {
                     tone: Tone::Error,
@@ -895,6 +962,10 @@ impl App {
 
         // 送り直し。worker を殺し、結果が出ていない区間を送り直すために印を戻す
         if restart && fatal.is_none() {
+            usage::log(
+                "asr_resend",
+                serde_json::json!({"failures": self.session.asr_failures}),
+            );
             if let Some(worker) = self.session.worker.take() {
                 worker.shutdown();
             }
@@ -934,7 +1005,17 @@ impl App {
                     match worker.transcribe(&id, self.session.sample_rate, &words) {
                         Ok(true) => {
                             if sending.is_partial {
-                                self.session.partial = Some(Partial { id });
+                                self.session.partial = Some(Partial { id: id.clone() });
+                                usage::log(
+                                    "partial_sent",
+                                    serde_json::json!({
+                                        "id": id,
+                                        "open_ms": self.session.segmenter.open_samples().len()
+                                            as u64
+                                            * 500
+                                            / self.session.sample_rate.max(1) as u64,
+                                    }),
+                                );
                             } else if let Some(interval) =
                                 self.session.intervals.iter_mut().find(|i| i.id == id)
                             {
@@ -983,6 +1064,18 @@ impl App {
                 });
                 return;
             }
+            usage::log(
+                "asr_done",
+                serde_json::json!({
+                    "enter_to_result_ms": self
+                        .session
+                        .enter_at
+                        .map(|at| at.elapsed().as_millis() as u64)
+                        .unwrap_or(0),
+                    "intervals": self.session.intervals.len(),
+                    "chars": text.chars().count(),
+                }),
+            );
             let has_api_key = self.cfg.has_api_key();
             self.dispatch(Event::AsrDone { text, has_api_key });
         }
@@ -1168,6 +1261,7 @@ fn main() {
             return;
         }
     };
+    usage::ENABLED.store(cfg.format.usage_log, std::sync::atomic::Ordering::Relaxed);
     let hotkey = config::parse_hotkey(&cfg.hotkey).unwrap_or(config::Hotkey { mods: 0, vk: 0x77 });
     overlay::set_theme(&cfg.theme);
     overlay::set_caption_anchor(&cfg.caption_position);
@@ -1257,6 +1351,13 @@ fn main() {
                     let edit_selection = if app.cfg.edit_mode && matches!(app.state, State::Idle) {
                         match uia::probe_selected_text(Duration::from_millis(100)) {
                             uia::SelectionProbe::Selected(text) => {
+                                usage::log(
+                                    "edit_probe",
+                                    serde_json::json!({
+                                        "result": "selected",
+                                        "chars": text.chars().count(),
+                                    }),
+                                );
                                 if text.chars().count() > MAX_EDIT_SELECTION_CHARS {
                                     Some(Err("選択が長すぎるため Edit を使えません".into()))
                                 } else {
@@ -1264,9 +1365,16 @@ fn main() {
                                 }
                             }
                             uia::SelectionProbe::Unavailable => {
+                                usage::log(
+                                    "edit_probe",
+                                    serde_json::json!({"result": "unavailable"}),
+                                );
                                 Some(Err("このアプリでは Edit を使えません".into()))
                             }
-                            uia::SelectionProbe::None => None,
+                            uia::SelectionProbe::None => {
+                                usage::log("edit_probe", serde_json::json!({"result": "none"}));
+                                None
+                            }
                         }
                     } else {
                         None
@@ -1326,6 +1434,8 @@ fn main() {
                         }
                         overlay::set_theme(&cfg.theme);
                         overlay::set_caption_anchor(&cfg.caption_position);
+                        usage::ENABLED
+                            .store(cfg.format.usage_log, std::sync::atomic::Ordering::Relaxed);
                         app.cfg = cfg;
                     }
                     Err(message) => {

@@ -266,6 +266,7 @@ impl Settings {
                 "edit_prompt",
                 V::from(f.edit_prompt.as_str()),
             ),
+            (Some("format"), "usage_log", V::from(f.usage_log)),
             (Some("format"), "base_url", V::from(f.base_url.trim())),
             (Some("format"), "api_key", V::from("")),
             (Some("format"), "model", V::from(f.model.trim())),
@@ -1444,6 +1445,12 @@ impl Settings {
     fn about(&mut self, ui: &mut egui::Ui) {
         section(ui, "情報");
         ui.label(format!("OpenHinoVoice {}", env!("CARGO_PKG_VERSION")));
+        ui.add_space(10.0);
+        ui.checkbox(
+            &mut self.cfg.format.usage_log,
+            "この PC での動きを記録する(音声は含めず、外にも送らない)",
+        );
+        hint(ui, "区間の長さ、Enter からの待ち時間、失敗の理由を %APPDATA%\\OpenHinoVoice\\usage-log.jsonl に書きます。不具合の調査用です。cargo run --release --example usage_report で集計を読めます");
         ui.add_space(10.0);
         grid(ui, "about", |ui| {
             ui.label("設定ファイル");

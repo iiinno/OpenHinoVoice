@@ -91,6 +91,9 @@ prompt = """
 offline = false
 # Edit モードの、書き換え方の追加の指示(任意)。例: 「ですます調にする」
 edit_prompt = ""
+# この PC での動き(区間の長さ、待ち時間、失敗)を usage-log.jsonl に記録する。
+# 音声は含めず、外にも送らない
+usage_log = true
 
 # リクエスト本体に混ぜる項目。deepseek-v4.1-flash は推論を止めないと応答が倍近く遅くなる
 [format.extra_body]
@@ -134,6 +137,10 @@ pub struct FormatConfig {
     /// Edit モードの、書き換え方の追加の指示。空なら既定の指示だけを使う
     #[serde(default)]
     pub edit_prompt: String,
+    /// この PC での動き(区間の長さ、待ち時間、失敗)を、音声を含めず
+    /// usage-log.jsonl に記録する。外には送らない。調査のための初期値オン
+    #[serde(default = "default_true")]
+    pub usage_log: bool,
 }
 
 fn default_provider() -> String {
@@ -169,6 +176,7 @@ impl Default for FormatConfig {
             fast: false,
             offline: false,
             edit_prompt: String::new(),
+            usage_log: true,
         }
     }
 }
