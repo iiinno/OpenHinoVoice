@@ -79,9 +79,18 @@ To start recording from a mouse button, assign a key combination such as Ctrl+Al
 | ChatGPT plan | ChatGPT Plus or Pro subscribers. No extra cost; uses your plan |
 | OpenCode Go | OpenCode Go subscribers. Uses a low-cost model (`deepseek-v4.1-flash` by default) |
 | OpenAI API key | OpenAI API users. Uses `gpt-6-luna` by default |
+| Anthropic (Claude) | Anthropic API users. Uses `claude-haiku-5-5` by default |
+| Google Gemini | Gemini API key holders, via the OpenAI-compatible endpoint |
+| OpenRouter | One key for many models |
+| Groq | Fast inference API |
+| Local LLM | Any OpenAI-compatible engine running on this PC. Speech and text never leave the machine |
 | Other | Any OpenAI-compatible API |
 
 Only the transcribed text is sent. Check each provider's terms for how they handle data. ChatGPT sign-in tokens are encrypted with Windows DPAPI and stored on this PC.
+
+## Offline mode
+
+Turn on "offline mode" on the AI page and nothing leaves this PC: only localhost formatting endpoints are accepted, ChatGPT tokens are not refreshed, and the app tells you at startup when the recognition model has not been downloaded yet (it never downloads one by itself). With a local LLM as the provider, recording through pasting works with the network fully disconnected.
 
 OpenCode Go's terms describe it as designed for OpenCode and other coding agents. Cleaning up dictation is outside that intended use, so use it at your own discretion.
 

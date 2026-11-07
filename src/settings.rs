@@ -168,6 +168,8 @@ struct Settings {
     history_entries: Vec<history::RecoveryEntry>,
     history_loaded: bool,
     history_clear_confirm: bool,
+    /// リクエストの追加項目(extra_body)の編集用。JSON の形で書いてもらう
+    extra_body_text: String,
 }
 
 impl Settings {
@@ -179,6 +181,8 @@ impl Settings {
                 Some((false, e)),
             ),
         };
+        let extra_body_text =
+            serde_json::to_string_pretty(&cfg.format.extra_body).unwrap_or_else(|_| "{}".into());
         Settings {
             timeout_secs: cfg.format.timeout_ms as f32 / 1000.0,
             cfg,
@@ -201,6 +205,7 @@ impl Settings {
             history_entries: Vec::new(),
             history_loaded: false,
             history_clear_confirm: false,
+            extra_body_text,
         }
     }
 
@@ -232,7 +237,15 @@ impl Settings {
             (None, "recovery_history", V::from(self.cfg.recovery_history)),
             (None, "sounds", V::from(self.cfg.sounds)),
             (None, "volume", V::from(self.cfg.volume as i64)),
+            (None, "live_caption", V::from(self.cfg.live_caption)),
+            (None, "partial_caption", V::from(self.cfg.partial_caption)),
+            (
+                None,
+                "caption_position",
+                V::from(self.cfg.caption_position.as_str()),
+            ),
             (Some("format"), "provider", V::from(f.provider.as_str())),
+            (Some("format"), "offline", V::from(f.offline)),
             (Some("format"), "base_url", V::from(f.base_url.trim())),
             (Some("format"), "api_key", V::from("")),
             (Some("format"), "model", V::from(f.model.trim())),
@@ -256,6 +269,14 @@ impl Settings {
             ),
             (Some("format"), "prompt", V::from(f.prompt.as_str())),
         ];
+        // extra_body は JSON で編集してもらい、保存のときに確かめる
+        let extra_body_text = self.extra_body_text.trim();
+        let extra_body: serde_json::Map<String, serde_json::Value> = if extra_body_text.is_empty() {
+            serde_json::Map::new()
+        } else {
+            serde_json::from_str(extra_body_text)
+                .map_err(|e| format!("リクエストの追加項目(extra_body)の JSON が不正です: {e}"))?
+        };
         let updated = config::set_values(text.trim_start_matches('\u{feff}'), &edits)?;
         let mut doc: toml_edit::DocumentMut = updated
             .parse()
@@ -281,6 +302,16 @@ impl Settings {
                 tables.push(table);
             }
             doc["terms"] = toml_edit::Item::ArrayOfTables(tables);
+        }
+        // extra_body の表を置き換える。空のときは項目を消す
+        if extra_body.is_empty() {
+            doc["format"]["extra_body"] = toml_edit::Item::None;
+        } else {
+            let mut table = toml_edit::Table::new();
+            for (key, value) in &extra_body {
+                table.insert(key, toml_edit::Item::Value(json_value_to_toml(value)));
+            }
+            doc["format"]["extra_body"] = toml_edit::Item::Table(table);
         }
         config::save_api_keys(f.api_key.trim(), f.openai_api_key.trim())?;
         config::save(&doc.to_string())?;
@@ -540,20 +571,33 @@ impl Settings {
             ui.label("接続先");
             ui.vertical(|ui| {
                 let f = &mut self.cfg.format.provider;
-                ui.radio_value(f, "opencode-go".into(), "OpenCode Go");
-                ui.radio_value(f, "chatgpt".into(), "ChatGPT のプラン(Plus、Pro)");
-                ui.radio_value(f, "openai".into(), "OpenAI の API キー");
-                ui.radio_value(f, "custom".into(), "その他の OpenAI 互換サービス");
+                for preset in crate::provider::all() {
+                    ui.radio_value(f, preset.id.to_string(), preset.label);
+                }
             });
             ui.end_row();
         });
         if before != self.cfg.format.provider {
+            // 接続先を変えたら、その接続先の初期値にそろえる
+            if let Some(preset) = crate::provider::find(&self.cfg.format.provider) {
+                if !preset.base_url.is_empty() {
+                    self.cfg.format.base_url = preset.base_url.to_string();
+                }
+                if !preset.default_model.is_empty() {
+                    self.cfg.format.model = preset.default_model.to_string();
+                }
+                // ローカルのエンジンは、最初の要求でモデルを読み込むので待ち時間を長めに
+                if preset.id == "local" && self.timeout_secs < 60.0 {
+                    self.timeout_secs = 60.0;
+                }
+            }
             self.models.clear();
             self.test_result = None;
         }
         ui.add_space(14.0);
 
-        match self.cfg.format.provider.as_str() {
+        let provider = self.cfg.format.provider.clone();
+        match provider.as_str() {
             "chatgpt" => self.chatgpt_fields(ui),
             "openai" => {
                 let f = &mut self.cfg.format;
@@ -577,43 +621,74 @@ impl Settings {
                 );
             }
             provider => {
-                let custom = provider == "custom";
+                let editable_url = provider == "custom" || provider == "local";
+                let key_optional = provider == "local";
+                let anthropic = provider == "anthropic";
                 let f = &mut self.cfg.format;
                 let show_key = &mut self.show_key;
                 grid(ui, "compat", |ui| {
-                    if custom {
+                    if editable_url {
                         ui.label("ベース URL");
+                        let url_hint = if provider == "local" {
+                            "http://127.0.0.1:8080/v1"
+                        } else {
+                            "https://example.com/v1"
+                        };
                         ui.add(
                             egui::TextEdit::singleline(&mut f.base_url)
-                                .hint_text("https://example.com/v1")
+                                .hint_text(url_hint)
                                 .desired_width(340.0),
                         );
+                        if provider == "local" {
+                            hint(ui, "OpenAI 互換の API を話すローカルのエンジンの URL です。/v1 まで入れてください");
+                        }
                         ui.end_row();
                     }
-                    ui.label("API キー");
-                    ui.horizontal(|ui| {
-                        ui.add(
-                            egui::TextEdit::singleline(&mut f.api_key)
-                                .password(!*show_key)
-                                .desired_width(300.0),
-                        );
-                        ui.checkbox(show_key, "表示");
-                    });
-                    ui.end_row();
+                    if !(key_optional && f.api_key.is_empty()) {
+                        ui.label(if key_optional {
+                            "API キー(任意)"
+                        } else {
+                            "API キー"
+                        });
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut f.api_key)
+                                    .password(!*show_key)
+                                    .desired_width(300.0),
+                            );
+                            ui.checkbox(show_key, "表示");
+                        });
+                        ui.end_row();
+                    }
                 });
-                if !custom {
-                    f.base_url = "https://opencode.ai/inference/go/openai/v1".into();
+                if !editable_url {
+                    if let Some(preset) = crate::provider::find(provider) {
+                        if !preset.base_url.is_empty() {
+                            f.base_url = preset.base_url.to_string();
+                        }
+                    }
                 }
-                self.model_picker(ui);
+                if anthropic {
+                    hint(ui, "初期のモデルは claude-haiku-5-5 です。 Anthropic の Messages API を使います");
+                } else {
+                    self.model_picker(ui);
+                }
             }
         }
+
+        ui.add_space(10.0);
+        ui.checkbox(
+            &mut self.cfg.format.offline,
+            "オフラインモード(この PC の外へ一切通信しない)",
+        );
+        hint(ui, "オンにすると、整形の接続先は localhost だけを受け付け、ChatGPT のトークンの更新もしません。認識モデルが未取得のままでは音声入力が動かないので、オンラインのときに 1 回取得してください");
 
         ui.add_space(14.0);
         grid(ui, "timeout", |ui| {
             ui.label("応答の停止を待つ時間");
             ui.vertical(|ui| {
                 ui.add(
-                    egui::Slider::new(&mut self.timeout_secs, 3.0..=30.0)
+                    egui::Slider::new(&mut self.timeout_secs, 3.0..=120.0)
                         .step_by(0.5)
                         .suffix(" 秒"),
                 );
@@ -639,6 +714,35 @@ impl Settings {
             if ui.small_button("初期の指示文に戻す").clicked() {
                 self.cfg.format.prompt = config::DEFAULT_PROMPT.to_string();
             }
+        });
+
+        ui.add_space(10.0);
+        egui::CollapsingHeader::new("リクエストの追加項目(extra_body)").show(ui, |ui| {
+            hint(ui, "リクエストの本体にそのまま混ぜる項目を JSON で書きます。推論(考える過程)の止め方はエンジンごとに違うので、ここで指定します。空なら送りません");
+            ui.add(
+                egui::TextEdit::multiline(&mut self.extra_body_text)
+                    .desired_rows(4)
+                    .desired_width(f32::INFINITY)
+                    .code_editor(),
+            );
+            ui.horizontal(|ui| {
+                if ui.small_button("空にする").clicked() {
+                    self.extra_body_text.clear();
+                }
+                if ui
+                    .small_button("推論を止める例(OpenAI)")
+                    .clicked()
+                {
+                    self.extra_body_text = r#"{"reasoning_effort": "minimal"}"#.into();
+                }
+                if ui
+                    .small_button("推論を止める例(llama.cpp 系)")
+                    .clicked()
+                {
+                    self.extra_body_text =
+                        r#"{"chat_template_kwargs": {"enable_thinking": false}}"#.into();
+                }
+            });
         });
 
         ui.add_space(14.0);
@@ -1190,6 +1294,35 @@ impl Settings {
         );
         hint(ui, "効果音: earshot(MIT)で作成");
         hint(ui, "画面: egui(MIT / Apache-2.0)");
+    }
+}
+
+fn json_value_to_toml(value: &serde_json::Value) -> toml_edit::Value {
+    match value {
+        serde_json::Value::String(s) => toml_edit::Value::from(s.as_str()),
+        serde_json::Value::Bool(b) => toml_edit::Value::from(*b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                toml_edit::Value::from(i)
+            } else {
+                toml_edit::Value::from(n.as_f64().unwrap_or(0.0))
+            }
+        }
+        serde_json::Value::Array(a) => {
+            let mut array = toml_edit::Array::new();
+            for item in a {
+                array.push(json_value_to_toml(item));
+            }
+            toml_edit::Value::Array(array)
+        }
+        serde_json::Value::Object(o) => {
+            let mut table = toml_edit::InlineTable::new();
+            for (k, v) in o {
+                table.insert(k, json_value_to_toml(v));
+            }
+            toml_edit::Value::InlineTable(table)
+        }
+        serde_json::Value::Null => toml_edit::Value::from(""),
     }
 }
 

@@ -103,7 +103,17 @@ pub(crate) fn streaming_agent(wait: Duration, pooled: bool) -> ureq::Agent {
 }
 
 fn wait_of(cfg: &FormatConfig) -> Duration {
-    Duration::from_millis(cfg.timeout_ms.max(1))
+    // ローカルのエンジンは最初の要求でモデルをメモリに読み込む。待ち時間が
+    // 初期値のままなら、読み込みに間に合うよう長めにしておく。利用者が
+    // 手で変えた値はそのまま使う
+    let ms = if cfg.timeout_ms == crate::config::default_timeout_ms()
+        && crate::provider::is_local_url(&cfg.base_url)
+    {
+        cfg.timeout_ms.max(60_000)
+    } else {
+        cfg.timeout_ms
+    };
+    Duration::from_millis(ms.max(1))
 }
 
 /// 一時的な失敗なら、少し間を置いて最大 MAX_ATTEMPTS 回まで送り直す。
@@ -275,6 +285,37 @@ pub fn format_with_deltas(
     if raw.trim().is_empty() {
         return Err(FormatError::BadResponse("書き起こしが空です".into()));
     }
+    // プリセットに載っている接続先で、URL とモデルが空のときは初期値を使う。
+    // 古い設定ファイルや手で書いた設定でも動くようにする
+    let preset = crate::provider::find(&cfg.provider);
+    let base_url = if cfg.base_url.trim().is_empty() {
+        preset
+            .map_or(cfg.base_url.as_str(), |p| p.base_url)
+            .to_string()
+    } else {
+        cfg.base_url.clone()
+    };
+    let model = if cfg.model.trim().is_empty() {
+        preset
+            .map_or(cfg.model.as_str(), |p| p.default_model)
+            .to_string()
+    } else {
+        cfg.model.clone()
+    };
+    // オフラインモードでは、この PC の外へ一切送らない。localhost の
+    // OpenAI 互換エンジンだけを許す。ChatGPT はトークンの更新もしない
+    if cfg.offline {
+        if cfg.provider == "chatgpt" {
+            return Err(FormatError::Provider(
+                "オフラインモードでは ChatGPT に接続できません".into(),
+            ));
+        }
+        if !crate::provider::is_local_url(&base_url) {
+            return Err(FormatError::Provider(
+                "オフラインモードでは localhost の接続先だけを使えます".into(),
+            ));
+        }
+    }
     // 旧設定の既定プロンプトに残った <text> の説明も実際のメッセージ構造へ合わせる。
     let prompt = crate::config::current_prompt(&cfg.prompt);
     let timeout = wait_of(cfg);
@@ -292,6 +333,15 @@ pub fn format_with_deltas(
                 on_delta,
             )?
         }
+        "anthropic" => anthropic_messages(
+            &base_url,
+            &cfg.api_key,
+            &model,
+            &prompt,
+            raw,
+            timeout,
+            on_delta,
+        )?,
         "openai" => {
             // OpenAI のモデルは temperature を受け付けないものがあるので送らない。Fast モードは service_tier で頼む
             let mut extra = serde_json::Map::new();
@@ -311,9 +361,9 @@ pub fn format_with_deltas(
             )?
         }
         _ => chat_completions(
-            &cfg.base_url,
+            &base_url,
             &cfg.api_key,
-            &cfg.model,
+            &model,
             &cfg.extra_body,
             Some(0),
             &prompt,
@@ -361,8 +411,14 @@ pub fn validate_base_url(raw: &str) -> Result<(), FormatError> {
     ))
 }
 
-/// 録音中に整形 API への接続を確立しておき、Enter 後の整形で確立済みの接続を再利用させる
+/// 録音中に整形 API への接続を確立しておき、Enter 後の整形で確立済みの接続を再利用させる。
+/// ローカルの OpenAI 互換エンジンには、さらに小さな要求を送ってモデルを
+/// メモリに読み込ませる。初回の読み込みが Enter 後の整形に間に合わなくなるのを防ぐ
 pub fn prewarm(cfg: &FormatConfig) {
+    if cfg.offline && !crate::provider::is_local_url(&cfg.base_url) {
+        // オフラインでは外へ出ない。ChatGPT のトークンの更新もしない
+        return;
+    }
     match cfg.provider.as_str() {
         // 接続は使い回せないので、ChatGPT はトークンの更新だけを録音中に済ませる
         "chatgpt" => {
@@ -388,9 +444,110 @@ pub fn prewarm(cfg: &FormatConfig) {
         Err(ureq::Error::Transport(_)) => return,
     };
     let _ = resp.into_string();
+    if crate::provider::is_local_url(base) && !cfg.model.trim().is_empty() {
+        // モデル名が決まっているローカルのエンジンに、1 トークンだけ返させる要求を送る。
+        // 読み込みに時間がかかっても録音中なので待ちには入らない
+        let body = serde_json::json!({
+            "model": cfg.model,
+            "max_tokens": 1,
+            "messages": [{ "role": "user", "content": "hi" }]
+        });
+        let loaded = streaming_agent(Duration::from_secs(120), true)
+            .post(&format!("{base}/chat/completions"))
+            .timeout(Duration::from_secs(120))
+            .set("Authorization", &format!("Bearer {key}"))
+            .set("Content-Type", "application/json")
+            .set("User-Agent", USER_AGENT)
+            .send_json(body);
+        if let Ok(resp) = loaded {
+            let _ = resp.into_string();
+        }
+    }
 }
 
 const OPENAI_API: &str = "https://api.openai.com/v1";
+
+/// Anthropic の Messages API を呼ぶ。システムの指示は system に、本文は
+/// ユーザーメッセージに置く。応答は OpenAI と違う形式の SSE で届く
+fn anthropic_messages(
+    base_url: &str,
+    api_key: &str,
+    model: &str,
+    prompt: &str,
+    raw: &str,
+    wait: Duration,
+    on_delta: &dyn Fn(&str),
+) -> Result<String, FormatError> {
+    validate_base_url(base_url)?;
+    if api_key.trim().is_empty() {
+        return Err(FormatError::MissingApiKey);
+    }
+    if model.trim().is_empty() {
+        return Err(FormatError::MissingModel);
+    }
+    let url = format!("{}/messages", base_url.trim_end_matches('/'));
+    let raw_chars = raw.chars().count();
+    let body = serde_json::json!({
+        "model": model,
+        "max_tokens": raw_chars.saturating_mul(4).saturating_add(256).min(16_384),
+        "stream": true,
+        "system": prompt,
+        "messages": [{ "role": "user", "content": raw }]
+    });
+    let agent = streaming_agent(wait, false);
+    let started = std::time::Instant::now();
+    let resp = agent
+        .post(&url)
+        .set("x-api-key", api_key)
+        .set("anthropic-version", "2023-06-01")
+        .set("Content-Type", "application/json")
+        .set("User-Agent", USER_AGENT)
+        .send_json(body);
+    let resp = match resp {
+        Ok(r) => r,
+        Err(ureq::Error::Status(code, _)) => return Err(FormatError::Http(code)),
+        Err(ureq::Error::Transport(t)) => return Err(transport_error(&t)),
+    };
+    read_anthropic_stream(resp.into_reader(), started, on_delta)
+}
+
+/// Anthropic の SSE を読む。content_block_delta の text_delta をつなぎ、
+/// message_stop で終わる
+fn read_anthropic_stream(
+    reader: impl Read,
+    started: std::time::Instant,
+    on_delta: &dyn Fn(&str),
+) -> Result<String, FormatError> {
+    let mut text = String::new();
+    for line in BufReader::new(reader).lines() {
+        let line = line.map_err(|e| transport_error(&e))?;
+        if started.elapsed() > CEILING {
+            return Err(FormatError::Timeout);
+        }
+        let Some(data) = line.strip_prefix("data:") else {
+            continue;
+        };
+        let Ok(event) = serde_json::from_str::<serde_json::Value>(data.trim()) else {
+            continue;
+        };
+        match event["type"].as_str().unwrap_or("") {
+            "content_block_delta" => {
+                if let Some(delta) = event["delta"]["text"].as_str() {
+                    text.push_str(delta);
+                    on_delta(&text);
+                }
+            }
+            "message_stop" => return Ok(text.trim().to_string()),
+            "error" => {
+                return Err(FormatError::BadResponse(
+                    event["error"]["message"].as_str().unwrap_or("error").into(),
+                ))
+            }
+            _ => {}
+        }
+    }
+    Err(FormatError::Network("応答が途中で切れました".into()))
+}
 
 #[allow(clippy::too_many_arguments)]
 fn chat_completions(
@@ -555,6 +712,7 @@ mod security_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
@@ -659,28 +817,74 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let server = thread::spawn(move || {
-            // 接続は 1 本だけ受け付ける。format が新しく接続すると応答が来ず打ち切りで失敗する
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut methods = Vec::new();
-            for body in [
-                r#"{"data":[]}"#,
-                r#"{"choices":[{"message":{"content":"hello"}}]}"#,
-            ] {
-                let req = read_request(&mut stream);
-                methods.push(req.split(' ').next().unwrap_or("").to_string());
-                let resp = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
-                    body.len()
+            // 応答の本体を受付順に 1 つずつ返す。要求は接続をまたいで来るので、
+            // 3 つ集まるまで接続を受け続ける(10 秒で打ち切り)
+            let bodies = std::sync::Arc::new(Mutex::new(VecDeque::from([
+                r#"{"data":[]}"#.to_string(),
+                r#"{"choices":[]}"#.to_string(),
+                r#"{"choices":[{"message":{"content":"hello"}}]}"#.to_string(),
+            ])));
+            let methods: std::sync::Arc<Mutex<Vec<String>>> = Default::default();
+            let mut accepted = Vec::new();
+            listener
+                .set_nonblocking(true)
+                .expect("listener を非同期にできない");
+            let started = Instant::now();
+            while methods.lock().unwrap_or_else(|p| p.into_inner()).len() < 3 {
+                assert!(
+                    started.elapsed() < Duration::from_secs(10),
+                    "要求が 3 つ集まりません"
                 );
-                stream.write_all(resp.as_bytes()).unwrap();
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let bodies = bodies.clone();
+                        let methods_ref = methods.clone();
+                        accepted.push(thread::spawn(move || {
+                            let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+                            loop {
+                                let req = read_request(&mut stream);
+                                if req.is_empty() {
+                                    break;
+                                }
+                                methods_ref
+                                    .lock()
+                                    .unwrap_or_else(|p| p.into_inner())
+                                    .push(req.split(' ').next().unwrap_or("").to_string());
+                                let Some(body) = bodies
+                                    .lock()
+                                    .unwrap_or_else(|p| p.into_inner())
+                                    .pop_front()
+                                else {
+                                    break;
+                                };
+                                let resp = format!(
+                                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                                    body.len()
+                                );
+                                stream.write_all(resp.as_bytes()).unwrap();
+                            }
+                        }));
+                    }
+                    Err(_) => thread::sleep(Duration::from_millis(5)),
+                }
             }
+            for handle in accepted {
+                handle.join().unwrap();
+            }
+            let methods = methods.lock().unwrap_or_else(|p| p.into_inner()).clone();
+            // 整形は prewarm の GET と同じ接続を再利用する。モデル読み込みの
+            // 小さな要求だけが別の接続になる
+            assert_eq!(methods.len(), 3, "{methods:?}");
+            assert_eq!(methods.iter().filter(|m| *m == "POST").count(), 2);
             methods
         });
         let mut cfg = cfg_for(format!("http://{addr}"));
         cfg.timeout_ms = 1000;
+        cfg.model = "test-model".into();
         prewarm(&cfg);
         assert_eq!(format(&cfg, "hello").unwrap(), "hello");
-        assert_eq!(server.join().unwrap(), ["GET", "POST"]);
+        let methods = server.join().unwrap();
+        assert_eq!(methods[0], "GET", "最初は /models: {methods:?}");
     }
 
     #[test]
@@ -992,6 +1196,122 @@ Connection: close
 
 {{}}"
         )
+    }
+
+    #[test]
+    fn anthropic_messages_sends_key_headers_and_reads_sse() {
+        let url = serve_once(|req| {
+            let lower = req.to_ascii_lowercase();
+            assert!(lower.contains("x-api-key: test-key"), "request: {req}");
+            assert!(
+                lower.contains("anthropic-version: 2023-06-01"),
+                "request: {req}"
+            );
+            let body = req.split_once("\r\n\r\n").unwrap().1;
+            let payload: serde_json::Value = serde_json::from_str(body).unwrap();
+            assert_eq!(payload["model"], "claude-haiku-5-5");
+            assert_eq!(payload["system"], "prompt");
+            assert_eq!(payload["messages"][0]["role"], "user");
+            assert_eq!(payload["messages"][0]["content"], "hello");
+            let sse = concat!(
+                "event: message_start\n",
+                "data: {\"type\":\"message_start\"}\n\n",
+                "event: content_block_delta\n",
+                "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"こんにちは。\"}}\n\n",
+                "event: message_stop\n",
+                "data: {\"type\":\"message_stop\"}\n\n"
+            );
+            (
+                200,
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{sse}"
+                ),
+            )
+        });
+        let mut cfg = cfg_for(url);
+        cfg.provider = "anthropic".into();
+        cfg.api_key = "test-key".into();
+        cfg.model = "claude-haiku-5-5".into();
+        let seen: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        let result = format_with_deltas(&cfg, "hello", &|t| {
+            seen.lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(t.to_string());
+        });
+        let seen = seen.into_inner().unwrap_or_default();
+        assert_eq!(result.unwrap(), "こんにちは。");
+        assert_eq!(seen.last().map(String::as_str), Some("こんにちは。"));
+    }
+
+    #[test]
+    fn offline_mode_refuses_everything_but_localhost() {
+        // クラウドの接続先は、要求を送る前に拒む
+        let mut cfg = cfg_for("https://api.example.com/v1".into());
+        cfg.offline = true;
+        let result = format_with_deltas(&cfg, "hello", &|_| {});
+        assert!(
+            matches!(result, Err(FormatError::Provider(message)) if message.contains("オフライン"))
+        );
+        // ローカルの接続先は許す
+        let url = serve_once(|_| {
+            (
+                200,
+                r#"{"choices":[{"message":{"content":"hello"}}]}"#.to_string(),
+            )
+        });
+        let mut local = cfg_for(url);
+        local.offline = true;
+        assert_eq!(
+            format_with_deltas(&local, "hello", &|_| {}).unwrap(),
+            "hello"
+        );
+        // ChatGPT はトークンの更新もしないので、そもそも接続しない
+        let mut chatgpt_cfg = cfg_for(String::new());
+        chatgpt_cfg.provider = "chatgpt".into();
+        chatgpt_cfg.offline = true;
+        assert!(matches!(
+            format_with_deltas(&chatgpt_cfg, "hello", &|_| {}),
+            Err(FormatError::Provider(_))
+        ));
+    }
+
+    #[test]
+    fn prewarm_loads_local_models_with_a_tiny_request() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let mut methods = Vec::new();
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let req = read_request(&mut stream);
+                methods.push(req.split(' ').next().unwrap_or("").to_string());
+                let body = r#"{"choices":[]}"#;
+                let resp = format!(
+                    "HTTP/1.1 200 OK
+
+Content-Type: application/json
+
+Content-Length: {}
+
+Connection: close
+
+
+
+{body}",
+                    body.len()
+                );
+                stream.write_all(resp.as_bytes()).unwrap();
+            }
+            methods
+        });
+        let mut cfg = cfg_for(format!("http://{addr}"));
+        cfg.model = "test-model".into();
+        prewarm(&cfg);
+        assert_eq!(
+            server.join().unwrap(),
+            ["GET", "POST"],
+            "GET /models のあと、モデルを読み込ませる POST を送る"
+        );
     }
 
     #[test]

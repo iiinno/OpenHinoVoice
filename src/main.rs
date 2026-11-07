@@ -11,6 +11,7 @@ mod hook;
 mod lexicon;
 mod overlay;
 mod paste;
+mod provider;
 mod segment;
 mod settings;
 mod sound;
@@ -1049,6 +1050,14 @@ fn main() {
         return;
     }
 
+    // オフラインモードでは認識モデルの自動取得が起こらない。未取得のままなら
+    // 起動時に 1 回だけ案内を出す(取得はしない)
+    let model_notice = if cfg.format.offline {
+        Some(asr::model_fetched(&cfg.speech_exe, &cfg.model))
+    } else {
+        None
+    };
+
     let (format_tx, format_rx): (Sender<FormatOutcome>, Receiver<FormatOutcome>) = channel();
     let mut app = App {
         cfg,
@@ -1060,6 +1069,16 @@ fn main() {
         failed_pastes: VecDeque::new(),
     };
     hook::set_mirror(hook::MIRROR_IDLE);
+
+    if let Some(Ok(false)) = model_notice {
+        overlay::show(Mode::Notice {
+            tone: Tone::Warn,
+            text: "認識モデルが未取得です。オンラインのときに 1 回取得してください".into(),
+        });
+        app.transient_until = Some(Instant::now() + Duration::from_secs(8));
+    } else if let Some(Err(e)) = model_notice {
+        eprintln!("認識モデルの取得状況を確認できません: {e}");
+    }
 
     let mut msg = MSG::default();
     loop {

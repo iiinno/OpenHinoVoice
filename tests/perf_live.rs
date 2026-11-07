@@ -16,6 +16,8 @@ mod config;
 mod format;
 #[path = "../src/lexicon.rs"]
 mod lexicon;
+#[path = "../src/provider.rs"]
+mod provider;
 #[path = "../src/segment.rs"]
 mod segment;
 
@@ -267,7 +269,12 @@ fn live_segmented_latency_and_accuracy_on_corpus() {
         let mut failure = String::new();
         for (index, interval) in intervals.iter().enumerate() {
             let id = format!("s{index}");
-            feed_wav(&mut worker, &id, wav.sample_rate, &crate_audio_pcm(interval));
+            feed_wav(
+                &mut worker,
+                &id,
+                wav.sample_rate,
+                &crate_audio_pcm(interval),
+            );
             while !worker
                 .transcribe(&id, wav.sample_rate, &words)
                 .expect("transcribe を送れませんでした")

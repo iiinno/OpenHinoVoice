@@ -15,6 +15,8 @@ mod config;
 mod format;
 #[path = "../src/lexicon.rs"]
 mod lexicon;
+#[path = "../src/provider.rs"]
+mod provider;
 #[path = "../src/segment.rs"]
 mod segment;
 

@@ -78,6 +78,11 @@ prompt = """
 - 話者が伝えた情報量と意図を保ち、完成した文章の本文のみを出力する
 """
 
+# オフラインモード。この PC の外への通信をすべて止める。整形の接続先は
+# localhost のみを許し、ChatGPT のトークンの更新もしない。認識モデルが
+# 未取得のままだと起動時に案内を出す
+offline = false
+
 # リクエスト本体に混ぜる項目。deepseek-v4.1-flash は推論を止めないと応答が倍近く遅くなる
 [format.extra_body]
 reasoning_effort = "none"
@@ -113,6 +118,10 @@ pub struct FormatConfig {
     /// OpenAI と ChatGPT で優先処理(Fast モード)を頼む。料金や利用枠の減りは 2 倍になる
     #[serde(default)]
     pub fast: bool,
+    /// オフラインモード。この PC の外への通信をすべて止め、整形の接続先は
+    /// localhost だけを許し、ChatGPT のトークンの更新もしない
+    #[serde(default)]
+    pub offline: bool,
 }
 
 fn default_provider() -> String {
@@ -124,7 +133,7 @@ fn default_openai_model() -> String {
 fn default_base_url() -> String {
     "https://opencode.ai/inference/go/openai/v1".to_string()
 }
-fn default_timeout_ms() -> u64 {
+pub(crate) fn default_timeout_ms() -> u64 {
     10000
 }
 fn default_prompt() -> String {
@@ -146,6 +155,7 @@ impl Default for FormatConfig {
             openai_model: default_openai_model(),
             chatgpt_model: default_openai_model(),
             fast: false,
+            offline: false,
         }
     }
 }

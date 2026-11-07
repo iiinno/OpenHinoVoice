@@ -503,6 +503,55 @@ pub struct WavData {
     pub pcm_le: Vec<u8>,
 }
 
+/// オフラインモードの起動時の確認。認識モデルが取得済みかを
+/// `speech models --json` の一覧で調べる。ここでは取得(ダウンロード)はしない
+pub fn model_fetched(speech_exe: &str, model: &str) -> Result<bool, String> {
+    if model.ends_with(".gguf") || model.contains('/') || model.contains(std::path::MAIN_SEPARATOR)
+    {
+        // ファイルの指定なら取得は不要。有無は worker の起動時に分かる
+        return Ok(true);
+    }
+    let output = Command::new(speech_exe)
+        .arg("models")
+        .arg("--json")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| format!("speech models を実行できません: {e}"))?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    model_fetched_from_catalog(&text, model)
+}
+
+/// `speech models --json` の出力から、指定のモデル(名前[:型])の取得済みを返す
+fn model_fetched_from_catalog(json: &str, model: &str) -> Result<bool, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| format!("モデル一覧を読めません: {e}"))?;
+    let (name, wanted_type) = model.split_once(':').unwrap_or((model, ""));
+    for entry in value["models"].as_array().into_iter().flatten() {
+        if entry["name"].as_str() != Some(name) {
+            continue;
+        }
+        // 型の指定がなければ、カタログのこのモデルの既定の型を見る
+        let wanted_type = if wanted_type.is_empty() {
+            entry["type"].as_str().unwrap_or("")
+        } else {
+            wanted_type
+        };
+        let mut any_fetched = false;
+        for file in entry["files"].as_array().into_iter().flatten() {
+            if file["type"].as_str() == Some(wanted_type) {
+                return Ok(file["fetched"].as_bool() == Some(true));
+            }
+            any_fetched |= file["fetched"].as_bool() == Some(true);
+        }
+        return Ok(any_fetched);
+    }
+    // カタログにない名前は利用者の用意したものとみなす
+    Ok(true)
+}
+
 /// 区間認識の単体テスト用。偽の標準入力と、返す行を決められる worker を作る。
 /// broken_stdin を真にすると、書き込みが必ず失敗する(worker の死を模す)
 #[cfg(test)]
@@ -1160,6 +1209,23 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&cancel_message("p3")).unwrap();
         assert_eq!(v["type"], "cancel");
         assert_eq!(v["id"], "p3");
+    }
+
+    #[test]
+    fn model_catalog_check_finds_fetched_files() {
+        let catalog = r#"{"models":[
+            {"name":"haas-ja-v1.0","type":"q8_0","files":[
+                {"type":"q8_0","fetched":true},
+                {"type":"q4_k","fetched":false}]},
+            {"name":"qwen3-tts-0.6b","type":"q8_0","files":[
+                {"type":"q8_0","fetched":false}]}
+        ]}"#;
+        assert!(model_fetched_from_catalog(catalog, "haas-ja-v1.0").unwrap());
+        assert!(!model_fetched_from_catalog(catalog, "haas-ja-v1.0:q4_k").unwrap());
+        assert!(!model_fetched_from_catalog(catalog, "qwen3-tts-0.6b").unwrap());
+        // カタログにない名前とファイル指定は「取得不要」
+        assert!(model_fetched_from_catalog(catalog, "unknown-model").unwrap());
+        assert!(model_fetched_from_catalog(catalog, r"C:\models\mine.gguf").unwrap());
     }
 
     #[test]

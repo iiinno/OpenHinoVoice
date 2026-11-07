@@ -11,6 +11,8 @@ mod config;
 mod format;
 #[path = "../src/lexicon.rs"]
 mod lexicon;
+#[path = "../src/provider.rs"]
+mod provider;
 
 #[test]
 #[ignore = "calls the real formatting API with the key in the user config; run explicitly"]
