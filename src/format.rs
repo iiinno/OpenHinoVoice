@@ -815,7 +815,6 @@ mod tests {
 
     #[test]
     fn groq_style_error_body_is_surfaced() {
-        // #12: サーバーからのエラーメッセージが記録に残る。#11 の Groq / Gemini の切り分けにも使う
         let url = serve_once(|_| {
             (
                 400,
@@ -853,12 +852,31 @@ mod tests {
     }
 
     #[test]
-    fn bearer_token_is_scrubbed_even_when_not_the_configured_key() {
-        let scrubbed = scrub_bearer_tokens("denied for Bearer eyJhbGciOi.abc123, retry");
-        assert!(!scrubbed.contains("eyJ"), "{scrubbed}");
-        assert!(scrubbed.contains("Bearer ***"), "{scrubbed}");
-        // 置換しても残りの本文は壊さない
-        assert!(scrubbed.contains("retry"));
+    fn error_detail_never_carries_a_bearer_token() {
+        let url = serve_once(|_| {
+            (
+                401,
+                "denied: Bearer eyJhbGciOi.abc123, retry".to_string(),
+            )
+        });
+        let cfg = cfg_for(url);
+        match format(&cfg, "hello") {
+            Err(FormatError::Http(401, Some(detail))) => {
+                assert!(!detail.contains("eyJ"), "{detail}");
+                assert!(detail.contains("Bearer ***"), "{detail}");
+                assert!(detail.contains("retry"), "{detail}");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn http_error_display_carries_the_server_detail() {
+        // オーバーレイと記録で読む文面が、サーバー応答の要点を欠かないこと
+        let e = FormatError::Http(400, Some("The model does not exist".into()));
+        let text = e.to_string();
+        assert!(text.contains("整形APIエラー HTTP 400"), "{text}");
+        assert!(text.contains("The model does not exist"), "{text}");
     }
 
     #[test]
