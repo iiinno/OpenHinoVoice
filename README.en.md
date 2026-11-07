@@ -11,6 +11,8 @@ Speech recognition runs entirely on your PC; audio is never sent anywhere. Optio
 - One key starts recording; Enter transcribes and pastes
 - Press Enter once to paste cleaned-up text. Press it again without waiting to paste the raw transcript immediately
 - While recording, a small Hinomaru-style pill appears near the top of the screen. Its bars follow your voice, so you can see it is listening
+- A live caption band on the screen shows the words as you speak and each settled phrase as it is recognized. The input field only receives the final text
+- Speech is recognized utterance by utterance, so long recordings drop fewer sentences and the wait after Enter stays roughly constant
 - Short sound effects on start and paste (can be turned off)
 
 ## Install

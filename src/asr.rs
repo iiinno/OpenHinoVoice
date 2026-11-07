@@ -80,8 +80,7 @@ pub fn transcribe_message(id: &str, sample_rate: u32, words: &str, protocol: u64
     message.to_string()
 }
 
-/// cancel 要求。P2 で仮の認識を止めるときに使う
-#[cfg(test)]
+/// cancel 要求
 pub fn cancel_message(id: &str) -> String {
     serde_json::json!({ "type": "cancel", "id": id }).to_string()
 }
@@ -412,6 +411,12 @@ impl Worker {
         self.writer.enqueue(msg)
     }
 
+    /// 仮の認識を止める。実行中の要求は次の止められる場所で
+    /// cancelled で終わる。飛行中でない id への cancel は無視される
+    pub fn cancel(&mut self, id: &str) -> Result<bool, AsrError> {
+        self.writer.enqueue(cancel_message(id))
+    }
+
     /// Nonblocking acknowledgement + age check; called every UI tick even
     /// when the recognition process is no longer responding on stdout.
     pub fn poll_writer(&mut self) -> Result<(), AsrError> {
@@ -532,6 +537,48 @@ pub fn test_worker(lines: std::sync::mpsc::Receiver<String>, broken_stdin: bool)
         ready: true,
         protocol: 4,
     }
+}
+
+/// 送られた JSON 行を後から読める test_worker。区間と仮の認識の送り方のテストに使う
+#[cfg(test)]
+pub fn test_worker_with_recorder(
+    lines: std::sync::mpsc::Receiver<String>,
+) -> (Worker, std::sync::Arc<std::sync::Mutex<String>>) {
+    struct Recording {
+        buffer: std::sync::Arc<std::sync::Mutex<String>>,
+    }
+    impl Write for Recording {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.buffer
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push_str(&String::from_utf8_lossy(buf));
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let buffer = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let child = Command::new("cmd.exe")
+        .args(["/c", "exit"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .expect("test child must spawn");
+    let worker = Worker {
+        child,
+        writer: WriterQueue::spawn(Recording {
+            buffer: buffer.clone(),
+        }),
+        lines,
+        seqs: HashMap::new(),
+        ready: true,
+        protocol: 4,
+    };
+    (worker, buffer)
 }
 
 /// Decodes uncompressed RIFF/WAVE PCM16 or IEEE float32 into mono PCM16.

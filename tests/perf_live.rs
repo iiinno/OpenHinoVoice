@@ -35,11 +35,11 @@ fn corpus_path(name: &str, ext: &str) -> Option<std::path::PathBuf> {
     path.exists().then_some(path)
 }
 
-fn feed_wav(worker: &mut asr::Worker, sample_rate: u32, pcm: &[u8]) {
+fn feed_wav(worker: &mut asr::Worker, id: &str, sample_rate: u32, pcm: &[u8]) {
     let chunk_bytes = (sample_rate as usize / 10) * 2;
     for chunk in pcm.chunks(chunk_bytes.max(2)) {
         while !worker
-            .send_chunk("r", chunk)
+            .send_chunk(id, chunk)
             .expect("chunk を送れませんでした")
         {
             worker.poll_writer().expect("worker への送信が進みません");
@@ -133,7 +133,7 @@ fn measure(name: &str, speech_exe: &str, model: &str, words: &str) -> Option<Mea
         .expect("worker が準備完了になりません");
     let cold_ready_ms = spawn_started.elapsed().as_millis();
 
-    feed_wav(&mut worker, wav.sample_rate, &wav.pcm_le);
+    feed_wav(&mut worker, "r", wav.sample_rate, &wav.pcm_le);
     let transcribe_started = Instant::now();
     while !worker
         .transcribe("r", wav.sample_rate, words)
@@ -218,6 +218,169 @@ fn write_report(results: &[Measurement], words: &str) {
     );
     std::fs::write(&path, report).expect("測定報告を書けません");
     println!("報告を書きました: {}", path.display());
+}
+
+#[test]
+#[ignore = "本物の speech.exe と tests/corpus/ の音声が必要。--ignored 付きで実行する"]
+fn live_segmented_latency_and_accuracy_on_corpus() {
+    let cfg = config::load().expect("設定を読めません");
+    let speech_exe = std::env::var("JV_SPEECH_EXE").unwrap_or(cfg.speech_exe.clone());
+    let model = std::env::var("JV_MODEL").unwrap_or(cfg.model.clone());
+    let words = std::env::var("JV_ASR_WORDS").unwrap_or_default();
+
+    let mut rows = Vec::new();
+    for name in ["short", "1min", "5min", "30min"] {
+        let Some((wav_path, ref_path)) = corpus_path(name, "wav").zip(corpus_path(name, "ref.txt"))
+        else {
+            println!("{name}.wav がないため飛ばします(gen_corpus を実行してください)");
+            continue;
+        };
+        let bytes = std::fs::read(&wav_path).expect("WAV を読めません");
+        let wav = asr::parse_wav(&bytes).expect("WAV が不正です");
+        let reference = std::fs::read_to_string(&ref_path).expect("正解を読めません");
+        let samples: Vec<f32> = wav
+            .pcm_le
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| i16::from_le_bytes(*b) as f32 / 32768.0)
+            .collect();
+
+        // アプリと同じ区間認識。区間が閉じるたびに録音中に認識を送り、
+        // Enter(= 最後の区間の transcribe)から end までを測る
+        let mut segmenter = segment::Segmenter::new(wav.sample_rate);
+        let mut intervals = segmenter.push(&samples);
+        if let Some(rest) = segmenter.finish() {
+            if !rest.is_empty() {
+                intervals.push(rest);
+            }
+        }
+
+        let mut worker = asr::Worker::spawn(&speech_exe, &model).expect("worker を起動できません");
+        worker
+            .wait_ready(READY_TIMEOUT)
+            .expect("worker が準備完了になりません");
+        let started = Instant::now();
+        let mut texts = Vec::with_capacity(intervals.len());
+        let mut stops = Vec::new();
+        let mut enter_ms = 0u128;
+        let mut failure = String::new();
+        for (index, interval) in intervals.iter().enumerate() {
+            let id = format!("s{index}");
+            feed_wav(&mut worker, &id, wav.sample_rate, &crate_audio_pcm(interval));
+            while !worker
+                .transcribe(&id, wav.sample_rate, &words)
+                .expect("transcribe を送れませんでした")
+            {
+                worker.poll_writer().expect("worker への送信が進みません");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let last_transcribe = index == intervals.len() - 1;
+            let transcribe_started = Instant::now();
+            loop {
+                worker.poll_writer().expect("worker への送信が進みません");
+                match worker.poll_terminal() {
+                    Some(Ok(asr::Terminal {
+                        id: done,
+                        outcome: asr::TerminalOutcome::Text(text),
+                        stop,
+                        ..
+                    })) if done == id => {
+                        texts.push(text.unwrap_or_default());
+                        stops.push(stop);
+                        if last_transcribe {
+                            enter_ms = transcribe_started.elapsed().as_millis();
+                        }
+                        break;
+                    }
+                    Some(Ok(asr::Terminal {
+                        outcome: asr::TerminalOutcome::Error(message),
+                        ..
+                    })) => {
+                        failure = message;
+                        break;
+                    }
+                    Some(Ok(_)) => {}
+                    Some(Err(other)) => {
+                        failure = other.to_string();
+                        break;
+                    }
+                    None => {
+                        if transcribe_started.elapsed() > END_TIMEOUT {
+                            failure = "timeout".into();
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                }
+            }
+            if !failure.is_empty() {
+                break;
+            }
+        }
+        worker.shutdown();
+        let text = segment::join_intervals(&texts);
+        let audio_seconds = wav.pcm_le.len() as f64 / 2.0 / wav.sample_rate as f64;
+        let ref_strict = normalize(&reference, false);
+        let hyp_strict = normalize(&text, false);
+        let ref_loose = normalize(&reference, true);
+        let hyp_loose = normalize(&text, true);
+        let row = format!(
+            "| {} | {:.0} | {} | {} | {} | {:.1}% | {:.1}% | {} | {} | {} | {} | {} |\n",
+            name,
+            audio_seconds,
+            intervals.len(),
+            started.elapsed().as_millis(),
+            enter_ms,
+            cer(&ref_strict, &hyp_strict) * 100.0,
+            cer(&ref_loose, &hyp_loose) * 100.0,
+            if failure.is_empty() {
+                "complete"
+            } else {
+                &failure
+            },
+            text.matches('、').count(),
+            text.matches('。').count(),
+            ref_strict.len(),
+            hyp_strict.len()
+        );
+        println!(
+            "{}: 区間 {} 個 区間認識全体 {}ms Enter から {}ms CER 厳密 {:.1}% 緩和 {:.1}% {}",
+            name,
+            intervals.len(),
+            started.elapsed().as_millis(),
+            enter_ms,
+            cer(&ref_strict, &hyp_strict) * 100.0,
+            cer(&ref_loose, &hyp_loose) * 100.0,
+            if failure.is_empty() { "" } else { &failure }
+        );
+        rows.push(row);
+    }
+
+    // 報告を書く
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("reports/perf");
+    std::fs::create_dir_all(&dir).expect("reports/perf を作れません");
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let mut report = format!(
+        "# perf_live の区間測定(エポック秒 {stamp})\n\nモデル: 設定の既定、キーワード: {words:?}\n\n"
+    );
+    report.push_str("| 音声 | 長さ(秒) | 区間数 | 区間認識全体(ms) | Enter から(ms) | CER 厳密 | CER 緩和 | stop | 、の数 | 。の数 | 正解文字数 | 出力文字数 |\n");
+    report.push_str("|---|---|---|---|---|---|---|---|---|---|---|---|\n");
+    for row in rows {
+        report.push_str(&row);
+    }
+    report.push_str("\n- 「区間認識全体」は録音の間に進めた区間の認識全部の時間。「Enter から」は最後の区間の transcribe から end まで。\n");
+    let path = dir.join(format!("perf-live-segmented-{stamp}.md"));
+    std::fs::write(&path, report).expect("測定報告を書けません");
+    println!("報告を書きました: {}", path.display());
+}
+
+/// 区間の f32 を PCM16 のバイトに戻す
+fn crate_audio_pcm(samples: &[f32]) -> Vec<u8> {
+    audio::samples_to_pcm_le(samples)
 }
 
 #[test]

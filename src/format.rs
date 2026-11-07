@@ -112,11 +112,22 @@ pub fn format_with_retry(
     cfg: &FormatConfig,
     raw: &str,
     cancelled: &dyn Fn() -> bool,
+    on_retry: impl FnMut(u32),
+) -> Result<String, FormatError> {
+    format_with_retry_and_deltas(cfg, raw, cancelled, on_retry, &|_| {})
+}
+
+/// 応答が届いた分だけ on_delta に渡しながら整形する。帯への表示に使う
+pub fn format_with_retry_and_deltas(
+    cfg: &FormatConfig,
+    raw: &str,
+    cancelled: &dyn Fn() -> bool,
     mut on_retry: impl FnMut(u32),
+    on_delta: &dyn Fn(&str),
 ) -> Result<String, FormatError> {
     let mut attempt = 1;
     loop {
-        let result = format(cfg, raw);
+        let result = format_with_deltas(cfg, raw, on_delta);
         match &result {
             Err(e) if e.retryable() && attempt < MAX_ATTEMPTS && !cancelled() => {
                 on_retry(attempt);
@@ -196,24 +207,33 @@ pub fn split_for_formatting(raw: &str, limit_chars: usize) -> Vec<String> {
 }
 
 /// 分割した部分を順に整形してつなぐ。1 つが失敗したら、その部分だけ
-/// 整形前の文を使う。長い文章でも、整形の 1 回の依頼が小さく済む
+/// 整形前の文を使う。長い文章でも、整形の 1 回の依頼が小さく済む。
+/// 届いた分は on_delta に、そこまでの全文を渡す
 pub fn format_long(
     cfg: &FormatConfig,
     raw: &str,
     cancelled: &dyn Fn() -> bool,
     mut on_retry: impl FnMut(u32),
+    on_delta: &dyn Fn(&str),
 ) -> Result<String, FormatError> {
     if raw.chars().count() <= FORMAT_CHUNK_CHARS {
-        return format_with_retry(cfg, raw, cancelled, on_retry);
+        return format_with_retry_and_deltas(cfg, raw, cancelled, on_retry, on_delta);
     }
     let mut joined = String::new();
     for piece in split_for_formatting(raw, FORMAT_CHUNK_CHARS) {
-        let result = format_with_retry(cfg, &piece, cancelled, &mut on_retry);
+        let result =
+            format_with_retry_and_deltas(cfg, &piece, cancelled, &mut on_retry, &|delta| {
+                // 部分ごとの途中経過に、前の部分の完成分を頭に付けて渡す
+                on_delta(&format!("{joined}{delta}"));
+            });
         match result {
             Ok(text) => joined.push_str(&text),
             Err(e) if !e.retryable() || cancelled() => return Err(e),
             // 送り直しでも通らなかった部分は、整形前の文をそのまま使う
-            Err(_) => joined.push_str(piece.trim()),
+            Err(_) => {
+                joined.push_str(piece.trim());
+                on_delta(&joined);
+            }
         }
     }
     Ok(joined)
@@ -239,7 +259,87 @@ pub(crate) fn transport_error(err: &(dyn std::error::Error + 'static)) -> Format
     FormatError::Network(err.to_string())
 }
 
-/// API キーと文字起こしを任意の平文 HTTP サーバーへ送らない。
+/// 接続先(provider)ごとに整形を呼び分ける。出力の長さの検査はどの接続先にもかける。
+/// 本体は format_long を使い、この関数はテストから使う
+#[cfg(test)]
+pub fn format(cfg: &FormatConfig, raw: &str) -> Result<String, FormatError> {
+    format_with_deltas(cfg, raw, &|_| {})
+}
+
+/// 応答が届いた分だけ on_delta に渡しながら整形する。帯への表示に使う
+pub fn format_with_deltas(
+    cfg: &FormatConfig,
+    raw: &str,
+    on_delta: &dyn Fn(&str),
+) -> Result<String, FormatError> {
+    if raw.trim().is_empty() {
+        return Err(FormatError::BadResponse("書き起こしが空です".into()));
+    }
+    // 旧設定の既定プロンプトに残った <text> の説明も実際のメッセージ構造へ合わせる。
+    let prompt = crate::config::current_prompt(&cfg.prompt);
+    let timeout = wait_of(cfg);
+    let text = match cfg.provider.as_str() {
+        "chatgpt" => {
+            if cfg.chatgpt_model.trim().is_empty() {
+                return Err(FormatError::MissingModel);
+            }
+            crate::chatgpt::format_with_deltas(
+                &cfg.chatgpt_model,
+                &prompt,
+                raw,
+                cfg.fast,
+                timeout,
+                on_delta,
+            )?
+        }
+        "openai" => {
+            // OpenAI のモデルは temperature を受け付けないものがあるので送らない。Fast モードは service_tier で頼む
+            let mut extra = serde_json::Map::new();
+            if cfg.fast {
+                extra.insert("service_tier".into(), "priority".into());
+            }
+            chat_completions(
+                OPENAI_API,
+                &cfg.openai_api_key,
+                &cfg.openai_model,
+                &extra,
+                None,
+                &prompt,
+                raw,
+                timeout,
+                on_delta,
+            )?
+        }
+        _ => chat_completions(
+            &cfg.base_url,
+            &cfg.api_key,
+            &cfg.model,
+            &cfg.extra_body,
+            Some(0),
+            &prompt,
+            raw,
+            timeout,
+            on_delta,
+        )?,
+    };
+    let text = text.trim();
+    if text.is_empty()
+        || text.starts_with("```")
+        || ["整形結果:", "整形結果：", "修正後:", "修正後："]
+            .iter()
+            .any(|prefix| text.starts_with(prefix))
+    {
+        return Err(FormatError::BadResponse(
+            "整形結果に本文以外の内容が含まれています".into(),
+        ));
+    }
+    if !plausible_length(raw.chars().count(), text.chars().count()) {
+        return Err(FormatError::BadResponse(
+            "出力の長さが入力とかけ離れています".into(),
+        ));
+    }
+    Ok(text.to_string())
+}
 /// ローカル推論サーバーだけは HTTP を許可する。
 pub fn validate_base_url(raw: &str) -> Result<(), FormatError> {
     let url =
@@ -292,68 +392,6 @@ pub fn prewarm(cfg: &FormatConfig) {
 
 const OPENAI_API: &str = "https://api.openai.com/v1";
 
-/// 接続先(provider)ごとに整形を呼び分ける。出力の長さの検査はどの接続先にもかける
-pub fn format(cfg: &FormatConfig, raw: &str) -> Result<String, FormatError> {
-    if raw.trim().is_empty() {
-        return Err(FormatError::BadResponse("書き起こしが空です".into()));
-    }
-    // 旧設定の既定プロンプトに残った <text> の説明も実際のメッセージ構造へ合わせる。
-    let prompt = crate::config::current_prompt(&cfg.prompt);
-    let timeout = wait_of(cfg);
-    let text = match cfg.provider.as_str() {
-        "chatgpt" => {
-            if cfg.chatgpt_model.trim().is_empty() {
-                return Err(FormatError::MissingModel);
-            }
-            crate::chatgpt::format(&cfg.chatgpt_model, &prompt, raw, cfg.fast, timeout)?
-        }
-        "openai" => {
-            // OpenAI のモデルは temperature を受け付けないものがあるので送らない。Fast モードは service_tier で頼む
-            let mut extra = serde_json::Map::new();
-            if cfg.fast {
-                extra.insert("service_tier".into(), "priority".into());
-            }
-            chat_completions(
-                OPENAI_API,
-                &cfg.openai_api_key,
-                &cfg.openai_model,
-                &extra,
-                None,
-                &prompt,
-                raw,
-                timeout,
-            )?
-        }
-        _ => chat_completions(
-            &cfg.base_url,
-            &cfg.api_key,
-            &cfg.model,
-            &cfg.extra_body,
-            Some(0),
-            &prompt,
-            raw,
-            timeout,
-        )?,
-    };
-    let text = text.trim();
-    if text.is_empty()
-        || text.starts_with("```")
-        || ["整形結果:", "整形結果：", "修正後:", "修正後："]
-            .iter()
-            .any(|prefix| text.starts_with(prefix))
-    {
-        return Err(FormatError::BadResponse(
-            "整形結果に本文以外の内容が含まれています".into(),
-        ));
-    }
-    if !plausible_length(raw.chars().count(), text.chars().count()) {
-        return Err(FormatError::BadResponse(
-            "出力の長さが入力とかけ離れています".into(),
-        ));
-    }
-    Ok(text.to_string())
-}
-
 #[allow(clippy::too_many_arguments)]
 fn chat_completions(
     base_url: &str,
@@ -364,6 +402,7 @@ fn chat_completions(
     prompt: &str,
     raw: &str,
     wait: Duration,
+    on_delta: &dyn Fn(&str),
 ) -> Result<String, FormatError> {
     validate_base_url(base_url)?;
     if api_key.trim().is_empty() {
@@ -406,7 +445,7 @@ fn chat_completions(
         Err(ureq::Error::Transport(t)) => return Err(transport_error(&t)),
     };
     if resp.content_type() == "text/event-stream" {
-        return read_chat_stream(resp.into_reader(), started);
+        return read_chat_stream(resp.into_reader(), started, on_delta);
     }
     // stream を無視して一度に返す互換サービスもあるので、そのときは全体を読む
     let text = resp.into_string().map_err(|e| transport_error(&e))?;
@@ -426,11 +465,17 @@ fn chat_completions(
         .ok_or_else(|| {
             FormatError::BadResponse("choices[0].message.content がありません".into())
         })?;
-    Ok(content.trim().to_string())
+    let content = content.trim();
+    on_delta(content);
+    Ok(content.to_string())
 }
 
 /// Chat Completions のストリーム(SSE)を読み、[DONE] までの本文を返す
-fn read_chat_stream(reader: impl Read, started: std::time::Instant) -> Result<String, FormatError> {
+fn read_chat_stream(
+    reader: impl Read,
+    started: std::time::Instant,
+    on_delta: &dyn Fn(&str),
+) -> Result<String, FormatError> {
     let mut text = String::new();
     for line in BufReader::new(reader).lines() {
         let line = line.map_err(|e| transport_error(&e))?;
@@ -453,6 +498,7 @@ fn read_chat_stream(reader: impl Read, started: std::time::Instant) -> Result<St
         let choice = &event["choices"][0];
         if let Some(delta) = choice["delta"]["content"].as_str() {
             text.push_str(delta);
+            on_delta(&text);
         }
         if choice["finish_reason"] == "length" {
             return Err(FormatError::BadResponse(
@@ -857,6 +903,30 @@ Connection: close
             );
         });
         format!("http://{addr}")
+    }
+
+    #[test]
+    fn streamed_deltas_reach_the_callback_before_the_final_text() {
+        let url = serve_stream(
+            &["明日の", "会議は", "午後", "3時からに", "変更です。"],
+            Duration::from_millis(40),
+        );
+        let mut cfg = cfg_for(url);
+        cfg.timeout_ms = 600;
+        let seen: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        let result = format_with_deltas(
+            &cfg,
+            "えーと明日の会議は午後3時からに変更です。",
+            &|t| {
+                seen.lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .push(t.to_string());
+            },
+        );
+        let seen = seen.into_inner().unwrap_or_default();
+        assert_eq!(result.unwrap(), "明日の会議は午後3時からに変更です。");
+        assert!(seen.len() >= 2, "途中経過が届くこと: {seen:?}");
+        assert_eq!(seen.last().unwrap(), "明日の会議は午後3時からに変更です。");
     }
 
     #[test]

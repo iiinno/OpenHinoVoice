@@ -6,11 +6,11 @@ use windows::Win32::Foundation::{
     COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateDIBSection, CreateFontW, DeleteDC, DeleteObject, DrawTextW,
-    GetMonitorInfoW, MonitorFromWindow, SelectObject, SetBkMode, SetTextColor, AC_SRC_ALPHA,
-    AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS, DT_CALCRECT,
-    DT_END_ELLIPSIS, DT_NOPREFIX, DT_SINGLELINE, HFONT, HGDIOBJ, MONITORINFO,
-    MONITOR_DEFAULTTOPRIMARY, TRANSPARENT,
+    ClientToScreen, CreateCompatibleDC, CreateDIBSection, CreateFontW, DeleteDC, DeleteObject,
+    DrawTextW, GetMonitorInfoW, MonitorFromWindow, SelectObject, SetBkMode, SetTextColor,
+    AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS,
+    DT_CALCRECT, DT_END_ELLIPSIS, DT_NOPREFIX, DT_SINGLELINE, DT_WORDBREAK, HFONT, HGDIOBJ,
+    MONITORINFO, MONITOR_DEFAULTTOPRIMARY, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
@@ -19,12 +19,13 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
-    GetCursorPos, GetForegroundWindow, LoadIconW, MessageBoxW, PostMessageW, RegisterClassW,
-    RegisterWindowMessageW, SetForegroundWindow, ShowWindow, TrackPopupMenu, UpdateLayeredWindow,
-    HWND_TOPMOST, IDI_APPLICATION, MB_ICONERROR, MB_OK, MB_SETFOREGROUND, MF_STRING,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, TPM_RETURNCMD, ULW_ALPHA,
-    WM_APP, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY, WM_RBUTTONUP, WNDCLASSW, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    GetCursorPos, GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId, LoadIconW,
+    MessageBoxW, PostMessageW, RegisterClassW, RegisterWindowMessageW, SetForegroundWindow,
+    ShowWindow, TrackPopupMenu, UpdateLayeredWindow, GUITHREADINFO, HWND_TOPMOST, IDI_APPLICATION,
+    MB_ICONERROR, MB_OK, MB_SETFOREGROUND, MF_STRING, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SW_HIDE, SW_SHOWNOACTIVATE, TPM_RETURNCMD, ULW_ALPHA, WM_APP, WM_COMMAND, WM_CONTEXTMENU,
+    WM_DESTROY, WM_RBUTTONUP, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 pub const WM_TRAY: u32 = WM_APP + 1;
@@ -36,6 +37,10 @@ pub static EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 static RECOVERY_COUNT: AtomicUsize = AtomicUsize::new(0);
 static RECOVERY_REQUESTED: AtomicBool = AtomicBool::new(false);
 static TASKBAR_CREATED: OnceLock<u32> = OnceLock::new();
+/// リアルタイム表示の(確定, 仮)。仮は話している途中の認識で、空のときは確定だけを出す
+static CAPTION: Mutex<Option<(String, String)>> = Mutex::new(None);
+/// 表示の場所。"top" か "caret"
+static CAPTION_ANCHOR: Mutex<String> = Mutex::new(String::new());
 
 pub fn set_recovery_count(count: usize) {
     RECOVERY_COUNT.store(count, Ordering::SeqCst);
@@ -225,6 +230,72 @@ pub fn set_theme(theme: &str) {
     lock().theme = theme.to_string();
 }
 
+/// リアルタイム表示の文字を渡す。確定は区間の認識結果、仮は話している途中の文字。
+/// 入力欄には打ち込まず、この帯だけに表示する
+pub fn set_caption(confirmed: &str, partial: &str) {
+    let mut caption = caption_lock();
+    if caption
+        .as_ref()
+        .is_some_and(|(c, p)| c == confirmed && p == partial)
+    {
+        return;
+    }
+    *caption = Some((confirmed.to_string(), partial.to_string()));
+}
+
+/// リアルタイム表示を消す。録音の終わりと Esc で呼ぶ
+pub fn clear_caption() {
+    *caption_lock() = None;
+}
+
+/// 帯の場所を設定から渡す。"top" か "caret"。それ以外は "top" 扱いにする
+pub fn set_caption_anchor(anchor: &str) {
+    *CAPTION_ANCHOR.lock().unwrap_or_else(|p| p.into_inner()) = anchor.to_string();
+}
+
+fn caption_lock() -> std::sync::MutexGuard<'static, Option<(String, String)>> {
+    CAPTION.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+fn caption_anchor() -> String {
+    CAPTION_ANCHOR
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone()
+}
+
+/// テスト用に帯の文字を読む
+#[cfg(test)]
+pub fn caption_for_test() -> Option<(String, String)> {
+    caption_lock().clone()
+}
+
+/// 入力先のキャレットの画面座標(キャレット行の下端)。取れないときは None で、
+/// 帯は画面の上端に出す。キー操作もクリップボードも使わない
+unsafe fn caret_screen_position() -> Option<POINT> {
+    let foreground = GetForegroundWindow();
+    let thread = GetWindowThreadProcessId(foreground, None);
+    if thread == 0 {
+        return None;
+    }
+    let mut info = GUITHREADINFO {
+        cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
+        ..Default::default()
+    };
+    if GetGUIThreadInfo(thread, &mut info).is_err() || info.hwndCaret.0.is_null() {
+        return None;
+    }
+    let mut point = POINT {
+        x: info.rcCaret.left,
+        y: info.rcCaret.bottom,
+    };
+    if ClientToScreen(info.hwndCaret, &mut point).as_bool() {
+        Some(point)
+    } else {
+        None
+    }
+}
+
 pub fn hide() {
     let mut o = lock();
     if o.visible && o.hiding_since.is_none() {
@@ -278,8 +349,30 @@ pub fn tick() {
     };
     let Some(mode) = o.mode.clone() else { return };
     let (work, scale, level, palette) = (o.work, o.scale, o.level, o.palette);
+    // 字幕の文字は変わったときだけ描き直す。描き直した Bitmap は描画の間だけ借りる
+    let caption = caption_lock().clone();
+    let caption = caption
+        .filter(|(confirmed, partial)| !confirmed.trim().is_empty() || !partial.trim().is_empty());
+    let masks_guard = caption.as_ref().map(|(confirmed, partial)| {
+        let font_px = px_of_scale(o.scale, 13.0);
+        let mut guard = CAPTION_MASKS.lock().unwrap_or_else(|p| p.into_inner());
+        let reusable = guard
+            .as_ref()
+            .is_some_and(|m| m.key.0 == *confirmed && m.key.1 == *partial && m.font_px == font_px);
+        if !reusable {
+            *guard = Some(unsafe {
+                caption_masks(confirmed, partial, font_px, px_of_scale(o.scale, 520.0))
+            });
+        }
+        guard
+    });
+    let masks = masks_guard.as_ref().map(|g| g.as_ref().unwrap());
     drop(o);
-    unsafe { present(window, &mode, palette, work, scale, level, fade) };
+    unsafe { present(window, &mode, palette, work, scale, level, fade, masks) };
+}
+
+fn px_of_scale(scale: f32, v: f32) -> i32 {
+    (v * scale).round() as i32
 }
 
 fn ease_out(p: f32) -> f32 {
@@ -487,6 +580,117 @@ struct TextMask {
     cov: Vec<u8>,
 }
 
+/// 折り返して描いた文字。長い文章は下から max_lines 行だけを残す(古い行は上へ送る)
+unsafe fn render_text_wrapped(
+    text: &str,
+    px_height: i32,
+    max_w: i32,
+    max_lines: usize,
+) -> TextMask {
+    let dc = CreateCompatibleDC(None);
+    let font: HFONT = CreateFontW(
+        -px_height,
+        0,
+        0,
+        0,
+        400,
+        0,
+        0,
+        0,
+        1, // DEFAULT_CHARSET
+        0,
+        0,
+        4, // ANTIALIASED_QUALITY
+        0,
+        PCWSTR(wide("Yu Gothic UI").as_ptr()),
+    );
+    let old_font = SelectObject(dc, HGDIOBJ(font.0));
+    let mut buf: Vec<u16> = text.encode_utf16().collect();
+    let flags = DT_WORDBREAK | DT_NOPREFIX;
+    let mut rc = RECT {
+        left: 0,
+        top: 0,
+        right: max_w,
+        bottom: 0,
+    };
+    DrawTextW(dc, &mut buf, &mut rc, flags | DT_CALCRECT);
+    let w = (rc.right - rc.left).clamp(1, max_w);
+    let full_h = (rc.bottom - rc.top).max(px_height);
+    let line_h = px_height * 3 / 2;
+    let h = full_h.min(line_h * max_lines as i32);
+    let mut cov = vec![0u8; (w * h) as usize];
+    // 折り返しの全体を 1 枚に描き、下の行だけを切り出す
+    let full_info = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: w,
+            biHeight: -full_h,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut full_bits: *mut std::ffi::c_void = std::ptr::null_mut();
+    if let Ok(full_bmp) = CreateDIBSection(dc, &full_info, DIB_RGB_COLORS, &mut full_bits, None, 0)
+    {
+        let old_bmp = SelectObject(dc, HGDIOBJ(full_bmp.0));
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, COLORREF(0x00FFFFFF));
+        let mut rc = RECT {
+            left: 0,
+            top: 0,
+            right: w,
+            bottom: full_h,
+        };
+        let mut buf: Vec<u16> = text.encode_utf16().collect();
+        DrawTextW(dc, &mut buf, &mut rc, flags);
+        let full_pixels =
+            std::slice::from_raw_parts(full_bits as *const u8, (w * full_h * 4) as usize);
+        // 下から h 行分だけをコピーする。行の途中で切れないよう行の高さに揃える
+        let skip_rows = ((full_h - h) / line_h) * line_h;
+        for y in 0..h {
+            let src_y = skip_rows + y;
+            for x in 0..w {
+                let i = (src_y * w + x) as usize;
+                cov[(y * w + x) as usize] = full_pixels[i * 4 + 1];
+            }
+        }
+        SelectObject(dc, old_bmp);
+        let _ = DeleteObject(full_bmp);
+    }
+    SelectObject(dc, old_font);
+    let _ = DeleteObject(font);
+    let _ = DeleteDC(dc);
+    TextMask { w, h, cov }
+}
+
+/// リアルタイム表示の帯に使う、折り返し済みの文字の Bitmap。文字が変わったときだけ描き直す
+struct CaptionMasks {
+    key: (String, String),
+    font_px: i32,
+    confirmed: TextMask,
+    partial: Option<TextMask>,
+}
+
+static CAPTION_MASKS: Mutex<Option<CaptionMasks>> = Mutex::new(None);
+
+unsafe fn caption_masks(confirmed: &str, partial: &str, font_px: i32, max_w: i32) -> CaptionMasks {
+    let confirmed_mask = render_text_wrapped(confirmed, font_px, max_w, 2);
+    let partial_mask = if partial.is_empty() {
+        None
+    } else {
+        Some(render_text_wrapped(partial, font_px, max_w, 1))
+    };
+    CaptionMasks {
+        key: (confirmed.to_string(), partial.to_string()),
+        font_px,
+        confirmed: confirmed_mask,
+        partial: partial_mask,
+    }
+}
+
 /// GDI で白黒の文字を描き、その濃さを塗りの割合として取り出す。GDI は 32bit 画像のアルファを壊すため別に描く
 unsafe fn render_text(text: &str, px_height: i32, bold: bool, max_w: i32) -> TextMask {
     let dc = CreateCompatibleDC(None);
@@ -557,6 +761,7 @@ unsafe fn render_text(text: &str, px_height: i32, bold: bool, max_w: i32) -> Tex
     TextMask { w, h, cov }
 }
 
+#[allow(clippy::too_many_arguments)] // 描画の 1 枚分の入力を並べて渡す
 unsafe fn present(
     window: HWND,
     mode: &Mode,
@@ -565,6 +770,7 @@ unsafe fn present(
     s: f32,
     level: f32,
     fade: f32,
+    masks: Option<&CaptionMasks>,
 ) {
     let px = |v: f32| (v * s).round();
     let shadow = px(12.0);
@@ -616,8 +822,32 @@ unsafe fn present(
     let hint_w = hint.as_ref().map_or(0.0, |m| m.w as f32 + px(6.0));
     let pill_w = (pad * 2.0 + lead_w + gap + label_w + hint_w).max(px(96.0));
 
-    let w = (pill_w + shadow * 2.0) as i32;
-    let h = (pill_h + shadow * 2.0) as i32;
+    // 字幕帯の大きさ。確定の 2 行と仮の 1 行を入れる
+    let band_pad = px(10.0);
+    let band_gap = px(6.0);
+    let (confirmed_mask, partial_mask) =
+        masks.map_or((None, None), |m| (Some(&m.confirmed), m.partial.as_ref()));
+    let caption_shown = masks.is_some();
+    let band_text_w = [confirmed_mask, partial_mask]
+        .into_iter()
+        .flatten()
+        .map(|m| m.w as f32)
+        .fold(0.0f32, f32::max);
+    let band_h = if caption_shown {
+        confirmed_mask.map_or(0.0, |m| m.h as f32)
+            + partial_mask.map_or(0.0, |m| band_gap + m.h as f32)
+            + band_pad * 2.0
+    } else {
+        0.0
+    };
+    let band_w = if caption_shown {
+        band_text_w + band_pad * 2.0
+    } else {
+        0.0
+    };
+
+    let w = (pill_w.max(band_w) + shadow * 2.0) as i32;
+    let h = (pill_h + shadow * 2.0 + band_h) as i32;
     let mut c = Canvas::new(w, h);
     let (x0, y0) = (shadow, shadow);
 
@@ -701,10 +931,66 @@ unsafe fn present(
         c.text(m, x as i32, (cy - m.h as f32 / 2.0) as i32, pal.fg, 0.5);
     }
 
-    // 画面上端の中央。下中央はチャットの入力欄など文字を入れる場所に重なりやすいので避ける。出るときは上から少し降りてくる
+    // 字幕帯。確定は通常の色、仮は薄い色。話している途中の文字が入力欄に入ることはない
+    if let (Some(band_w), Some(band_h), true) = (Some(band_w), Some(band_h), band_h > 0.0) {
+        let bx = shadow + (w as f32 - shadow * 2.0 - band_w) / 2.0;
+        let by = y0 + pill_h + gap;
+        c.round_rect(
+            bx,
+            by + px(2.0),
+            band_w,
+            band_h,
+            px(10.0),
+            Rgb(0, 0, 0),
+            pal.shadow_alpha * 0.8,
+            shadow,
+        );
+        c.round_rect(bx, by, band_w, band_h, px(10.0), pal.bg, pal.bg_alpha, 0.0);
+        c.stroke_round_rect(bx, by, band_w, band_h, px(10.0), pal.edge, pal.edge_alpha);
+        let text_x = bx + band_pad;
+        let mut text_y = by + band_pad;
+        if let Some(m) = confirmed_mask {
+            c.text(m, text_x as i32, text_y as i32, pal.fg, 0.92);
+            text_y += m.h as f32 + band_gap;
+        }
+        if let Some(m) = partial_mask {
+            c.text(m, text_x as i32, text_y as i32, pal.fg, 0.45);
+        }
+    }
+
+    // 帯の場所。"caret" は入力中の位置の近く、取れないときと "top" は画面の上端の中央。
+    // 下中央はチャットの入力欄など文字を入れる場所に重なりやすいので避ける。出るときは上から少し降りてくる
     let drop = px(8.0) * (1.0 - fade);
-    let wx = work.left + ((work.right - work.left) - w) / 2;
-    let wy = work.top + px(4.0) as i32 - drop as i32;
+    let band_top_in_canvas = y0 + pill_h + gap;
+    let (wx, wy) = if caption_anchor() == "caret" && band_h > 0.0 {
+        match unsafe { caret_screen_position() } {
+            Some(caret) => {
+                // 帯はキャレットの上に出す。上に space がなければ下に出す
+                let band_h_px = band_h as i32;
+                let above = caret.y - band_h_px - gap as i32;
+                let target_y = if above >= work.top {
+                    above
+                } else {
+                    caret.y + gap as i32
+                };
+                let band_w_px = band_w as i32;
+                let target_x = caret.x - band_w_px / 2;
+                (
+                    target_x - (shadow as i32 + (w - shadow as i32 * 2 - band_w_px) / 2),
+                    target_y - band_top_in_canvas as i32 - drop as i32,
+                )
+            }
+            None => (
+                work.left + ((work.right - work.left) - w) / 2,
+                work.top + px(4.0) as i32 - drop as i32,
+            ),
+        }
+    } else {
+        (
+            work.left + ((work.right - work.left) - w) / 2,
+            work.top + px(4.0) as i32 - drop as i32,
+        )
+    };
     blit(window, &c, wx, wy, (fade * 255.0) as u8);
 }
 
@@ -891,6 +1177,23 @@ mod tests {
             coverage(round_rect_sdf(0.5, 0.5, 0.0, 0.0, 100.0, 36.0, 18.0), 0.0),
             0.0
         );
+    }
+
+    #[test]
+    fn caption_keeps_the_latest_text_until_cleared() {
+        set_caption("確定した文", "話している途中");
+        assert_eq!(
+            caption_for_test(),
+            Some(("確定した文".into(), "話している途中".into()))
+        );
+        // 同じ文字を渡しても壊れない
+        set_caption("確定した文", "話している途中");
+        assert_eq!(
+            caption_for_test(),
+            Some(("確定した文".into(), "話している途中".into()))
+        );
+        clear_caption();
+        assert_eq!(caption_for_test(), None);
     }
 
     #[test]

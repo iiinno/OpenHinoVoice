@@ -126,8 +126,7 @@ impl Segmenter {
         Some(interval)
     }
 
-    /// 開いている区間の音。話している途中の仮の認識(P2)で使う。本体での使用は P2 まで
-    #[cfg(test)]
+    /// 開いている区間の音。話している途中の仮の認識に使う
     pub fn open_samples(&self) -> &[f32] {
         &self.open
     }

@@ -54,6 +54,14 @@ recovery_history = true
 sounds = true
 volume = 70
 
+# リアルタイム表示。話している途中の文字と区間の確定を画面の上の帯に出す。
+# 入力欄には何も書かず、Enter を押したあとの最終的な文だけが入る
+live_caption = true
+# 仮の表示。話している途中の音を 1 秒ごとに認識させて帯に出す。処理の遅い PC ではオフにする
+partial_caption = true
+# 帯の場所。"top"(画面の上端)か "caret"(入力中の位置の近く。取れない画面では上端に出る)
+caption_position = "top"
+
 [format]
 base_url = "https://opencode.ai/inference/go/openai/v1"
 api_key = ""
@@ -171,6 +179,15 @@ pub struct Config {
     /// 効果音の音量(0〜100)
     #[serde(default = "default_volume")]
     pub volume: u8,
+    /// リアルタイム表示。区間の確定と、話している途中の仮の文字を画面の上に出す
+    #[serde(default = "default_true")]
+    pub live_caption: bool,
+    /// 仮の表示。話している途中の音を 1 秒ごとに認識させて出す。処理の遅い PC ではオフにする
+    #[serde(default = "default_true")]
+    pub partial_caption: bool,
+    /// 表示の場所。"top"(画面の上端)か "caret"(入力中の位置の近く)
+    #[serde(default = "default_caption_position")]
+    pub caption_position: String,
     #[serde(default)]
     pub format: FormatConfig,
 }
@@ -192,6 +209,9 @@ fn default_volume() -> u8 {
 }
 fn default_theme() -> String {
     "hinomaru".to_string()
+}
+fn default_caption_position() -> String {
+    "top".to_string()
 }
 
 impl Config {

@@ -471,13 +471,15 @@ pub fn list_models() -> Result<Vec<Model>, String> {
         .collect())
 }
 
-/// Responses API で整形する。プラン利用では store と stream が必須で、temperature などは送れない
-pub fn format(
+/// Responses API で整形する。プラン利用では store と stream が必須で、temperature などは送れない。
+/// 届いた分だけ on_delta に渡しながら返す。帯への表示に使う
+pub fn format_with_deltas(
     model: &str,
     instructions: &str,
     raw: &str,
     fast: bool,
     wait: Duration,
+    on_delta: &dyn Fn(&str),
 ) -> Result<String, FormatError> {
     let token = access_token().map_err(FormatError::Provider)?;
     let mut body = serde_json::json!({
@@ -503,13 +505,13 @@ pub fn format(
             let err_code = v["error"]["code"].as_str().unwrap_or("").to_string();
             // Fast モードが使えない場合は通常の速さでもう一度だけ送る
             if fast && err_code == "subscription_sharing_unsupported_capability" {
-                return format(model, instructions, raw, false, wait);
+                return format_with_deltas(model, instructions, raw, false, wait, on_delta);
             }
             return Err(classify(code, &err_code));
         }
         Err(e) => return Err(crate::format::transport_error(&e)),
     };
-    read_stream(resp.into_reader(), started)
+    read_stream(resp.into_reader(), started, on_delta)
 }
 
 /// ChatGPT のエラーを、やり直す価値のあるものとないものに分ける
@@ -524,7 +526,11 @@ fn classify(http: u16, code: &str) -> FormatError {
 }
 
 /// Server-Sent Events を読み、response.completed までの本文を返す
-fn read_stream(reader: impl Read, started: std::time::Instant) -> Result<String, FormatError> {
+fn read_stream(
+    reader: impl Read,
+    started: std::time::Instant,
+    on_delta: &dyn Fn(&str),
+) -> Result<String, FormatError> {
     let mut text = String::new();
     for line in BufReader::new(reader).lines() {
         let line = line.map_err(|e| crate::format::transport_error(&e))?;
@@ -538,7 +544,10 @@ fn read_stream(reader: impl Read, started: std::time::Instant) -> Result<String,
             continue;
         };
         match event["type"].as_str().unwrap_or("") {
-            "response.output_text.delta" => text.push_str(event["delta"].as_str().unwrap_or("")),
+            "response.output_text.delta" => {
+                text.push_str(event["delta"].as_str().unwrap_or(""));
+                on_delta(&text);
+            }
             "response.completed" => return Ok(text),
             "response.failed" => {
                 let code = event["response"]["error"]["code"].as_str().unwrap_or("");
@@ -844,23 +853,24 @@ mod tests {
     fn stream_collects_deltas_until_completed() {
         let sse = "event: x\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"明日\"}\n\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"です。\"}\n\ndata: {\"type\":\"response.completed\"}\n";
         assert_eq!(
-            read_stream(sse.as_bytes(), std::time::Instant::now()).unwrap(),
+            read_stream(sse.as_bytes(), std::time::Instant::now(), &|_| {}).unwrap(),
             "明日です。"
         );
         let failed = "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"subscription_sharing_usage_limit_exceeded\"}}}\n";
-        let err = read_stream(failed.as_bytes(), std::time::Instant::now()).unwrap_err();
+        let err = read_stream(failed.as_bytes(), std::time::Instant::now(), &|_| {}).unwrap_err();
         assert!(err.to_string().contains("上限"));
         assert!(!err.retryable(), "利用上限はやり直しても通らない");
         let busy = "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"subscription_sharing_usage_unavailable\"}}}\n";
         assert!(
-            read_stream(busy.as_bytes(), std::time::Instant::now())
+            read_stream(busy.as_bytes(), std::time::Instant::now(), &|_| {})
                 .unwrap_err()
                 .retryable(),
             "一時的に使えないときはやり直す"
         );
         assert!(read_stream(
             "data: {\"type\":\"response.output_text.delta\",\"delta\":\"a\"}\n".as_bytes(),
-            std::time::Instant::now()
+            std::time::Instant::now(),
+            &|_| {}
         )
         .is_err());
     }

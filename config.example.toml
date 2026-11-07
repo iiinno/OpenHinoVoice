@@ -3,6 +3,8 @@ speech_exe = ""
 # 認識モデル。speech.cpp のモデル名か .gguf のパス。名前なら初回に自動で取得する
 model = "haas-ja-v1.0:q4_k"
 hotkey = "F8"
+# 最大録音時間(分)。1、3、5、10、30、60から選択。到達時は自動で認識へ進む
+max_recording_minutes = 5
 # 録音中の表示の色。"hinomaru"(白地に赤い点)か "auto"(Windows のライト、ダークに合わせる)
 theme = "hinomaru"
 words = ""
@@ -10,21 +12,28 @@ words = ""
 microphone = ""
 # 未入力テキストの再貼り付けに使う短期履歴。初期値オン
 recovery_history = true
-# 用語辞書（任意）。明示した replace_from だけを確定置換。hint は AI 向けの文脈ヒント
+# 用語辞書（任意）。replace_from の文字列だけを確定置換する。
 # [[terms]]
 # canonical = "OpenHinoVoice"
 # replace_from = ["オープンヒノボイス"]
-# hint = "音声入力アプリの名称"
+# hint = "日本語の音声入力アプリ名。AI は文脈からのみ判定する"
 # 録音開始、確定、エラーで効果音を鳴らすか、とその音量(0〜100)
 sounds = true
 volume = 70
+
+# リアルタイム表示。話している途中の文字と区間の確定を画面の上の帯に出す。
+# 入力欄には何も書かず、Enter を押したあとの最終的な文だけが入る
+live_caption = true
+# 仮の表示。話している途中の音を 1 秒ごとに認識させて帯に出す。処理の遅い PC ではオフにする
+partial_caption = true
+# 帯の場所。"top"(画面の上端)か "caret"(入力中の位置の近く。取れない画面では上端に出る)
+caption_position = "top"
 
 [format]
 base_url = "https://opencode.ai/inference/go/openai/v1"
 api_key = ""
 model = "deepseek-v4.1-flash"
 timeout_ms = 10000
-# 個人情報を含み得るので初期値はオフ。オンにすると原文と整形結果を PC 内に記録する
 save_history = false
 prompt = """
 あなたは日本語音声入力の清書を担当する編集者です。入力された音声認識の書き起こしを、話者の意図、意味、文体、語調を維持しながら、自然で読みやすい文章に整えてください。

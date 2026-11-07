@@ -492,6 +492,39 @@ impl Settings {
             });
             ui.end_row();
 
+            ui.label("リアルタイム表示");
+            ui.vertical(|ui| {
+                ui.checkbox(
+                    &mut self.cfg.live_caption,
+                    "話している途中の文字と区間の確定を画面の上の帯に出す",
+                );
+                ui.add_space(4.0);
+                ui.add_enabled(
+                    self.cfg.live_caption,
+                    egui::Checkbox::new(
+                        &mut self.cfg.partial_caption,
+                        "仮の表示(1 秒ごとに途中の音を認識する。処理の遅い PC ではオフにする)",
+                    ),
+                );
+                ui.add_space(4.0);
+                ui.add_enabled_ui(self.cfg.live_caption, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("帯の場所");
+                        ui.radio_value(
+                            &mut self.cfg.caption_position,
+                            "top".to_string(),
+                            "画面の上端",
+                        );
+                        ui.radio_value(
+                            &mut self.cfg.caption_position,
+                            "caret".to_string(),
+                            "入力中の位置の近く",
+                        );
+                    });
+                });
+            });
+            ui.end_row();
+
             ui.label("自動起動");
             ui.checkbox(&mut self.startup, "Windows にサインインしたときに起動する");
             ui.end_row();
