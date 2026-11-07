@@ -512,10 +512,12 @@ pub struct WavData {
 /// オフラインモードの起動時の確認。認識モデルが取得済みかを
 /// `speech models --json` の一覧で調べる。ここでは取得(ダウンロード)はしない
 pub fn model_fetched(speech_exe: &str, model: &str) -> Result<bool, String> {
-    if model.ends_with(".gguf") || model.contains('/') || model.contains(std::path::MAIN_SEPARATOR)
-    {
-        // ファイルの指定なら取得は不要。有無は worker の起動時に分かる
+    let path = Path::new(model);
+    if path.is_file() {
         return Ok(true);
+    }
+    if path.is_absolute() || model.to_ascii_lowercase().ends_with(".gguf") || model.contains('\\') {
+        return Ok(false);
     }
     let output = Command::new(speech_exe)
         .arg("models")
@@ -526,8 +528,18 @@ pub fn model_fetched(speech_exe: &str, model: &str) -> Result<bool, String> {
         .creation_flags(CREATE_NO_WINDOW)
         .output()
         .map_err(|e| format!("speech models を実行できません: {e}"))?;
+    if !output.status.success() {
+        return Err("認識モデルの取得状況を確認できません".into());
+    }
     let text = String::from_utf8_lossy(&output.stdout);
     model_fetched_from_catalog(&text, model)
+}
+
+pub fn check_offline_model(speech_exe: &str, model: &str, offline: bool) -> Result<(), String> {
+    if offline && !model_fetched(speech_exe, model)? {
+        return Err("認識モデルが未取得です。オンラインのときに 1 回取得してください".into());
+    }
+    Ok(())
 }
 
 /// `speech models --json` の出力から、指定のモデル(名前[:型])の取得済みを返す
@@ -552,10 +564,9 @@ fn model_fetched_from_catalog(json: &str, model: &str) -> Result<bool, String> {
             }
             any_fetched |= file["fetched"].as_bool() == Some(true);
         }
-        return Ok(any_fetched);
+        return Ok(wanted_type.is_empty() && any_fetched);
     }
-    // カタログにない名前は利用者の用意したものとみなす
-    Ok(true)
+    Ok(false)
 }
 
 /// 区間認識の単体テスト用。偽の標準入力と、返す行を決められる worker を作る。
@@ -760,10 +771,12 @@ pub fn transcribe_file_async(
     speech_exe: String,
     model: String,
     words: String,
+    offline: bool,
 ) -> Receiver<Result<String, String>> {
     let (sender, receiver) = channel();
     std::thread::spawn(move || {
-        let result = transcribe_file(&path, &speech_exe, &model, &words);
+        let result = check_offline_model(&speech_exe, &model, offline)
+            .and_then(|()| transcribe_file(&path, &speech_exe, &model, &words));
         let _ = sender.send(result);
     });
     receiver
@@ -1297,9 +1310,13 @@ mod tests {
         assert!(model_fetched_from_catalog(catalog, "haas-ja-v1.0").unwrap());
         assert!(!model_fetched_from_catalog(catalog, "haas-ja-v1.0:q4_k").unwrap());
         assert!(!model_fetched_from_catalog(catalog, "qwen3-tts-0.6b").unwrap());
-        // カタログにない名前とファイル指定は「取得不要」
-        assert!(model_fetched_from_catalog(catalog, "unknown-model").unwrap());
-        assert!(model_fetched_from_catalog(catalog, r"C:\models\mine.gguf").unwrap());
+        assert!(!model_fetched_from_catalog(catalog, "unknown-model").unwrap());
+        assert!(!model_fetched_from_catalog(catalog, "haas-ja-v1.0:missing-type").unwrap());
+        assert!(!model_fetched("存在しないspeech.exe", r"C:\存在しない場所\mine.gguf").unwrap());
+        assert!(
+            check_offline_model("存在しないspeech.exe", r"C:\存在しない場所\mine.gguf", true)
+                .is_err()
+        );
     }
 
     #[test]

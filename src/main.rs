@@ -47,8 +47,6 @@ const MAX_RECORDING_PCM_BYTES: usize = 128 * 1024 * 1024;
 const PCM_LIMIT_MESSAGE: &str = "録音データが128 MiBの安全上限を超えました（高サンプルレートのマイクでは設定時間より早く終了する場合があります）";
 /// worker の死亡や時間切れで送り直す限界。連続でこれを超えたら録音を諦める
 const MAX_ASR_FAILURES: u32 = 4;
-/// Edit で選べる文の上限。これを超える選択は Edit にしない
-const MAX_EDIT_SELECTION_CHARS: usize = 6000;
 
 /// 録音のあとに worker を残すか。残す時間の設定と、worker が ready かで決める
 fn keep_worker_decision(minutes: u32, ready: bool) -> bool {
@@ -418,6 +416,14 @@ impl App {
     fn execute(&mut self, action: Action) -> bool {
         match action {
             Action::StartSession => {
+                if let Err(message) = asr::check_offline_model(
+                    &self.cfg.speech_exe,
+                    &self.cfg.model,
+                    self.cfg.format.offline,
+                ) {
+                    self.fail_session(message);
+                    return false;
+                }
                 // 残しておいた worker があれば、起動とモデルの読み込みを飛ばして使う
                 let mut reused_worker = false;
                 let kept = match self.kept_worker.take() {
@@ -1368,7 +1374,7 @@ fn main() {
                                         "chars": text.chars().count(),
                                     }),
                                 );
-                                if text.chars().count() > MAX_EDIT_SELECTION_CHARS {
+                                if text.chars().count() > uia::MAX_SELECTION_CHARS {
                                     Some(Err("選択が長すぎるため Edit を使えません".into()))
                                 } else {
                                     Some(Ok(text))

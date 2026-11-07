@@ -1261,9 +1261,10 @@ impl Settings {
                 let exe = self.cfg.speech_exe.clone();
                 let model = self.cfg.model.clone();
                 let words = crate::lexicon::asr_hints(&self.cfg.words, &self.cfg.terms);
+                let offline = self.cfg.format.offline;
                 self.file_result = None;
                 self.file_job = Some(spawn(ui.ctx(), move || {
-                    asr::transcribe_file_async(path, exe, model, words)
+                    asr::transcribe_file_async(path, exe, model, words, offline)
                         .recv()
                         .unwrap_or_else(|_| Err("ファイル認識の結果を受信できませんでした".into()))
                 }));
