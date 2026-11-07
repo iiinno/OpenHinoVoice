@@ -603,6 +603,13 @@ unsafe fn render_text_wrapped(
     max_w: i32,
     max_lines: usize,
 ) -> TextMask {
+    if text.is_empty() {
+        return TextMask {
+            w: 0,
+            h: 0,
+            cov: Vec::new(),
+        };
+    }
     let dc = CreateCompatibleDC(None);
     let font: HFONT = CreateFontW(
         -px_height,
@@ -709,6 +716,13 @@ unsafe fn caption_masks(confirmed: &str, partial: &str, font_px: i32, max_w: i32
 
 /// GDI で白黒の文字を描き、その濃さを塗りの割合として取り出す。GDI は 32bit 画像のアルファを壊すため別に描く
 unsafe fn render_text(text: &str, px_height: i32, bold: bool, max_w: i32) -> TextMask {
+    if text.is_empty() {
+        return TextMask {
+            w: 0,
+            h: 0,
+            cov: Vec::new(),
+        };
+    }
     let dc = CreateCompatibleDC(None);
     let font: HFONT = CreateFontW(
         -px_height,
@@ -1223,6 +1237,13 @@ mod tests {
         );
         clear_caption();
         assert_eq!(caption_for_test(), None);
+    }
+
+    #[test]
+    fn caption_draws_a_partial_before_the_first_confirmed_interval() {
+        let masks = unsafe { caption_masks("", "話している途中です", 13, 520) };
+        assert!(masks.confirmed.cov.iter().all(|&pixel| pixel == 0));
+        assert!(masks.partial.unwrap().cov.iter().any(|&pixel| pixel > 0));
     }
 
     #[test]

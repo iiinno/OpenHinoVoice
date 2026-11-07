@@ -24,7 +24,7 @@ pub fn path() -> std::path::PathBuf {
 
 /// 1 件を記録する。失敗しても動作には何も影響しない(記録は脇役のため)
 pub fn log(event: &str, fields: serde_json::Value) {
-    if !ENABLED.load(Ordering::Relaxed) {
+    if cfg!(test) || !ENABLED.load(Ordering::Relaxed) {
         return;
     }
     let _ = append_to(&path(), build_line(event, fields).as_bytes());
