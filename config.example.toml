@@ -56,6 +56,8 @@ prompt = """
 # localhost のみを許し、ChatGPT のトークンの更新もしない。認識モデルが
 # 未取得のままだと起動時に案内を出す
 offline = false
+# Edit モードの、書き換え方の追加の指示(任意)。例: 「ですます調にする」
+edit_prompt = ""
 
 # リクエスト本体に混ぜる項目。deepseek-v4.1-flash は推論を止めないと応答が倍近く遅くなる
 [format.extra_body]

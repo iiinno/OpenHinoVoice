@@ -89,6 +89,8 @@ prompt = """
 # localhost のみを許し、ChatGPT のトークンの更新もしない。認識モデルが
 # 未取得のままだと起動時に案内を出す
 offline = false
+# Edit モードの、書き換え方の追加の指示(任意)。例: 「ですます調にする」
+edit_prompt = ""
 
 # リクエスト本体に混ぜる項目。deepseek-v4.1-flash は推論を止めないと応答が倍近く遅くなる
 [format.extra_body]
@@ -129,6 +131,9 @@ pub struct FormatConfig {
     /// localhost だけを許し、ChatGPT のトークンの更新もしない
     #[serde(default)]
     pub offline: bool,
+    /// Edit モードの、書き換え方の追加の指示。空なら既定の指示だけを使う
+    #[serde(default)]
+    pub edit_prompt: String,
 }
 
 fn default_provider() -> String {
@@ -163,6 +168,7 @@ impl Default for FormatConfig {
             chatgpt_model: default_openai_model(),
             fast: false,
             offline: false,
+            edit_prompt: String::new(),
         }
     }
 }

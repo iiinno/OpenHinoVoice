@@ -74,11 +74,14 @@ fn use_japanese_font(ctx: &egui::Context) {
 
 #[derive(Clone, Copy, PartialEq)]
 enum Page {
-    General,
-    Format,
+    Start,
+    Home,
+    Input,
+    Display,
     Asr,
+    Ai,
+    Edit,
     History,
-    Sound,
     About,
 }
 
@@ -186,7 +189,7 @@ impl Settings {
         Settings {
             timeout_secs: cfg.format.timeout_ms as f32 / 1000.0,
             cfg,
-            page: Page::General,
+            page: Page::Home,
             show_key: false,
             startup: startup::is_enabled(),
             message,
@@ -207,6 +210,12 @@ impl Settings {
             history_clear_confirm: false,
             extra_body_text,
         }
+    }
+
+    /// speech.cpp が見つからないときは、始め方の案内を最初に出す
+    fn needs_setup(cfg: &config::Config) -> bool {
+        let exe = cfg.speech_exe.trim();
+        exe.is_empty() || exe == "speech.exe"
     }
 
     fn save(&mut self) -> Result<(), String> {
@@ -252,6 +261,11 @@ impl Settings {
             ),
             (Some("format"), "provider", V::from(f.provider.as_str())),
             (Some("format"), "offline", V::from(f.offline)),
+            (
+                Some("format"),
+                "edit_prompt",
+                V::from(f.edit_prompt.as_str()),
+            ),
             (Some("format"), "base_url", V::from(f.base_url.trim())),
             (Some("format"), "api_key", V::from("")),
             (Some("format"), "model", V::from(f.model.trim())),
@@ -387,11 +401,14 @@ impl eframe::App for Settings {
                 });
                 ui.add_space(16.0);
                 for (page, label) in [
-                    (Page::General, "一般"),
-                    (Page::Format, "整形(AI)"),
+                    (Page::Start, "はじめに"),
+                    (Page::Home, "ホーム"),
+                    (Page::Input, "入力"),
+                    (Page::Display, "表示"),
                     (Page::Asr, "認識"),
+                    (Page::Ai, "AI"),
+                    (Page::Edit, "Edit"),
                     (Page::History, "履歴と再入力"),
-                    (Page::Sound, "サウンド"),
                     (Page::About, "情報"),
                 ] {
                     let selected = self.page == page;
@@ -448,11 +465,14 @@ impl eframe::App for Settings {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| match self.page {
-                        Page::General => self.general(ui),
-                        Page::Format => self.format(ui),
+                        Page::Start => self.start(ui),
+                        Page::Home => self.home(ui),
+                        Page::Input => self.input(ui),
+                        Page::Display => self.display(ui),
                         Page::Asr => self.asr(ui),
+                        Page::Ai => self.format(ui),
+                        Page::Edit => self.edit_page(ui),
                         Page::History => self.history(ui),
-                        Page::Sound => self.sound(ui),
                         Page::About => self.about(ui),
                     });
             });
@@ -477,9 +497,102 @@ fn grid(ui: &mut egui::Ui, id: &str, body: impl FnOnce(&mut egui::Ui)) {
 }
 
 impl Settings {
-    fn general(&mut self, ui: &mut egui::Ui) {
-        section(ui, "一般");
-        grid(ui, "general", |ui| {
+    /// 始め方の案内。speech.cpp の確認、キー、接続先の順に進み具合を出す。
+    /// モデルの取得(ダウンロード)はここでは行わない
+    fn start(&mut self, ui: &mut egui::Ui) {
+        section(ui, "はじめに");
+        hint(ui, "順に整えてから、録音開始キーを押して話してみてください");
+        ui.add_space(10.0);
+        let exe_ready = !Self::needs_setup(&self.cfg);
+        ui.horizontal(|ui| {
+            ui.label(if exe_ready { "✓" } else { "1." });
+            ui.vertical(|ui| {
+                ui.label("音声認識のソフト(speech.cpp)を入れる");
+                ui.label(
+                    RichText::new(format!(
+                        "いまの設定: {}",
+                        if exe_ready {
+                            self.cfg.speech_exe.clone()
+                        } else {
+                            "speech.exe が見つからない".to_string()
+                        }
+                    ))
+                    .weak(),
+                );
+            });
+        });
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.label("2.");
+            ui.vertical(|ui| {
+                ui.label("録音開始キーを決める(「入力」のページ)");
+                ui.label(RichText::new(format!("いまの設定: {}", self.cfg.hotkey)).weak());
+            });
+        });
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.label("3.");
+            ui.vertical(|ui| {
+                ui.label("文を整えるなら、AI の接続先を選ぶ(「AI」のページ)");
+                let provider = crate::provider::find(&self.cfg.format.provider);
+                let label = provider.map_or("その他", |p| p.label);
+                ui.label(RichText::new(format!("いまの設定: {label}")).weak());
+            });
+        });
+        ui.add_space(8.0);
+        hint(ui, "最初の 1 回は、認識モデル(約 0.35GB)のダウンロードに 1 分ほどかかります。マイクを選ぶときは「認識」のページです");
+    }
+
+    /// 今日と今週の入力文字数、最近の履歴、状態
+    fn home(&mut self, ui: &mut egui::Ui) {
+        section(ui, "ホーム");
+        let usage = history::usage_stats().unwrap_or((0, 0));
+        grid(ui, "home", |ui| {
+            ui.label("今日の入力");
+            ui.label(format!("{} 文字", usage.0));
+            ui.end_row();
+            ui.label("今週の入力");
+            ui.label(format!("{} 文字", usage.1));
+            ui.end_row();
+            ui.label("認識エンジン");
+            ui.label(if Self::needs_setup(&self.cfg) {
+                "speech.exe が見つかりません".to_string()
+            } else {
+                self.cfg.speech_exe.clone()
+            });
+            ui.end_row();
+            ui.label("接続先");
+            ui.label(match crate::provider::find(&self.cfg.format.provider) {
+                Some(preset) => preset.label.to_string(),
+                None => self.cfg.format.provider.clone(),
+            });
+            ui.end_row();
+            ui.label("オフライン");
+            ui.label(if self.cfg.format.offline {
+                "オン(PC の外へ出ない)"
+            } else {
+                "オフ"
+            });
+            ui.end_row();
+        });
+        ui.add_space(14.0);
+        section(ui, "最近の履歴");
+        let entries = history::recent(5).unwrap_or_default();
+        if entries.is_empty() {
+            hint(
+                ui,
+                "まだありません。録音開始キーを押して話し、Enter を押すとここに残ります",
+            );
+        }
+        for entry in entries {
+            let preview: String = entry.final_text().chars().take(48).collect();
+            ui.label(RichText::new(preview).weak());
+        }
+    }
+
+    fn input(&mut self, ui: &mut egui::Ui) {
+        section(ui, "入力");
+        grid(ui, "input", |ui| {
             ui.label("録音開始キー");
             ui.vertical(|ui| {
                 ui.add(egui::TextEdit::singleline(&mut self.cfg.hotkey).desired_width(180.0));
@@ -512,8 +625,65 @@ impl Settings {
                     "時間になると自動で録音を終了して認識します。発話ごとに区切って認識するので、長くても Enter からの待ち時間はほぼ一定です",
                 );
             });
+
+            ui.label("認識エンジンを残す時間");
+            ui.vertical(|ui| {
+                egui::ComboBox::from_id_salt("keep_worker_minutes")
+                    .selected_text(if self.cfg.keep_worker_minutes == 0 {
+                        "残さない(今までどおり)".to_string()
+                    } else {
+                        format!("{}分", self.cfg.keep_worker_minutes)
+                    })
+                    .show_ui(ui, |ui| {
+                        for minutes in [0, 1, 3, 5, 10] {
+                            ui.selectable_value(
+                                &mut self.cfg.keep_worker_minutes,
+                                minutes,
+                                if minutes == 0 {
+                                    "残さない".to_string()
+                                } else {
+                                    format!("{minutes}分")
+                                },
+                            );
+                        }
+                    });
+                hint(ui, "続けて話すとき、認識エンジンの起動とモデルの読み込み(1 秒前後)を飛ばせるようになります。残している間はモデルぶんのメモリ(約 0.35GB)を使います");
+            });
+
+            ui.label("自動起動");
+            ui.checkbox(&mut self.startup, "Windows にサインインしたときに起動する");
+            ui.end_row();
+        });
+
+        ui.add_space(18.0);
+        section(ui, "効果音");
+        ui.checkbox(&mut self.cfg.sounds, "録音開始、確定、エラーで音を鳴らす");
+        ui.add_space(10.0);
+        grid(ui, "sound", |ui| {
+            ui.label("音量");
+            ui.add(egui::Slider::new(&mut self.cfg.volume, 0..=100).suffix(" %"));
             ui.end_row();
 
+            ui.label("試し聞き");
+            ui.horizontal(|ui| {
+                for (s, label) in [
+                    (Sound::Start, "録音開始"),
+                    (Sound::Stop, "確定"),
+                    (Sound::Done, "貼り付け"),
+                    (Sound::Error, "エラー"),
+                ] {
+                    if ui.button(label).clicked() {
+                        sound::play(s, self.cfg.volume);
+                    }
+                }
+            });
+            ui.end_row();
+        });
+    }
+
+    fn display(&mut self, ui: &mut egui::Ui) {
+        section(ui, "表示");
+        grid(ui, "display", |ui| {
             ui.label("表示のテーマ");
             ui.vertical(|ui| {
                 ui.radio_value(
@@ -560,49 +730,33 @@ impl Settings {
                     });
                 });
             });
-            ui.end_row();
-
-            ui.label("Edit モード");
-            ui.vertical(|ui| {
-                ui.checkbox(
-                    &mut self.cfg.edit_mode,
-                    "文を選んだ状態で録音を始めると、話した指示で選んだ部分を書き換える",
-                );
-                hint(ui, "専用のキーはありません。選択の確認は画面の部品の情報(UI Automation)だけで行い、キー操作を送らず、クリップボードにも触れません。選択を読めないアプリでは Edit を使えないことを表示して、通常の音声入力になります。整形(AI)の接続先が必要です");
-            });
-            ui.end_row();
-
-            ui.label("認識エンジンを残す時間");
-            ui.vertical(|ui| {
-                egui::ComboBox::from_id_salt("keep_worker_minutes")
-                    .selected_text(if self.cfg.keep_worker_minutes == 0 {
-                        "残さない(今までどおり)".to_string()
-                    } else {
-                        format!("{}分", self.cfg.keep_worker_minutes)
-                    })
-                    .show_ui(ui, |ui| {
-                        for minutes in [0, 1, 3, 5, 10] {
-                            ui.selectable_value(
-                                &mut self.cfg.keep_worker_minutes,
-                                minutes,
-                                if minutes == 0 {
-                                    "残さない".to_string()
-                                } else {
-                                    format!("{minutes}分")
-                                },
-                            );
-                        }
-                    });
-                hint(ui, "続けて話すとき、認識エンジンの起動とモデルの読み込み(1 秒前後)を飛ばせるようになります。残している間はモデルぶんのメモリ(約 0.35GB)を使います");
-            });
-            ui.end_row();
-
-            ui.label("自動起動");
-            ui.checkbox(&mut self.startup, "Windows にサインインしたときに起動する");
-            ui.end_row();
         });
     }
 
+    fn edit_page(&mut self, ui: &mut egui::Ui) {
+        section(ui, "Edit");
+        ui.checkbox(
+            &mut self.cfg.edit_mode,
+            "文を選んだ状態で録音を始めると、話した指示で選んだ部分を書き換える",
+        );
+        hint(ui, "専用のキーはありません。選択の確認は画面の部品の情報(UI Automation)だけで行い、キー操作を送らず、クリップボードにも触れません。選択を読めないアプリでは Edit を使えないことを表示して、通常の音声入力になります。整形(AI)の接続先が必要です。オフのときは選択の確認そのものを行いません");
+        ui.add_space(14.0);
+        grid(ui, "edit", |ui| {
+            ui.label("書き換え方の追加の指示");
+            ui.vertical(|ui| {
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.cfg.format.edit_prompt)
+                        .desired_rows(3)
+                        .desired_width(f32::INFINITY),
+                );
+                hint(ui, "例: 「ですます調にする」「技術用語は原文のまま」。空なら既定の指示だけを使います");
+            });
+            ui.end_row();
+        });
+        ui.add_space(14.0);
+        section(ui, "Edit を使えるアプリの対応表");
+        hint(ui, "実機での確認結果です。cargo run --release --example uia_probe で読み取りの可否を調べられます。結果は README.md の対応表に記載します");
+    }
     fn format(&mut self, ui: &mut egui::Ui) {
         section(ui, "整形(AI)");
         hint(ui, "Enter を 1 回押したときに、書き起こしを AI で整えます。音声は送らず、文字だけを送ります。");
@@ -1287,32 +1441,6 @@ impl Settings {
         }
     }
 
-    fn sound(&mut self, ui: &mut egui::Ui) {
-        section(ui, "サウンド");
-        ui.checkbox(&mut self.cfg.sounds, "録音開始、確定、エラーで音を鳴らす");
-        ui.add_space(10.0);
-        grid(ui, "sound", |ui| {
-            ui.label("音量");
-            ui.add(egui::Slider::new(&mut self.cfg.volume, 0..=100).suffix(" %"));
-            ui.end_row();
-
-            ui.label("試し聞き");
-            ui.horizontal(|ui| {
-                for (s, label) in [
-                    (Sound::Start, "録音開始"),
-                    (Sound::Stop, "確定"),
-                    (Sound::Done, "貼り付け"),
-                    (Sound::Error, "エラー"),
-                ] {
-                    if ui.button(label).clicked() {
-                        sound::play(s, self.cfg.volume);
-                    }
-                }
-            });
-            ui.end_row();
-        });
-    }
-
     fn about(&mut self, ui: &mut egui::Ui) {
         section(ui, "情報");
         ui.label(format!("OpenHinoVoice {}", env!("CARGO_PKG_VERSION")));
@@ -1327,6 +1455,20 @@ impl Settings {
             });
             ui.end_row();
         });
+        ui.add_space(14.0);
+        ui.label(RichText::new("性能の測定値(この PC での実測)").strong());
+        hint(
+            ui,
+            "待機中の CPU: 0.000 秒/分。待機中のメモリ: 約 2.4 MB(Private)",
+        );
+        hint(
+            ui,
+            "Enter を押してから認識結果まで: 0.5〜1.4 秒(録音の長さによらない)",
+        );
+        hint(
+            ui,
+            "測定の手順と版ごとの記録は、ソースの reports/perf/ にあります",
+        );
         ui.add_space(14.0);
         ui.label(RichText::new("使っているもの").strong());
         hint(

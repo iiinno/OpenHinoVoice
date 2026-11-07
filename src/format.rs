@@ -233,6 +233,17 @@ fn format_edit_once(
     if instruction.trim().is_empty() {
         return Err(FormatError::BadResponse("指示が空です".into()));
     }
+    // 利用者が決めた書き換え方の追加の指示を、システムの指示に添える
+    let system_prompt = if cfg.edit_prompt.trim().is_empty() {
+        EDIT_SYSTEM_PROMPT.to_string()
+    } else {
+        format!(
+            "{EDIT_SYSTEM_PROMPT}
+追加の指示(常に守る):
+{}",
+            cfg.edit_prompt.trim()
+        )
+    };
     let (base_url, model) = resolve_target(cfg);
     offline_gate(cfg, &base_url)?;
     let timeout = wait_of(cfg);
@@ -250,7 +261,7 @@ fn format_edit_once(
             let combined = format!("【元の文章】\n{selection}\n\n【指示】\n{instruction}");
             crate::chatgpt::format_with_deltas(
                 &cfg.chatgpt_model,
-                EDIT_SYSTEM_PROMPT,
+                &system_prompt,
                 &combined,
                 cfg.fast,
                 timeout,
@@ -261,7 +272,7 @@ fn format_edit_once(
             &base_url,
             &cfg.api_key,
             &model,
-            EDIT_SYSTEM_PROMPT,
+            &system_prompt,
             &messages,
             timeout,
             &|_| {},
@@ -277,7 +288,7 @@ fn format_edit_once(
                 &cfg.openai_model,
                 &extra,
                 None,
-                EDIT_SYSTEM_PROMPT,
+                &system_prompt,
                 &messages,
                 timeout,
                 &|_| {},
@@ -289,7 +300,7 @@ fn format_edit_once(
             &model,
             &cfg.extra_body,
             Some(0),
-            EDIT_SYSTEM_PROMPT,
+            &system_prompt,
             &messages,
             timeout,
             &|_| {},

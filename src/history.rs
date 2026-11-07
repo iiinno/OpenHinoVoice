@@ -175,11 +175,80 @@ pub fn recent(limit: usize) -> io::Result<Vec<RecoveryEntry>> {
     recent_at(&recovery_path(), limit)
 }
 
+/// ホームに出す入力の統計。復旧履歴から、今日と今週(7 日)の入力文字数を数える
+pub fn usage_stats() -> io::Result<(usize, usize)> {
+    let entries = recent(MAX_RECOVERY_ENTRIES)?;
+    let today_start = start_of_local_day_ms();
+    let week_start = today_start.saturating_sub(6 * 24 * 60 * 60 * 1000);
+    let mut today = 0usize;
+    let mut week = 0usize;
+    for entry in entries {
+        let chars = entry.raw.chars().count();
+        if entry.timestamp_unix_ms >= today_start {
+            today += chars;
+        }
+        if entry.timestamp_unix_ms >= week_start {
+            week += chars;
+        }
+    }
+    Ok((today, week))
+}
+
+/// 指定のミリ秒時刻が属する、現地時刻の午前 0 時(UTC からのミリ秒)。
+/// 現地時刻は Windows の設定から取る
+fn start_of_local_day_ms() -> u64 {
+    use windows::Win32::System::SystemInformation::GetLocalTime;
+    let now = unsafe { GetLocalTime() };
+    let utc_today_start = days_from_epoch(now.wYear, now.wMonth, now.wDay) * 86_400_000;
+    // 現地の午前 0 時に対応する UTC の時刻を出す
+    use windows::Win32::System::Time::{GetTimeZoneInformation, TIME_ZONE_INFORMATION};
+    let mut tz = TIME_ZONE_INFORMATION::default();
+    // TIME_ZONE_ID_DAYLIGHT(2)のときは、夏時間の差を足す
+    let daylight = unsafe { GetTimeZoneInformation(&mut tz) } == 2;
+    let mut offset_minutes = i64::from(tz.Bias);
+    if daylight {
+        offset_minutes += i64::from(tz.DaylightBias);
+    }
+    // Bias は「UTC = 現地 + Bias」の形(東京は -540)
+    utc_today_start - u64::try_from(offset_minutes * 60_000).unwrap_or(0)
+}
+
+/// 西暦からの経過日数(1970-01-01 を 0 とする)
+fn days_from_epoch(year: u16, month: u16, day: u16) -> u64 {
+    let (y, m) = if month <= 2 {
+        (i64::from(year) - 1, i64::from(month) + 12)
+    } else {
+        (i64::from(year), i64::from(month))
+    };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + i64::from(day) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    (era * 146_097 + doe - 719_468) as u64
+}
+
 /// Only the encrypted short-term recovery records are removed.
 /// The user-controlled format-history.jsonl remains independent.
 pub fn clear_recovery() -> io::Result<()> {
     let _lock = RecoveryLock::acquire()?;
     clear_at(&recovery_path())
+}
+
+/// 西暦からの経過日数の計算。既知の日付で確かめる
+#[cfg(test)]
+mod usage_tests {
+    use super::*;
+
+    #[test]
+    fn days_from_epoch_matches_known_dates() {
+        assert_eq!(days_from_epoch(1970, 1, 1), 0);
+        assert_eq!(days_from_epoch(1970, 3, 1), 59); // うるう年でない 2 月は 28 日
+        assert_eq!(days_from_epoch(2000, 3, 1), 11017); // 2000 年はうるう年
+        assert_eq!(days_from_epoch(2026, 11, 7), 20764);
+        // 4 年ごとのうるう年の境目
+        assert_eq!(days_from_epoch(2024, 2, 29), 19782);
+    }
 }
 
 fn check_text_size(value: &str) -> io::Result<()> {

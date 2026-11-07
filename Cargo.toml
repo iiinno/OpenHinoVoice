@@ -1,6 +1,6 @@
 [package]
 name = "openhinovoice"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 license = "MIT"
 description = "Japanese voice input for Windows with local speech recognition"
@@ -28,6 +28,8 @@ windows = { version = "0.58", features = [
     "Win32_System_Ole",
     "Win32_System_Registry",
     "Win32_System_Threading",
+    "Win32_System_SystemInformation",
+    "Win32_System_Time",
     "Win32_UI_Accessibility",
     "Win32_UI_HiDpi",
     "Win32_UI_Input_KeyboardAndMouse",
