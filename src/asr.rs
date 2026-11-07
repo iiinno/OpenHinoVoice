@@ -890,8 +890,11 @@ fn send_and_await(
         match worker.poll_terminal() {
             Some(Ok(terminal)) if terminal.id == id => {
                 return Ok(match terminal.outcome {
-                    TerminalOutcome::Text(Some(text)) => text,
-                    _ => String::new(),
+                    TerminalOutcome::Text(text) => text.unwrap_or_default(),
+                    TerminalOutcome::Error(message) => return Err(AsrError::Worker(message)),
+                    TerminalOutcome::Cancelled => {
+                        return Err(AsrError::Worker("認識がキャンセルされました".into()))
+                    }
                 });
             }
             Some(Ok(_)) => {} // 別の要求の終端。ファイル経路では起こらないはず
@@ -910,6 +913,20 @@ fn send_and_await(
 mod tests {
     use super::*;
     use std::sync::mpsc::Sender;
+
+    #[test]
+    fn file_interval_errors_are_not_successful_empty_results() {
+        for line in [
+            r#"{"type":"error","id":"f0","error":{"code":"worker","message":"認識失敗"}}"#,
+            r#"{"type":"cancelled","id":"f0"}"#,
+        ] {
+            let (tx, rx) = channel();
+            tx.send(line.into()).unwrap();
+            let mut worker = test_worker(rx, false);
+            assert!(send_and_await(&mut worker, "f0", &[0; 32], 16000, "").is_err());
+            worker.shutdown();
+        }
+    }
 
     #[test]
     fn ready_checks_installed_and_current_protocols_and_startup_failure() {

@@ -292,7 +292,6 @@ impl Session {
         }
         interval.done = true;
         interval.text = text.to_string();
-        self.confirmed_text.push_str(text);
         self.unaccounted_bytes = self.unaccounted_bytes.saturating_sub(interval.pcm.len());
         interval.pcm = Vec::new();
         self.asr_failures = 0;
@@ -308,14 +307,7 @@ impl Session {
                 "chars": text.chars().count(),
             }),
         );
-        // 仮の文字があれば確定に置き換わる(仮は空に戻す)
-        let partial = if self.partial.as_ref().is_some_and(|p| p.id != id) {
-            String::new()
-        } else {
-            self.partial = None;
-            String::new()
-        };
-        overlay::set_caption(&self.confirmed_text, &partial);
+        self.confirmed_text = self.joined_text();
     }
 
     /// 順番に結果をつないだ文章。結果が出ていない区間は空になり、
@@ -343,7 +335,7 @@ struct App {
     kept_worker: Option<(Worker, Instant)>,
     format_tx: Sender<FormatOutcome>,
     /// 整形の結果の受け口。main のループが読み、テストも使う
-    format_rx: std::sync::Mutex<Option<Receiver<FormatOutcome>>>,
+    format_rx: Receiver<FormatOutcome>,
     format_generation: FormatGeneration,
     transient_until: Option<Instant>,
     failed_pastes: VecDeque<String>,
@@ -426,18 +418,6 @@ impl App {
     fn execute(&mut self, action: Action) -> bool {
         match action {
             Action::StartSession => {
-                // 前の録音の worker を、設定があればいったん残す
-                if let Some(previous) = self.session.worker.take() {
-                    if keep_worker_decision(self.cfg.keep_worker_minutes, previous.is_ready()) {
-                        self.kept_worker = Some((
-                            previous,
-                            Instant::now()
-                                + Duration::from_secs(u64::from(self.cfg.keep_worker_minutes) * 60),
-                        ));
-                    } else {
-                        previous.shutdown();
-                    }
-                }
                 // 残しておいた worker があれば、起動とモデルの読み込みを飛ばして使う
                 let mut reused_worker = false;
                 let kept = match self.kept_worker.take() {
@@ -517,11 +497,7 @@ impl App {
                     }
                 }
                 // 仮の認識はもう要らない。指示の途中の文字がそのまま貼られるのを防ぐ
-                if let (Some(worker), Some(partial)) =
-                    (self.session.worker.as_mut(), self.session.partial.take())
-                {
-                    let _ = worker.cancel(&partial.id);
-                }
+                let _ = self.cancel_partial();
                 if self.cfg.live_caption {
                     overlay::set_caption(&self.session.confirmed_text, "");
                 }
@@ -599,8 +575,8 @@ impl App {
             } => {
                 // 置き換える前の文と後の文を、復旧用の履歴に両方残す。
                 // うまくいかなかったときに元へ戻せる
-                match history::save_recognized(&selection) {
-                    Ok(id) => self.session.recovery_id = Some(id),
+                match history::save_recognized_if_enabled(&selection, self.cfg.recovery_history) {
+                    Ok(id) => self.session.recovery_id = id,
                     Err(e) => {
                         eprintln!("Edit の復旧履歴を書き込めません: {e}");
                         self.session.recovery_write_failed = true;
@@ -905,6 +881,17 @@ impl App {
             }
         }
 
+        if ready && !restart && (!in_recording || self.session.intervals.iter().any(|i| !i.done)) {
+            match self.cancel_partial() {
+                Ok(true) => {}
+                Ok(false) => return,
+                Err(_) => {
+                    restart = true;
+                    self.session.asr_failures += 1;
+                }
+            }
+        }
+
         // 終端メッセージを読み、区間の結果として記録する。仮の認識(p*)の
         // 終端は帯に映すだけで、確定の処理には影響しない
         if !restart {
@@ -937,7 +924,12 @@ impl App {
                         asr::TerminalOutcome::Text(text) => {
                             self.session
                                 .complete_interval(&terminal.id, text.as_deref().unwrap_or(""));
-                            self.update_recovery_history();
+                            if self.cfg.live_caption {
+                                overlay::set_caption(&self.session.confirmed_text, "");
+                            }
+                            if !matches!(self.state, State::EditRecognizing { .. }) {
+                                self.update_recovery_history();
+                            }
                         }
                         asr::TerminalOutcome::Error(_) | asr::TerminalOutcome::Cancelled => {
                             restart = true;
@@ -1012,7 +1004,7 @@ impl App {
                                         "id": id,
                                         "open_ms": self.session.segmenter.open_samples().len()
                                             as u64
-                                            * 500
+                                            * 1000
                                             / self.session.sample_rate.max(1) as u64,
                                     }),
                                 );
@@ -1076,6 +1068,17 @@ impl App {
                     "chars": text.chars().count(),
                 }),
             );
+            if let Some(worker) = self.session.worker.take() {
+                if keep_worker_decision(self.cfg.keep_worker_minutes, worker.is_ready()) {
+                    self.kept_worker = Some((
+                        worker,
+                        Instant::now()
+                            + Duration::from_secs(u64::from(self.cfg.keep_worker_minutes) * 60),
+                    ));
+                } else {
+                    worker.shutdown();
+                }
+            }
             let has_api_key = self.cfg.has_api_key();
             self.dispatch(Event::AsrDone { text, has_api_key });
         }
@@ -1104,24 +1107,31 @@ impl App {
             return;
         }
         let pcm = audio::samples_to_pcm_le(audio);
-        let worker = match self.session.worker.as_mut() {
-            Some(worker) => worker,
-            None => return,
-        };
-        // 前の仮が飛行中なら止めてから送る。列が満杯のときは次の tick で送り直す
-        if let Some(old) = self.session.partial.take() {
-            match worker.cancel(&old.id) {
-                Ok(true) => {}
-                Ok(false) | Err(_) => {
-                    self.session.partial = Some(old);
-                    return;
-                }
-            }
+        if self.session.worker.is_none() || !matches!(self.cancel_partial(), Ok(true)) {
+            return;
         }
         let id = format!("p{}", self.session.next_partial_index);
         self.session.next_partial_index += 1;
         self.session.last_partial_at = Some(Instant::now());
         self.session.sending = Some(Sending::new(true, id, &pcm));
+    }
+
+    fn cancel_partial(&mut self) -> Result<bool, asr::AsrError> {
+        if self.session.sending.as_ref().is_some_and(|s| s.is_partial) {
+            let sending = self.session.sending.take().unwrap();
+            self.session.partial = Some(Partial { id: sending.id });
+        }
+        let Some(partial) = &self.session.partial else {
+            return Ok(true);
+        };
+        let Some(worker) = self.session.worker.as_mut() else {
+            return Ok(false);
+        };
+        if !worker.cancel(&partial.id)? {
+            return Ok(false);
+        }
+        self.session.partial = None;
+        Ok(true)
     }
 
     /// worker がいれば true を返す。いなければ起動し直しを試みる(1 秒に 1 回)。
@@ -1294,7 +1304,7 @@ fn main() {
         session: Session::new(),
         kept_worker: None,
         format_tx,
-        format_rx: std::sync::Mutex::new(Some(format_rx)),
+        format_rx,
         format_generation: FormatGeneration::default(),
         transient_until: None,
         failed_pastes: VecDeque::new(),
@@ -1401,21 +1411,8 @@ fn main() {
             }
         }
 
-        let receiver = app
-            .format_rx
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .take();
-        if let Some(receiver) = &receiver {
-            while let Ok(outcome) = receiver.try_recv() {
-                app.receive_format(outcome);
-            }
-        }
-        if let Some(receiver) = receiver {
-            app.format_rx
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .replace(receiver);
+        while let Ok(outcome) = app.format_rx.try_recv() {
+            app.receive_format(outcome);
         }
 
         app.tick_session();
@@ -1436,6 +1433,14 @@ fn main() {
                         overlay::set_caption_anchor(&cfg.caption_position);
                         usage::ENABLED
                             .store(cfg.format.usage_log, std::sync::atomic::Ordering::Relaxed);
+                        if cfg.model != app.cfg.model
+                            || cfg.speech_exe != app.cfg.speech_exe
+                            || cfg.keep_worker_minutes != app.cfg.keep_worker_minutes
+                        {
+                            if let Some((worker, _)) = app.kept_worker.take() {
+                                worker.shutdown();
+                            }
+                        }
                         app.cfg = cfg;
                     }
                     Err(message) => {
@@ -1726,13 +1731,13 @@ mod flow_tests {
         let lines = sent_lines(&recorder);
         let cancelled = lines
             .iter()
-            .any(|v| v["type"] == "cancel" && v["id"] == "p0");
-        assert!(cancelled, "古い仮 p0 を cancel する: {lines:?}");
+            .position(|v| v["type"] == "cancel" && v["id"] == "p0")
+            .expect("古い仮 p0 を cancel する");
         // cancel のあとに、新しい仮 p1 の音と transcribe が続く
         let p1_index = lines
             .iter()
             .position(|v| v["type"] == "chunk" && v["id"] == "p1");
-        assert!(p1_index.is_some(), "次の仮 p1 が送られる: {lines:?}");
+        assert!(cancelled < p1_index.expect("次の仮 p1 が送られる"));
         assert!(lines
             .iter()
             .any(|v| v["type"] == "transcribe" && v["id"] == "p1"));
@@ -1837,7 +1842,7 @@ mod flow_tests {
         // 整形の結果の受け口を、本編と同じ仕組みで用意する
         let (fmt_tx, fmt_rx) = channel();
         app.format_tx = fmt_tx;
-        *app.format_rx.lock().unwrap_or_else(|p| p.into_inner()) = Some(fmt_rx);
+        app.format_rx = fmt_rx;
         let (tx, rx) = channel();
         // 認識の終端として、指示の文を返す worker
         tx.send(r#"{"type":"end","id":"s0","text":"丁寧にして","stop":"complete"}"#.to_string())
@@ -1865,29 +1870,10 @@ mod flow_tests {
         );
         for _ in 0..50 {
             std::thread::sleep(Duration::from_millis(50));
-            let receiver = app
-                .format_rx
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .take();
             let mut got = false;
-            if let Some(receiver) = &receiver {
-                loop {
-                    match receiver.try_recv() {
-                        Ok(outcome) => {
-                            got = true;
-                            app.receive_format(outcome);
-                        }
-                        Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                        Err(_) => break,
-                    }
-                }
-            }
-            if let Some(receiver) = receiver {
-                app.format_rx
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .replace(receiver);
+            while let Ok(outcome) = app.format_rx.try_recv() {
+                got = true;
+                app.receive_format(outcome);
             }
             if got && app.state == State::Idle {
                 break;
@@ -1899,6 +1885,96 @@ mod flow_tests {
             "失敗したときは何も貼らない: {:?}",
             app.failed_pastes
         );
+    }
+
+    #[test]
+    fn completed_recognition_releases_or_keeps_the_worker_immediately() {
+        for minutes in [0, 3] {
+            let mut app = test_app();
+            app.cfg.keep_worker_minutes = minutes;
+            app.session.open_interval(vec![0.3; 1600]);
+            let (tx, rx) = channel();
+            tx.send(r#"{"type":"end","id":"s0","text":"認識しました","stop":"complete"}"#.into())
+                .unwrap();
+            app.session.worker = Some(asr::test_worker(rx, false));
+            app.set_state(State::Recognizing {
+                raw_requested: false,
+            });
+            app.session.stop_requested = true;
+            app.tick_session();
+            assert!(
+                app.session.worker.is_none(),
+                "認識終了時にsessionから解放する"
+            );
+            assert_eq!(app.kept_worker.is_some(), minutes > 0);
+        }
+    }
+
+    #[test]
+    fn enter_cancels_a_partial_that_is_still_uploading() {
+        let mut app = test_app();
+        let (_tx, rx) = channel();
+        let (worker, recorder) = asr::test_worker_with_recorder(rx);
+        app.session.worker = Some(worker);
+        app.session.open_interval(vec![0.3; 1600]);
+        app.session.sending = Some(Sending::new(true, "p0".into(), &[0; 6400]));
+        app.set_state(State::Recording);
+        app.dispatch(Event::Enter);
+        for _ in 0..15 {
+            app.tick_session();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let lines = sent_lines(&recorder);
+        assert!(
+            !lines
+                .iter()
+                .any(|v| v["type"] == "transcribe" && v["id"] == "p0"),
+            "{lines:?}"
+        );
+        let cancel = lines
+            .iter()
+            .position(|v| v["type"] == "cancel" && v["id"] == "p0")
+            .unwrap();
+        let confirmed = lines
+            .iter()
+            .position(|v| v["type"] == "chunk" && v["id"] == "s0")
+            .unwrap();
+        assert!(cancel < confirmed, "{lines:?}");
+    }
+
+    #[test]
+    fn confirmed_work_cancels_the_partial_before_sending_audio() {
+        let mut app = test_app();
+        let (_tx, rx) = channel();
+        let (worker, recorder) = asr::test_worker_with_recorder(rx);
+        app.session.worker = Some(worker);
+        app.session.partial = Some(Partial { id: "p0".into() });
+        app.session.open_interval(vec![0.3; 1600]);
+        app.set_state(State::Recording);
+        for _ in 0..15 {
+            app.tick_session();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let lines = sent_lines(&recorder);
+        let cancel = lines
+            .iter()
+            .position(|v| v["type"] == "cancel" && v["id"] == "p0")
+            .expect("確定を優先する");
+        let confirmed = lines
+            .iter()
+            .position(|v| v["type"] == "chunk" && v["id"] == "s0")
+            .unwrap();
+        assert!(cancel < confirmed, "{lines:?}");
+    }
+
+    #[test]
+    fn confirmed_caption_uses_interval_order_even_when_results_arrive_out_of_order() {
+        let mut session = Session::new();
+        session.open_interval(vec![0.3; 1600]);
+        session.open_interval(vec![0.3; 1600]);
+        session.complete_interval("s1", " 後半。 ");
+        session.complete_interval("s0", " 前半。 ");
+        assert_eq!(session.confirmed_text, "前半。後半。");
     }
 
     #[test]
@@ -1914,14 +1990,15 @@ mod flow_tests {
         let mut cfg: Config = toml::from_str("").unwrap();
         cfg.speech_exe = "__openhinovoice_missing_test_worker__.exe".into();
         cfg.sounds = false;
-        let (format_tx, _) = channel();
+        cfg.recovery_history = false;
+        let (format_tx, format_rx) = channel();
         App {
             cfg,
             state: State::Idle,
             session: Session::new(),
             kept_worker: None,
             format_tx,
-            format_rx: std::sync::Mutex::new(None),
+            format_rx,
             format_generation: FormatGeneration::default(),
             transient_until: None,
             failed_pastes: VecDeque::new(),
