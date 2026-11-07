@@ -501,11 +501,12 @@ pub fn format(
         Err(ureq::Error::Status(code, r)) => {
             let v: serde_json::Value = r.into_json().unwrap_or_default();
             let err_code = v["error"]["code"].as_str().unwrap_or("").to_string();
+            let err_message = v["error"]["message"].as_str().unwrap_or("").to_string();
             // Fast モードが使えない場合は通常の速さでもう一度だけ送る
             if fast && err_code == "subscription_sharing_unsupported_capability" {
                 return format(model, instructions, raw, false, wait);
             }
-            return Err(classify(code, &err_code));
+            return Err(classify(code, &err_code, &err_message));
         }
         Err(e) => return Err(crate::format::transport_error(&e)),
     };
@@ -513,12 +514,18 @@ pub fn format(
 }
 
 /// ChatGPT のエラーを、やり直す価値のあるものとないものに分ける
-fn classify(http: u16, code: &str) -> FormatError {
+fn classify(http: u16, code: &str, message: &str) -> FormatError {
     match code {
         "subscription_sharing_usage_unavailable" | "subscription_sharing_user_unavailable" => {
             FormatError::Busy(explain_error(http, code))
         }
-        "" if http == 408 || http == 429 || http >= 500 => FormatError::Http(http),
+        "" if http == 408 || http == 429 || http >= 500 => {
+            let detail = message.trim();
+            FormatError::Http(
+                http,
+                (!detail.is_empty()).then(|| detail.chars().take(300).collect()),
+            )
+        }
         _ => FormatError::Provider(explain_error(http, code)),
     }
 }
@@ -542,7 +549,8 @@ fn read_stream(reader: impl Read, started: std::time::Instant) -> Result<String,
             "response.completed" => return Ok(text),
             "response.failed" => {
                 let code = event["response"]["error"]["code"].as_str().unwrap_or("");
-                return Err(classify(0, code));
+                let message = event["response"]["error"]["message"].as_str().unwrap_or("");
+                return Err(classify(0, code, message));
             }
             "response.incomplete" => {
                 return Err(FormatError::Network(

@@ -29,7 +29,8 @@ fn session_id() -> &'static str {
 pub enum FormatError {
     MissingApiKey,
     MissingModel,
-    Http(u16),
+    /// 第2要素はサーバーが返したエラー本文の要点。APIキーなどの秘密は除く(#12)
+    Http(u16, Option<String>),
     Timeout,
     Network(String),
     BadResponse(String),
@@ -43,7 +44,7 @@ impl FormatError {
     pub fn retryable(&self) -> bool {
         match self {
             FormatError::Timeout | FormatError::Network(_) | FormatError::Busy(_) => true,
-            FormatError::Http(code) => *code == 408 || *code == 429 || *code >= 500,
+            FormatError::Http(code, _) => *code == 408 || *code == 429 || *code >= 500,
             _ => false,
         }
     }
@@ -54,7 +55,8 @@ impl fmt::Display for FormatError {
         match self {
             FormatError::MissingApiKey => write!(f, "APIキー未設定"),
             FormatError::MissingModel => write!(f, "整形モデル未設定"),
-            FormatError::Http(code) => write!(f, "整形APIエラー HTTP {code}"),
+            FormatError::Http(code, None) => write!(f, "整形APIエラー HTTP {code}"),
+            FormatError::Http(code, Some(d)) => write!(f, "整形APIエラー HTTP {code}: {d}"),
             FormatError::Timeout => write!(f, "整形が時間切れ"),
             FormatError::Network(e) => write!(f, "整形APIに接続できません: {e}"),
             FormatError::BadResponse(e) => write!(f, "整形APIの応答が不正です: {e}"),
@@ -149,6 +151,91 @@ pub(crate) fn transport_error(err: &(dyn std::error::Error + 'static)) -> Format
         source = e.source();
     }
     FormatError::Network(err.to_string())
+}
+
+/// HTTP エラーに、サーバーが返した本文の要点を添える(#12)。本文は先頭 4KB までしか読まない
+pub(crate) fn http_error(code: u16, resp: ureq::Response, api_key: &str) -> FormatError {
+    let mut body = String::new();
+    let _ = resp.into_reader().take(4096).read_to_string(&mut body);
+    FormatError::Http(code, error_summary(&body, api_key))
+}
+
+/// サーバーのエラー本文から、記録と画面に見せられる要点を 1 つ取る。
+/// JSON なら error.message → message → error → detail の順に探し、どれもなければ最初の 1 行。
+/// 秘密(APIキー、Bearer トークン)は必ず取り除く
+pub(crate) fn error_summary(body: &str, api_key: &str) -> Option<String> {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let message = match serde_json::from_str::<serde_json::Value>(trimmed) {
+        // JSON に要点がなければ、本文そのもの(「{}」など)より「なし」を選ぶ
+        Ok(v) => [
+            v["error"]["message"].as_str(),
+            v["message"].as_str(),
+            v["error"].as_str(),
+            v["detail"].as_str(),
+        ]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|s| !s.is_empty())
+        .map(str::to_string),
+        // JSONでなければ、最初の 1 行をそのまま見せる
+        Err(_) => {
+            let line = trimmed.lines().next().unwrap_or("").trim();
+            Some(line.chars().take(200).collect::<String>())
+        }
+    };
+    // JSON に要点がなければ、本文そのもの(「{}」など)より「なし」を選ぶ
+    let message = message?;
+    let scrubbed = scrub_secrets(&message, api_key);
+    let scrubbed: String = scrubbed.chars().take(300).collect();
+    if scrubbed.trim().is_empty() {
+        None
+    } else {
+        Some(scrubbed)
+    }
+}
+
+/// 文面から API キーと Bearer トークンを取り除く。記録ファイルは平文なので漏らさない
+fn scrub_secrets(text: &str, api_key: &str) -> String {
+    let mut out = text.to_string();
+    let key = api_key.trim();
+    // 短い文字列を置換すると本文を壊すので、鍵らしい長さのときだけ
+    if key.chars().count() >= 8 {
+        out = out.replace(key, "***");
+    }
+    scrub_bearer_tokens(&out)
+}
+
+/// "Bearer <値>" の値を、キーと一致しない文字列でも取り除く
+fn scrub_bearer_tokens(text: &str) -> String {
+    let lower = text.to_lowercase();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < text.len() {
+        if lower[i..].starts_with("bearer") {
+            // "Bearer" と値の間の空白を読み飛ばしてから、値の終わりを探す
+            let mut j = i + "bearer".len();
+            while lower[j..].starts_with([' ', '\t']) {
+                j += 1;
+            }
+            let token_end = lower[j..]
+                .find(|c: char| c.is_whitespace() || matches!(c, '"' | ',' | '}' | ']'))
+                .map_or(text.len(), |p| j + p);
+            if token_end > j {
+                out.push_str(&text[i..i + "bearer".len()]);
+                out.push_str(" ***");
+                i = token_end;
+                continue;
+            }
+        }
+        let ch = text[i..].chars().next().unwrap_or('\u{fffd}');
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
 }
 
 /// API キーと文字起こしを任意の平文 HTTP サーバーへ送らない。
@@ -314,7 +401,7 @@ fn chat_completions(
         .send_json(body);
     let resp = match resp {
         Ok(r) => r,
-        Err(ureq::Error::Status(code, _)) => return Err(FormatError::Http(code)),
+        Err(ureq::Error::Status(code, r)) => return Err(http_error(code, r, api_key)),
         Err(ureq::Error::Transport(t)) => return Err(transport_error(&t)),
     };
     if resp.content_type() == "text/event-stream" {
@@ -384,7 +471,13 @@ pub fn list_models(base_url: &str, api_key: &str) -> Result<Vec<(String, String)
         .set("Authorization", &format!("Bearer {api_key}"))
         .set("User-Agent", USER_AGENT)
         .call()
-        .map_err(|e| format!("モデル一覧を取得できません: {e}"))?;
+        .map_err(|e| match e {
+            ureq::Error::Status(code, r) => {
+                let detail = http_error(code, r, api_key);
+                format!("モデル一覧を取得できません: {detail}")
+            }
+            e => format!("モデル一覧を取得できません: {e}"),
+        })?;
     let v: serde_json::Value = resp.into_json().map_err(|e| e.to_string())?;
     let mut ids: Vec<String> = v["data"]
         .as_array()
@@ -704,14 +797,68 @@ mod tests {
     fn http_401_is_error() {
         let url = serve_once(|_| (401, r#"{"error":"unauthorized"}"#.to_string()));
         let cfg = cfg_for(url);
-        assert_eq!(format(&cfg, "hello"), Err(FormatError::Http(401)));
+        assert_eq!(
+            format(&cfg, "hello"),
+            Err(FormatError::Http(401, Some("unauthorized".into())))
+        );
     }
 
     #[test]
     fn http_500_is_error() {
         let url = serve_once(|_| (500, r#"{"error":"boom"}"#.to_string()));
         let cfg = cfg_for(url);
-        assert_eq!(format(&cfg, "hello"), Err(FormatError::Http(500)));
+        assert_eq!(
+            format(&cfg, "hello"),
+            Err(FormatError::Http(500, Some("boom".into())))
+        );
+    }
+
+    #[test]
+    fn groq_style_error_body_is_surfaced() {
+        // #12: サーバーからのエラーメッセージが記録に残る。#11 の Groq / Gemini の切り分けにも使う
+        let url = serve_once(|_| {
+            (
+                400,
+                r#"{"error":{"message":"The model `openai/gpt-oss-20b` does not exist","type":"invalid_request_error"}}"#.to_string(),
+            )
+        });
+        let cfg = cfg_for(url);
+        match format(&cfg, "hello") {
+            Err(FormatError::Http(400, Some(detail))) => {
+                assert!(detail.contains("does not exist"), "{detail}");
+                assert!(!detail.contains("invalid_request_error"), "{detail}");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn error_detail_never_carries_the_api_key() {
+        // エラー本文に鍵が現れても、記録(平文)に漏らさない
+        let url = serve_once(|_| {
+            (
+                401,
+                "Incorrect API key provided: test-key. You can find your key at https://example.test"
+                    .to_string(),
+            )
+        });
+        let cfg = cfg_for(url);
+        match format(&cfg, "hello") {
+            Err(FormatError::Http(401, Some(detail))) => {
+                assert!(!detail.contains("test-key"), "{detail}");
+                assert!(detail.contains("***"), "{detail}");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bearer_token_is_scrubbed_even_when_not_the_configured_key() {
+        let scrubbed = scrub_bearer_tokens("denied for Bearer eyJhbGciOi.abc123, retry");
+        assert!(!scrubbed.contains("eyJ"), "{scrubbed}");
+        assert!(scrubbed.contains("Bearer ***"), "{scrubbed}");
+        // 置換しても残りの本文は壊さない
+        assert!(scrubbed.contains("retry"));
     }
 
     #[test]
@@ -856,7 +1003,7 @@ Connection: close
         let result = format_with_retry(&cfg, "明日の会議です。", &|| false, |_| {
             panic!("401 must not be retried")
         });
-        assert_eq!(result, Err(FormatError::Http(401)));
+        assert_eq!(result, Err(FormatError::Http(401, None)));
         thread::sleep(Duration::from_millis(100));
         assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
@@ -873,7 +1020,7 @@ Connection: close
             &|| cancelled.load(std::sync::atomic::Ordering::SeqCst),
             |_| cancelled.store(true, std::sync::atomic::Ordering::SeqCst),
         );
-        assert_eq!(result, Err(FormatError::Http(503)));
+        assert_eq!(result, Err(FormatError::Http(503, None)));
         thread::sleep(Duration::from_millis(100));
         assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
