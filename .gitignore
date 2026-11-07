@@ -1,4 +1,7 @@
 /target
+/.worktrees/
+/video/
+/releases/
 config.toml
 *.wav
 !assets/sounds/*.wav
@@ -8,3 +11,7 @@ config.toml
 concept.md
 Plan.md
 HANDOFF.md
+
+# corpus の生成物(WAV と正解は gen_corpus で作る)
+tests/corpus/*.wav
+tests/corpus/*.ref.txt

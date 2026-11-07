@@ -11,6 +11,7 @@ mod hook;
 mod lexicon;
 mod overlay;
 mod paste;
+mod segment;
 mod settings;
 mod sound;
 mod startup;
@@ -37,8 +38,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 // 10 minutes at 96 kHz mono PCM16 is 115.2 MB. Higher sample rates can hit the cap early.
+// 区間認識では、この上限は「まだ結果が出ていない区間の合計」に対して数える
 const MAX_RECORDING_PCM_BYTES: usize = 128 * 1024 * 1024;
 const PCM_LIMIT_MESSAGE: &str = "録音データが128 MiBの安全上限を超えました（高サンプルレートのマイクでは設定時間より早く終了する場合があります）";
+/// worker の死亡や時間切れで送り直す限界。連続でこれを超えたら録音を諦める
+const MAX_ASR_FAILURES: u32 = 4;
 
 enum FormatOutcome {
     Done {
@@ -101,6 +105,37 @@ impl FormatGeneration {
     }
 }
 
+/// 区間 1 つの認識の進み具合。結果が出るまで PCM を保持し、worker が落ちたときに送り直す
+struct Interval {
+    id: String,
+    pcm: Vec<u8>,
+    chunks_sent: bool,
+    transcribe_sent: bool,
+    transcribe_at: Option<Instant>,
+    /// 認識文。空の区間は空文字
+    text: String,
+    /// 終端を受け取った
+    done: bool,
+}
+
+/// 押し戻しで送りきれなかった区間。chunk を送り終えたら transcribe を送る
+struct Sending {
+    id: String,
+    chunks: VecDeque<Vec<u8>>,
+}
+
+impl Sending {
+    fn new(id: String, pcm: &[u8]) -> Sending {
+        Sending {
+            id,
+            chunks: pcm.chunks(ASR_CHUNK_BYTES).map(<[u8]>::to_vec).collect(),
+        }
+    }
+}
+
+/// 1 tick で worker に送る塊。0.1 秒分。録音中の送り方と同じ大きさにする
+const ASR_CHUNK_BYTES: usize = 16000 / 10 * 2;
+
 struct Session {
     worker: Option<Worker>,
     recorder: Option<Recorder>,
@@ -108,15 +143,21 @@ struct Session {
     input_app: Option<String>,
     recovery_id: Option<u64>,
     recovery_write_failed: bool,
-    pending_pcm: VecDeque<Vec<u8>>,
-    recorded_pcm_bytes: usize,
     sample_rate: u32,
     stop_requested: bool,
-    transcribe_sent: bool,
-    transcribe_started_at: Option<Instant>,
     started_at: Instant,
     // 録音開始の音がマイクに入るので、鳴り終わるまでに録れた音は捨てる
     skip_until: Instant,
+    segmenter: segment::Segmenter,
+    intervals: Vec<Interval>,
+    next_interval_index: usize,
+    sending: Option<Sending>,
+    /// まだ認識結果が出ていない区間の PCM の合計。これが上限を超えたら止める
+    unaccounted_bytes: usize,
+    worker_spawned_at: Instant,
+    /// worker の死亡や時間切れで送り直す回数。限界を超えたら録音を諦める
+    asr_failures: u32,
+    last_spawn_attempt: Option<Instant>,
 }
 
 impl Session {
@@ -128,33 +169,97 @@ impl Session {
             input_app: None,
             recovery_id: None,
             recovery_write_failed: false,
-            pending_pcm: VecDeque::new(),
-            recorded_pcm_bytes: 0,
             sample_rate: 16000,
             stop_requested: false,
-            transcribe_sent: false,
-            transcribe_started_at: None,
             started_at: Instant::now(),
             skip_until: Instant::now(),
+            segmenter: segment::Segmenter::new(16000),
+            intervals: Vec::new(),
+            next_interval_index: 0,
+            sending: None,
+            unaccounted_bytes: 0,
+            worker_spawned_at: Instant::now(),
+            asr_failures: 0,
+            last_spawn_attempt: None,
         }
-    }
-
-    fn queue_audio(&mut self, samples: &[f32]) -> bool {
-        let bytes = samples.len().saturating_mul(2);
-        if bytes > MAX_RECORDING_PCM_BYTES.saturating_sub(self.recorded_pcm_bytes) {
-            return false;
-        }
-        if !samples.is_empty() {
-            self.pending_pcm
-                .push_back(audio::samples_to_pcm_le(samples));
-            self.recorded_pcm_bytes += bytes;
-        }
-        true
     }
 
     fn recording_time_limit(&self, now: Instant, max_minutes: u32) -> bool {
         now.saturating_duration_since(self.started_at)
             >= Duration::from_secs(max_minutes as u64 * 60)
+    }
+
+    /// 録音の音を区切りに渡し、閉じた区間を認識の待ち行列に入れる
+    fn feed_segmenter(&mut self, samples: &[f32]) -> bool {
+        for interval_pcm in self.segmenter.push(samples) {
+            if !self.open_interval(interval_pcm) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Enter のあとに呼ぶ。開いている区間を最後の区間として認識に回す
+    fn close_open_interval(&mut self) -> bool {
+        if let Some(samples) = self.segmenter.finish() {
+            if !samples.is_empty() {
+                return self.open_interval(samples);
+            }
+        }
+        true
+    }
+
+    /// 閉じた区間を登録する。未認識の PCM の合計が上限を超えたら false
+    fn open_interval(&mut self, samples: Vec<f32>) -> bool {
+        let pcm = audio::samples_to_pcm_le(&samples);
+        let bytes = pcm.len();
+        if bytes > MAX_RECORDING_PCM_BYTES.saturating_sub(self.unaccounted_bytes) {
+            return false;
+        }
+        let id = format!("s{}", self.next_interval_index);
+        self.next_interval_index += 1;
+        self.unaccounted_bytes += bytes;
+        self.intervals.push(Interval {
+            id,
+            pcm,
+            chunks_sent: false,
+            transcribe_sent: false,
+            transcribe_at: None,
+            text: String::new(),
+            done: false,
+        });
+        true
+    }
+
+    /// 区間の認識が終わった。PCM を捨てて、復旧履歴を途中までの文章で更新する
+    fn complete_interval(&mut self, id: &str, text: &str) {
+        let Some(interval) = self.intervals.iter_mut().find(|i| i.id == id) else {
+            return;
+        };
+        if interval.done {
+            return;
+        }
+        interval.done = true;
+        interval.text = text.to_string();
+        self.unaccounted_bytes = self.unaccounted_bytes.saturating_sub(interval.pcm.len());
+        interval.pcm = Vec::new();
+        self.asr_failures = 0;
+    }
+
+    /// 順番に結果をつないだ文章。結果が出ていない区間は空になり、
+    /// すべて出てから呼ぶことを想定する
+    fn joined_text(&self) -> String {
+        let texts: Vec<String> = self
+            .intervals
+            .iter()
+            .filter(|i| i.done)
+            .map(|i| i.text.clone())
+            .collect();
+        segment::join_intervals(&texts)
+    }
+
+    fn all_intervals_done(&self) -> bool {
+        self.intervals.iter().all(|i| i.done)
     }
 }
 
@@ -204,13 +309,17 @@ impl App {
     fn teardown_session(&mut self) {
         self.session.recorder = None;
         self.session.paste_target = None;
-        self.session.pending_pcm.clear();
         self.session.stop_requested = false;
-        self.session.transcribe_sent = false;
-        self.session.transcribe_started_at = None;
         if let Some(worker) = self.session.worker.take() {
             worker.shutdown();
         }
+        self.session.segmenter = segment::Segmenter::new(self.session.sample_rate);
+        self.session.intervals.clear();
+        self.session.sending = None;
+        self.session.unaccounted_bytes = 0;
+        self.session.next_interval_index = 0;
+        self.session.asr_failures = 0;
+        self.session.last_spawn_attempt = None;
     }
 
     /// Returns false if this action fails; subsequent actions in the transition must be skipped.
@@ -240,6 +349,7 @@ impl App {
                 match Recorder::start_with_device(Some(self.cfg.microphone.as_str())) {
                     Ok(recorder) => {
                         self.session.sample_rate = recorder.sample_rate;
+                        self.session.segmenter = segment::Segmenter::new(recorder.sample_rate);
                         self.session.recorder = Some(recorder);
                         if self.cfg.sounds {
                             self.sfx(Sound::Start);
@@ -262,7 +372,8 @@ impl App {
                 if let Some(recorder) = self.session.recorder.take() {
                     let samples = recorder.drain();
                     drop(recorder);
-                    if !self.session.queue_audio(&samples) {
+                    if !self.session.feed_segmenter(&samples) || !self.session.close_open_interval()
+                    {
                         self.fail_session(PCM_LIMIT_MESSAGE.into());
                         return false;
                     }
@@ -286,7 +397,9 @@ impl App {
                 std::thread::spawn(move || {
                     let cancelled = || cancel.load(Ordering::SeqCst);
                     let started = Instant::now();
-                    let result = format::format_with_retry(&cfg, &raw, &cancelled, |attempt| {
+                    // 長い文章は段落ごとに分けて送る。1 つが失敗したら、その部分だけ
+                    // 整形前の文を使う。短い文章では 1 回の依頼にまとめられる
+                    let result = format::format_long(&cfg, &raw, &cancelled, |attempt| {
                         let _ = tx.send(FormatOutcome::Retrying {
                             generation,
                             attempt,
@@ -461,7 +574,7 @@ impl App {
         if let Some(recorder) = &self.session.recorder {
             let samples = recorder.drain();
             overlay::push_level(&samples);
-            if Instant::now() >= self.session.skip_until && !self.session.queue_audio(&samples) {
+            if Instant::now() >= self.session.skip_until && !self.session.feed_segmenter(&samples) {
                 self.dispatch(Event::AsrError {
                     message: PCM_LIMIT_MESSAGE.into(),
                 });
@@ -480,128 +593,239 @@ impl App {
             return;
         }
 
-        if self.session.worker.is_none() {
-            return;
-        }
-
-        // Ack / timeout checks are nonblocking even if speech.exe has stopped
-        // reading stdin. The error path kills the stalled child and resets UI.
-        if let Err(e) = self.session.worker.as_mut().unwrap().poll_writer() {
-            self.dispatch(Event::AsrError {
-                message: e.to_string(),
-            });
-            return;
-        }
-
-        let worker_ready = self.session.worker.as_ref().unwrap().is_ready();
-        if let Some(phase) = asr::timeout_phase(
-            self.session.started_at,
-            worker_ready,
-            self.session.transcribe_started_at,
-            Instant::now(),
-        ) {
-            self.dispatch(Event::AsrError {
-                message: format!("認識が時間切れです: {phase}"),
-            });
-            return;
-        }
-
-        let ready = {
-            let worker = self.session.worker.as_mut().unwrap();
-            if worker.is_ready() {
-                true
-            } else {
-                match worker.try_ready() {
-                    Ok(r) => r,
-                    Err(e) => {
-                        let message = e.to_string();
-                        self.dispatch(Event::AsrError { message });
-                        return;
-                    }
-                }
-            }
-        };
-
-        if ready {
-            let mut send_error: Option<String> = None;
-            while let Some(chunk) = self.session.pending_pcm.front() {
-                match self.session.worker.as_mut().unwrap().send_chunk(chunk) {
-                    Ok(true) => {
-                        self.session.pending_pcm.pop_front();
-                    }
-                    Ok(false) => break, // backpressure; retry without losing this chunk
-                    Err(e) => {
-                        send_error = Some(e.to_string());
-                        break;
-                    }
-                }
-            }
-            if let Some(message) = send_error {
+        // worker のいない時間(送り直しの途中)は、起動を試みて ready を待つ
+        match self.ensure_worker() {
+            Ok(true) => {}
+            Ok(false) => return,
+            Err(message) => {
                 self.dispatch(Event::AsrError { message });
                 return;
             }
         }
 
-        if in_recording {
-            return;
+        let words = lexicon::asr_hints(&self.cfg.words, &self.cfg.terms);
+        let mut restart = false;
+        let mut fatal: Option<String> = None;
+
+        // Ack の確認は、worker が stdin を読まなくなっても止まらない
+        if let Err(e) = self.session.worker.as_mut().unwrap().poll_writer() {
+            restart = true;
+            self.session.asr_failures += 1;
+            let _ = e;
         }
 
-        if in_recognizing
-            && self.session.stop_requested
-            && ready
-            && self.session.pending_pcm.is_empty()
-            && !self.session.transcribe_sent
-        {
-            let sample_rate = self.session.sample_rate;
-            let words = lexicon::asr_hints(&self.cfg.words, &self.cfg.terms);
+        // ready の確認。時間切れは送り直しの対象にする
+        let mut ready = false;
+        if !restart {
             let worker = self.session.worker.as_mut().unwrap();
-            match worker.transcribe(sample_rate, &words) {
-                Ok(true) => {
-                    self.session.transcribe_sent = true;
-                    self.session.transcribe_started_at = Some(Instant::now());
+            ready = worker.is_ready();
+            if !ready {
+                match worker.try_ready() {
+                    Ok(r) => ready = r,
+                    Err(_) => {
+                        restart = true;
+                        self.session.asr_failures += 1;
+                    }
                 }
-                Ok(false) => {} // queue full; next tick will retry
-                Err(e) => {
-                    let message = e.to_string();
-                    self.dispatch(Event::AsrError { message });
-                    return;
+            }
+        }
+        if !restart
+            && !ready
+            && asr::ready_timed_out(self.session.worker_spawned_at, Instant::now())
+        {
+            restart = true;
+            self.session.asr_failures += 1;
+        }
+
+        // 区間ごとの時間切れ。1 区間の認識が 90 秒を超えたら送り直す
+        if !restart {
+            let now = Instant::now();
+            let stalled = self.session.intervals.iter().any(|i| {
+                i.transcribe_sent
+                    && !i.done
+                    && i.transcribe_at.is_some_and(|at| {
+                        now.saturating_duration_since(at) >= asr::TRANSCRIPTION_TIMEOUT
+                    })
+            });
+            if stalled {
+                restart = true;
+                self.session.asr_failures += 1;
+            }
+        }
+
+        // 終端メッセージを読み、区間の結果として記録する
+        if !restart {
+            loop {
+                let polled = self.session.worker.as_mut().unwrap().poll_terminal();
+                let Some(result) = polled else { break };
+                match result {
+                    Ok(terminal) => match terminal.outcome {
+                        asr::TerminalOutcome::Text(text) => {
+                            self.session
+                                .complete_interval(&terminal.id, text.as_deref().unwrap_or(""));
+                            self.update_recovery_history();
+                        }
+                        asr::TerminalOutcome::Error(_) | asr::TerminalOutcome::Cancelled => {
+                            restart = true;
+                            self.session.asr_failures += 1;
+                        }
+                    },
+                    Err(_) => {
+                        restart = true;
+                        self.session.asr_failures += 1;
+                    }
+                }
+                if restart {
+                    break;
                 }
             }
         }
 
-        if in_recognizing && self.session.transcribe_sent {
-            let polled = {
-                let worker = self.session.worker.as_mut().unwrap();
-                worker.poll_end()
-            };
-            if let Some(result) = polled {
-                if let Some(worker) = self.session.worker.take() {
-                    worker.shutdown();
+        // 送り直しの回数が限界を超えたら録音を諦める
+        if self.session.asr_failures > MAX_ASR_FAILURES {
+            fatal = Some("認識エンジンが繰り返し停止しました".into());
+        }
+
+        // 送り直し。worker を殺し、結果が出ていない区間を送り直すために印を戻す
+        if restart && fatal.is_none() {
+            if let Some(worker) = self.session.worker.take() {
+                worker.shutdown();
+            }
+            self.session.sending = None;
+            self.session.last_spawn_attempt = None;
+            for interval in &mut self.session.intervals {
+                if !interval.done {
+                    interval.chunks_sent = false;
+                    interval.transcribe_sent = false;
+                    interval.transcribe_at = None;
                 }
-                self.session.recorder = None;
-                self.session.pending_pcm.clear();
-                match result {
-                    Ok(text) => {
-                        self.session.recovery_id = match history::save_recognized_if_enabled(
-                            &text,
-                            self.cfg.recovery_history,
-                        ) {
-                            Ok(id) => id,
-                            Err(e) => {
-                                eprintln!("復旧履歴を書き込めません: {e}");
-                                self.session.recovery_write_failed = true;
-                                self.failed_pastes.push_back(text.clone());
-                                overlay::set_recovery_count(self.failed_pastes.len());
-                                None
+            }
+        }
+
+        // 送りパイプライン。1 区間ずつ chunk を送り、終わったら transcribe を送る
+        if ready && !restart && fatal.is_none() {
+            let mut send_failed = false;
+            let sending = self.session.sending.as_mut();
+            if let Some(sending) = sending {
+                let worker = self.session.worker.as_mut().unwrap();
+                while let Some(chunk) = sending.chunks.front() {
+                    match worker.send_chunk(&sending.id, chunk) {
+                        Ok(true) => {
+                            sending.chunks.pop_front();
+                        }
+                        Ok(false) => break, // 押し戻し。同じ chunk を次の tick で送る
+                        Err(_) => {
+                            send_failed = true;
+                            break;
+                        }
+                    }
+                }
+                if sending.chunks.is_empty() && !send_failed {
+                    let id = sending.id.clone();
+                    match worker.transcribe(&id, self.session.sample_rate, &words) {
+                        Ok(true) => {
+                            if let Some(interval) =
+                                self.session.intervals.iter_mut().find(|i| i.id == id)
+                            {
+                                interval.chunks_sent = true;
+                                interval.transcribe_sent = true;
+                                interval.transcribe_at = Some(Instant::now());
                             }
-                        };
-                        let has_api_key = self.cfg.has_api_key();
-                        self.dispatch(Event::AsrDone { text, has_api_key });
+                            self.session.sending = None;
+                        }
+                        Ok(false) => {} // 列が満杯。次の tick で送り直す
+                        Err(_) => send_failed = true,
                     }
-                    Err(e) => {
-                        let message = e.to_string();
-                        self.dispatch(Event::AsrError { message });
-                    }
+                }
+            } else if let Some((id, pcm)) = self
+                .session
+                .intervals
+                .iter()
+                .find(|i| !i.chunks_sent && !i.done)
+                .map(|i| (i.id.clone(), i.pcm.clone()))
+            {
+                self.session.sending = Some(Sending::new(id, &pcm));
+            }
+            if send_failed {
+                self.session.asr_failures += 1;
+                if self.session.asr_failures > MAX_ASR_FAILURES {
+                    fatal = Some("認識エンジンとの通信に失敗しました".into());
+                }
+            }
+        }
+
+        if let Some(message) = fatal {
+            self.dispatch(Event::AsrError { message });
+            return;
+        }
+
+        if in_recognizing && self.session.stop_requested && self.session.all_intervals_done() {
+            let text = self.session.joined_text();
+            self.session.recorder = None;
+            if text.is_empty() {
+                self.dispatch(Event::AsrError {
+                    message: "音声を認識できませんでした（結果が空です）".into(),
+                });
+                return;
+            }
+            let has_api_key = self.cfg.has_api_key();
+            self.dispatch(Event::AsrDone { text, has_api_key });
+        }
+    }
+
+    /// worker がいれば true を返す。いなければ起動し直しを試みる(1 秒に 1 回)。
+    /// 起動に失敗し続けたときは Err
+    fn ensure_worker(&mut self) -> Result<bool, String> {
+        if self.session.worker.is_some() {
+            return Ok(true);
+        }
+        if self
+            .session
+            .last_spawn_attempt
+            .is_some_and(|at| at.elapsed() < Duration::from_secs(1))
+        {
+            return Ok(false);
+        }
+        self.session.last_spawn_attempt = Some(Instant::now());
+        match Worker::spawn(&self.cfg.speech_exe, &self.cfg.model) {
+            Ok(worker) => {
+                self.session.worker = Some(worker);
+                self.session.worker_spawned_at = Instant::now();
+                Ok(true)
+            }
+            Err(e) => {
+                self.session.asr_failures += 1;
+                if self.session.asr_failures > MAX_ASR_FAILURES {
+                    Err(e.to_string())
+                } else {
+                    Ok(false)
+                }
+            }
+        }
+    }
+
+    /// 区間の認識が終わるたびに、復旧履歴を途中までの文章で書き足す。
+    /// アプリが途中で落ちても、それまでの文章は残る
+    fn update_recovery_history(&mut self) {
+        if !self.cfg.recovery_history {
+            return;
+        }
+        let joined = self.session.joined_text();
+        if joined.is_empty() {
+            return;
+        }
+        match self.session.recovery_id {
+            None => match history::save_recognized(&joined) {
+                Ok(id) => self.session.recovery_id = Some(id),
+                Err(e) => {
+                    eprintln!("復旧履歴を書き込めません: {e}");
+                    self.session.recovery_write_failed = true;
+                }
+            },
+            Some(id) => {
+                if let Err(e) = history::update_raw(id, &joined) {
+                    eprintln!("復旧履歴の追記に失敗しました: {e}");
+                    self.session.recovery_write_failed = true;
                 }
             }
         }
@@ -818,7 +1042,7 @@ mod flow_tests {
     }
 
     #[test]
-    fn recording_limits_keep_pcm_bounded_and_use_existing_stop_transition() {
+    fn recording_limits_keep_pending_pcm_bounded_and_use_existing_stop_transition() {
         let mut session = Session::new();
         let started = session.started_at;
         for minutes in [1, 3, 5, 10] {
@@ -830,14 +1054,142 @@ mod flow_tests {
         }
         assert!(!session.recording_time_limit(started + Duration::from_secs(5 * 60), 10));
         assert!(session.recording_time_limit(started + Duration::from_secs(10 * 60), 10));
-        session.recorded_pcm_bytes = MAX_RECORDING_PCM_BYTES - 4;
-        assert!(session.queue_audio(&[0.0, 1.0]));
-        assert_eq!(session.recorded_pcm_bytes, MAX_RECORDING_PCM_BYTES);
-        assert!(!session.queue_audio(&[0.0]));
-        assert_eq!(session.pending_pcm.len(), 1);
+        // 未認識の区間の合計に対して上限が効く。結果が出たら PCM は捨てて枠が戻る
+        let mut loud = vec![0.3f32; 16000 * 3];
+        loud.extend(std::iter::repeat_n(0.0f32, 16000));
+        assert!(session.feed_segmenter(&loud));
+        assert_eq!(session.intervals.len(), 1);
+        let used = session.unaccounted_bytes;
+        assert!(used > 0);
+        let first = session.intervals[0].id.clone();
+        session.complete_interval(&first, "できた");
+        assert_eq!(session.unaccounted_bytes, 0);
+        assert!(session.intervals[0].pcm.is_empty());
+        // 上限に達したら区間を登録しない
+        session.unaccounted_bytes = MAX_RECORDING_PCM_BYTES;
+        assert!(!session.open_interval(loud));
+        assert_eq!(session.intervals.len(), 1);
         let (next, actions) = state::step(State::Recording, Event::Enter);
         assert!(matches!(next, State::Recognizing { .. }));
         assert!(actions.contains(&Action::StopRecordingAndTranscribe));
+    }
+
+    #[test]
+    fn intervals_are_joined_in_order_and_empty_results_are_skipped() {
+        let mut session = Session::new();
+        let utterances: [Vec<f32>; 3] = [
+            vec![0.3f32; 16000],
+            vec![0.3f32; 16000],
+            vec![0.3f32; 16000],
+        ];
+        for samples in &utterances {
+            // 閉じた区間として返るように、発話のあとに無音を足す
+            let mut audio = samples.clone();
+            audio.extend(std::iter::repeat_n(0.0f32, 16000));
+            assert!(session.feed_segmenter(&audio));
+        }
+        assert_eq!(session.intervals.len(), 3);
+        let ids: Vec<String> = session.intervals.iter().map(|i| i.id.clone()).collect();
+        session.complete_interval(&ids[0], "ひとつめ");
+        session.complete_interval(&ids[1], "");
+        assert!(!session.all_intervals_done());
+        assert_eq!(session.joined_text(), "ひとつめ");
+        session.complete_interval(&ids[2], "ふたつめ");
+        assert!(session.all_intervals_done());
+        assert_eq!(session.joined_text(), "ひとつめふたつめ");
+    }
+
+    /// 偽の worker を使って、区間ごとの認識と送り直しを確かめる
+    #[test]
+    fn intervals_are_recognized_by_id_and_a_failed_one_is_marked_for_resend() {
+        let mut app = test_app();
+        for _ in 0..2 {
+            let mut audio = vec![0.3f32; 16000];
+            audio.extend(std::iter::repeat_n(0.0f32, 16000));
+            assert!(app.session.feed_segmenter(&audio));
+        }
+        assert_eq!(app.session.intervals.len(), 2);
+        // s0 は認識が終わり、s1 は worker がエラーで死んだ状態
+        let (tx, rx) = channel();
+        tx.send(r#"{"type":"end","id":"s0","text":"ひとつめ。","stop":"complete"}"#.to_string())
+            .unwrap();
+        tx.send(
+            r#"{"type":"error","id":"s1","error":{"code":"worker","message":"crashed"}}"#
+                .to_string(),
+        )
+        .unwrap();
+        app.session.worker = Some(asr::test_worker(rx, false));
+        app.session.intervals[1].chunks_sent = true;
+        app.session.intervals[1].transcribe_sent = true;
+        app.session.intervals[1].transcribe_at = Some(Instant::now());
+        app.set_state(State::Recognizing {
+            raw_requested: false,
+        });
+        app.session.stop_requested = true;
+        app.tick_session();
+        // s0 の文章は残り、s1 は送り直しのために印が戻る。worker は起動し直し待ち
+        assert!(app.session.intervals[0].done);
+        assert_eq!(app.session.joined_text(), "ひとつめ。");
+        assert!(!app.session.intervals[1].chunks_sent);
+        assert!(!app.session.intervals[1].transcribe_sent);
+        assert!(app.session.worker.is_none());
+        assert_eq!(app.session.asr_failures, 1);
+        assert_eq!(
+            app.state,
+            State::Recognizing {
+                raw_requested: false
+            }
+        );
+    }
+
+    #[test]
+    fn recognizing_ends_with_joined_text_when_every_interval_is_done() {
+        let mut app = test_app();
+        for _ in 0..2 {
+            let mut audio = vec![0.3f32; 16000];
+            audio.extend(std::iter::repeat_n(0.0f32, 16000));
+            assert!(app.session.feed_segmenter(&audio));
+        }
+        let (tx, rx) = channel();
+        tx.send(r#"{"type":"end","id":"s0","text":"ひとつめ。","stop":"complete"}"#.to_string())
+            .unwrap();
+        tx.send(r#"{"type":"end","id":"s1","text":"ふたつめ。","stop":"complete"}"#.to_string())
+            .unwrap();
+        app.session.worker = Some(asr::test_worker(rx, false));
+        app.set_state(State::Recognizing {
+            raw_requested: false,
+        });
+        app.session.stop_requested = true;
+        app.tick_session();
+        // 整形の接続先がないので生テキストを貼る。貼り先がなく失敗するが、
+        // 文は順番につながっている
+        assert_eq!(app.state, State::Idle);
+        assert_eq!(app.failed_pastes[0], "ひとつめ。ふたつめ。");
+    }
+
+    #[test]
+    fn a_worker_that_dies_mid_recording_resends_undone_intervals() {
+        let mut app = test_app();
+        let mut audio = vec![0.3f32; 16000];
+        audio.extend(std::iter::repeat_n(0.0f32, 16000));
+        assert!(app.session.feed_segmenter(&audio));
+        let (_, rx) = channel();
+        app.session.worker = Some(asr::test_worker(rx, true));
+        app.set_state(State::Recording);
+        // 書き込みの失敗は送信スレッドが非同期に気づくので、tick を繰り返して待つ
+        for _ in 0..100 {
+            app.tick_session();
+            if app.session.worker.is_none() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // 送信の失敗は録音を続けたまま、送り直しとして扱う。
+        // 失敗の回数は tick の回し方で 1 か 2 になるので、起こったことだけを見る
+        assert!(app.session.worker.is_none(), "worker を起動し直す");
+        assert!(app.session.asr_failures >= 1);
+        assert!(!app.session.intervals[0].done);
+        assert_eq!(app.state, State::Recording);
     }
 
     fn test_app() -> App {

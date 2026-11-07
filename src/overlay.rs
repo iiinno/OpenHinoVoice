@@ -242,7 +242,7 @@ pub fn push_level(samples: &[f32]) {
     if samples.is_empty() {
         return;
     }
-    let target = level_from_rms(rms(samples));
+    let target = level_from_rms(crate::audio::rms(samples));
     let mut o = lock();
     // 立ち上がりは速く、下がりはゆっくり
     let k = if target > o.level { 0.6 } else { 0.18 };
@@ -284,10 +284,6 @@ pub fn tick() {
 
 fn ease_out(p: f32) -> f32 {
     1.0 - (1.0 - p).powi(3)
-}
-
-fn rms(samples: &[f32]) -> f32 {
-    (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
 }
 
 /// -50dB で 0、-10dB で 1 になるよう対数で割り当てる。人の声は -35〜-15dB あたりに来る

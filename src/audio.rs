@@ -20,6 +20,14 @@ pub fn f32_to_i16(sample: f32) -> i16 {
     (clamped * i16::MAX as f32) as i16
 }
 
+/// 音の大きさ(RMS)。overlay の音量表示と segment の区切り判定で同じ計算を共有する
+pub fn rms(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
+}
+
 pub fn samples_to_pcm_le(samples: &[f32]) -> Vec<u8> {
     let mut out = Vec::with_capacity(samples.len() * 2);
     for s in samples {

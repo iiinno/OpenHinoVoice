@@ -146,6 +146,15 @@ pub fn save_recognized(raw: &str) -> io::Result<u64> {
     save_recognized_at(&recovery_path(), raw)
 }
 
+/// 区間認識の途中経過を書き足す。認識が終わる区間ごとに呼ばれる
+pub fn update_raw(id: u64, raw: &str) -> io::Result<()> {
+    check_text_size(raw)?;
+    let _lock = RecoveryLock::acquire()?;
+    update_at(&recovery_path(), id, |entry| {
+        entry.raw = raw.to_owned();
+    })
+}
+
 pub fn update_formatted(id: u64, formatted: &str) -> io::Result<()> {
     check_text_size(formatted)?;
     let _lock = RecoveryLock::acquire()?;

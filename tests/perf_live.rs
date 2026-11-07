@@ -6,6 +6,8 @@
 
 #[path = "../src/asr.rs"]
 mod asr;
+#[path = "../src/audio.rs"]
+mod audio;
 #[path = "../src/chatgpt.rs"]
 mod chatgpt;
 #[path = "../src/config.rs"]
@@ -14,6 +16,8 @@ mod config;
 mod format;
 #[path = "../src/lexicon.rs"]
 mod lexicon;
+#[path = "../src/segment.rs"]
+mod segment;
 
 use std::time::{Duration, Instant};
 
@@ -34,7 +38,10 @@ fn corpus_path(name: &str, ext: &str) -> Option<std::path::PathBuf> {
 fn feed_wav(worker: &mut asr::Worker, sample_rate: u32, pcm: &[u8]) {
     let chunk_bytes = (sample_rate as usize / 10) * 2;
     for chunk in pcm.chunks(chunk_bytes.max(2)) {
-        while !worker.send_chunk(chunk).expect("chunk を送れませんでした") {
+        while !worker
+            .send_chunk("r", chunk)
+            .expect("chunk を送れませんでした")
+        {
             worker.poll_writer().expect("worker への送信が進みません");
             std::thread::sleep(Duration::from_millis(1));
         }
@@ -46,9 +53,20 @@ fn drain_until_end(worker: &mut asr::Worker) -> (String, String) {
     let started = Instant::now();
     loop {
         worker.poll_writer().expect("worker への送信が進みません");
-        match worker.poll_end() {
-            Some(Ok(text)) => return (text, "complete".into()),
-            Some(Err(asr::AsrError::Worker(message))) => return (String::new(), message),
+        match worker.poll_terminal() {
+            Some(Ok(asr::Terminal {
+                outcome: asr::TerminalOutcome::Text(text),
+                stop,
+                ..
+            })) => return (text.unwrap_or_default(), stop),
+            Some(Ok(asr::Terminal {
+                outcome: asr::TerminalOutcome::Error(message),
+                ..
+            })) => return (String::new(), message),
+            Some(Ok(asr::Terminal {
+                outcome: asr::TerminalOutcome::Cancelled,
+                ..
+            })) => return (String::new(), "cancelled".into()),
             Some(Err(other)) => return (String::new(), other.to_string()),
             None => {
                 if started.elapsed() > END_TIMEOUT {
@@ -118,7 +136,7 @@ fn measure(name: &str, speech_exe: &str, model: &str, words: &str) -> Option<Mea
     feed_wav(&mut worker, wav.sample_rate, &wav.pcm_le);
     let transcribe_started = Instant::now();
     while !worker
-        .transcribe(wav.sample_rate, words)
+        .transcribe("r", wav.sample_rate, words)
         .expect("transcribe を送れませんでした")
     {
         worker.poll_writer().expect("worker への送信が進みません");

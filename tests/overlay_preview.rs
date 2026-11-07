@@ -9,6 +9,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
 };
 
+#[path = "../src/audio.rs"]
+mod audio;
 #[path = "../src/overlay.rs"]
 mod overlay;
 

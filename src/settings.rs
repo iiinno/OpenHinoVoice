@@ -462,7 +462,7 @@ impl Settings {
                 egui::ComboBox::from_id_salt("max_recording_minutes")
                     .selected_text(format!("{}分", self.cfg.max_recording_minutes))
                     .show_ui(ui, |ui| {
-                        for minutes in [1, 3, 5, 10] {
+                        for minutes in [1, 3, 5, 10, 30, 60] {
                             ui.selectable_value(
                                 &mut self.cfg.max_recording_minutes,
                                 minutes,
@@ -472,7 +472,7 @@ impl Settings {
                     });
                 hint(
                     ui,
-                    "時間になると自動で録音を終了して認識します（データ上限128 MiB）",
+                    "時間になると自動で録音を終了して認識します。発話ごとに区切って認識するので、長くても Enter からの待ち時間はほぼ一定です",
                 );
             });
             ui.end_row();

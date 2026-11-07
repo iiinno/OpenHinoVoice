@@ -131,6 +131,94 @@ pub fn format_with_retry(
     }
 }
 
+/// 1 回の依頼で送る文章のおよその上限(文字)。これを超える長文は分割する
+pub const FORMAT_CHUNK_CHARS: usize = 2000;
+
+/// 文章を、文の切れ目(。！？)と段落(空行)ごとに走査する
+fn sentence_segments(raw: &str) -> Vec<String> {
+    let chars: Vec<char> = raw.chars().collect();
+    let mut segments: Vec<String> = Vec::new();
+    let mut segment = String::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        let c = chars[i];
+        segment.push(c);
+        let breaks = matches!(c, '。' | '！' | '？' | '.' | '!' | '?')
+            || (c == '\n' && chars.get(i + 1) == Some(&'\n'));
+        if breaks {
+            // 段落の区切りは空行の 2 つ目まで含めて 1 つにする
+            if c == '\n' {
+                while chars.get(i + 1) == Some(&'\n') {
+                    i += 1;
+                    segment.push('\n');
+                }
+            }
+            segments.push(std::mem::take(&mut segment));
+        }
+        i += 1;
+    }
+    if !segment.is_empty() {
+        segments.push(segment);
+    }
+    segments
+}
+
+/// 長い文章を、整形の 1 回の依頼に収まる大きさに分ける。
+/// 区切りは段落と文の切れ目で、つなぎ合わせると元の文章に戻る。
+/// 1 つの文が上限を超えるときは、文字の位置で切る
+pub fn split_for_formatting(raw: &str, limit_chars: usize) -> Vec<String> {
+    let mut chunks: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for segment in sentence_segments(raw) {
+        if current.chars().count() + segment.chars().count() > limit_chars && !current.is_empty() {
+            chunks.push(std::mem::take(&mut current));
+        }
+        if segment.chars().count() > limit_chars {
+            let mut piece = String::new();
+            for c in segment.chars() {
+                piece.push(c);
+                if piece.chars().count() >= limit_chars {
+                    chunks.push(std::mem::take(&mut piece));
+                }
+            }
+            current = piece;
+        } else {
+            current.push_str(&segment);
+        }
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    if chunks.is_empty() {
+        chunks.push(String::new());
+    }
+    chunks
+}
+
+/// 分割した部分を順に整形してつなぐ。1 つが失敗したら、その部分だけ
+/// 整形前の文を使う。長い文章でも、整形の 1 回の依頼が小さく済む
+pub fn format_long(
+    cfg: &FormatConfig,
+    raw: &str,
+    cancelled: &dyn Fn() -> bool,
+    mut on_retry: impl FnMut(u32),
+) -> Result<String, FormatError> {
+    if raw.chars().count() <= FORMAT_CHUNK_CHARS {
+        return format_with_retry(cfg, raw, cancelled, on_retry);
+    }
+    let mut joined = String::new();
+    for piece in split_for_formatting(raw, FORMAT_CHUNK_CHARS) {
+        let result = format_with_retry(cfg, &piece, cancelled, &mut on_retry);
+        match result {
+            Ok(text) => joined.push_str(&text),
+            Err(e) if !e.retryable() || cancelled() => return Err(e),
+            // 送り直しでも通らなかった部分は、整形前の文をそのまま使う
+            Err(_) => joined.push_str(piece.trim()),
+        }
+    }
+    Ok(joined)
+}
+
 /// 通信の失敗を、時間切れとそれ以外に分ける。Windows の時間切れ(os error 10060)は文面が日本語になるので、種類で見る
 pub(crate) fn transport_error(err: &(dyn std::error::Error + 'static)) -> FormatError {
     let mut source: Option<&(dyn std::error::Error + 'static)> = Some(err);

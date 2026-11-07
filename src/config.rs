@@ -36,7 +36,7 @@ speech_exe = ""
 # 認識モデル。speech.cpp のモデル名か .gguf のパス。名前なら初回に自動で取得する
 model = "haas-ja-v1.0:q4_k"
 hotkey = "F8"
-# 最大録音時間(分)。1、3、5、10から選択。到達時は自動で認識へ進む
+# 最大録音時間(分)。1、3、5、10、30、60から選択。到達時は自動で認識へ進む
 max_recording_minutes = 5
 # 録音中の表示の色。"hinomaru"(白地に赤い点)か "auto"(Windows のライト、ダークに合わせる)
 theme = "hinomaru"
@@ -413,8 +413,8 @@ fn version_key(name: &str) -> Vec<u64> {
 pub fn parse(text: &str) -> Result<Config, String> {
     let cfg: Config =
         toml::from_str(text).map_err(|e| format!("設定ファイルの形式が不正です: {e}"))?;
-    if !matches!(cfg.max_recording_minutes, 1 | 3 | 5 | 10) {
-        return Err("最大録音時間は1、3、5、10分から選択してください".into());
+    if !matches!(cfg.max_recording_minutes, 1 | 3 | 5 | 10 | 30 | 60) {
+        return Err("最大録音時間は1、3、5、10、30、60分から選択してください".into());
     }
     crate::lexicon::validate(&cfg.terms)?;
     Ok(cfg)
@@ -609,7 +609,7 @@ mod tests {
     fn recording_minutes_defaults_for_older_configs_and_validates_saved_choices() {
         let old = EXAMPLE_TOML.replace("max_recording_minutes = 5\n", "");
         assert_eq!(parse(&old).unwrap().max_recording_minutes, 5);
-        for minutes in [1, 3, 5, 10] {
+        for minutes in [1, 3, 5, 10, 30, 60] {
             let updated = set_values(
                 &old,
                 &[(None, "max_recording_minutes", toml::Value::from(minutes))],
@@ -624,7 +624,7 @@ mod tests {
                 "none"
             );
         }
-        for minutes in [-1, 0, 2, 11, 1000] {
+        for minutes in [-1, 0, 2, 11, 20, 45, 1000] {
             let invalid = set_values(
                 EXAMPLE_TOML,
                 &[(None, "max_recording_minutes", toml::Value::from(minutes))],
