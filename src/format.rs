@@ -412,13 +412,18 @@ pub fn format_long(
     }
     let mut joined = String::new();
     for piece in split_for_formatting(raw, FORMAT_CHUNK_CHARS) {
+        let leading = &piece[..piece.len() - piece.trim_start().len()];
+        let trailing = &piece[piece.trim_end().len()..];
         let result =
             format_with_retry_and_deltas(cfg, &piece, cancelled, &mut on_retry, &|delta| {
-                // 部分ごとの途中経過に、前の部分の完成分を頭に付けて渡す
-                on_delta(&format!("{joined}{delta}"));
+                on_delta(&format!("{joined}{leading}{delta}"));
             });
         match result {
-            Ok(text) => joined.push_str(&text),
+            Ok(text) => {
+                joined.push_str(leading);
+                joined.push_str(&text);
+                joined.push_str(trailing);
+            }
             Err(e)
                 if cancelled() || !matches!(e, FormatError::BadResponse(_)) && !e.retryable() =>
             {
@@ -426,7 +431,7 @@ pub fn format_long(
             }
             // 送り直しでも通らなかった部分は、整形前の文をそのまま使う
             Err(_) => {
-                joined.push_str(piece.trim());
+                joined.push_str(&piece);
                 on_delta(&joined);
             }
         }
@@ -1120,6 +1125,19 @@ mod tests {
         cfg.provider = "openai".into();
         cfg.offline = true;
         assert!(matches!(format(&cfg, "文"), Err(FormatError::Provider(_))));
+    }
+
+    #[test]
+    fn long_formatting_keeps_paragraph_breaks_between_pieces() {
+        let raw = format!("{}\n\nい", "あ".repeat(1998));
+        for first in ["あ".repeat(1998), "```不正な応答```".into()] {
+            let (url, _) = serve_sequence(vec![sse_ok(&first), sse_ok("い")]);
+            let cfg = cfg_for(url);
+            assert_eq!(
+                format_long(&cfg, &raw, &|| false, |_| {}, &|_| {}).unwrap(),
+                raw
+            );
+        }
     }
 
     #[test]
