@@ -8,8 +8,7 @@
 pub struct SegmentParams {
     /// 枠の長さ
     pub frame_ms: u32,
-    /// 録音の冒頭、この長さは区間を開かず背景雑音の学習だけをする。
-    /// 録音開始音を捨てる期間と重なるので、話し始めの遅れは出にくい
+    /// 録音の冒頭、背景雑音を学習してから区間を開くまでの長さ
     pub calibration_ms: u32,
     /// この長さの無音が続いたら区間を閉じる
     pub silence_close_ms: u32,
@@ -102,19 +101,31 @@ impl Segmenter {
     /// 録音の音を渡し、閉じた区間を音の並びで返す
     pub fn push(&mut self, samples: &[f32]) -> Vec<Vec<f32>> {
         let mut closed = Vec::new();
-        self.remainder.extend_from_slice(samples);
-        let frame_samples = self.frame_samples();
-        while self.remainder.len() >= frame_samples {
-            let frame: Vec<f32> = self.remainder.drain(..frame_samples).collect();
-            if let Some(interval) = self.process_frame(frame) {
+        let mut samples_with_remainder = std::mem::take(&mut self.remainder);
+        samples_with_remainder.extend_from_slice(samples);
+        let mut frames = samples_with_remainder.chunks_exact(self.frame_samples());
+        for frame in &mut frames {
+            if let Some(interval) = self.process_frame(frame.to_vec()) {
                 closed.push(interval);
             }
         }
+        self.remainder.extend_from_slice(frames.remainder());
         closed
     }
 
     /// Enter のあとに呼ぶ。開いている区間を最後まで返す
     pub fn finish(&mut self) -> Option<Vec<f32>> {
+        if self.open.is_empty() && self.speech_run >= self.params.min_speech_frames {
+            for frame in std::mem::take(&mut self.lookahead) {
+                self.open.extend(frame);
+            }
+        }
+        let remainder = std::mem::take(&mut self.remainder);
+        if !self.open.is_empty() {
+            self.open.extend(remainder);
+        }
+        self.lookahead.clear();
+        self.speech_run = 0;
         if self.open.is_empty() {
             return None;
         }
@@ -161,9 +172,13 @@ impl Segmenter {
         }
         if self.open.is_empty() {
             if calibrating {
-                // 録音開始直後の音(開始音や環境音)で区間を開かない
-                self.speech_run = 0;
-                self.lookahead.clear();
+                if speaking {
+                    self.speech_run += 1;
+                    self.lookahead.push(frame);
+                } else {
+                    self.speech_run = 0;
+                    self.lookahead.clear();
+                }
                 return None;
             }
             return self.detect_start(frame, speaking);
@@ -238,7 +253,7 @@ impl Segmenter {
         let frame_samples = self.frame_samples();
         let mut quietest = 0;
         for (i, level) in self.open_frame_rms.iter().enumerate() {
-            if *level < self.open_frame_rms[quietest] {
+            if *level <= self.open_frame_rms[quietest] {
                 quietest = i;
             }
         }
@@ -298,6 +313,33 @@ mod tests {
     }
 
     #[test]
+    fn speech_from_the_start_and_the_last_incomplete_frame_are_preserved() {
+        let mut segmenter = Segmenter::new(RATE);
+        let samples = vec![0.3; RATE as usize + 37];
+        assert!(segmenter.push(&samples).is_empty());
+        assert_eq!(segmenter.finish().unwrap(), samples);
+    }
+
+    #[test]
+    fn equally_quiet_frames_choose_the_latest_cut() {
+        let params = SegmentParams {
+            calibration_ms: 0,
+            max_interval_ms: 1000,
+            cut_search_ms: 500,
+            ..SegmentParams::default()
+        };
+        let mut segmenter = Segmenter::with_params(RATE, params);
+        let samples = vec![0.3; RATE as usize];
+        let closed = segmenter.push(&samples);
+        assert_eq!(closed.len(), 1);
+        assert_eq!(closed[0].len(), RATE as usize - 320);
+        assert_eq!(
+            closed[0].len() + segmenter.finish().unwrap().len(),
+            samples.len()
+        );
+    }
+
+    #[test]
     fn silence_alone_produces_no_interval() {
         let mut s = Segmenter::new(RATE);
         assert!(s.push(&silence(3.0)).is_empty());
@@ -314,7 +356,7 @@ mod tests {
         audio.extend(silence(0.8));
         let closed = s.push(&audio);
         assert_eq!(closed.len(), 2, "無音で 2 つに分かれる");
-        // 1 つ目はキャリブレーションの 200 ミリ秒分だけ短く、2 つ目は発話+尻尾
+        // どちらも発話と尻尾を残す
         for interval in &closed {
             let seconds = interval.len() as f64 / RATE as f64;
             assert!(
@@ -336,12 +378,11 @@ mod tests {
     }
 
     #[test]
-    fn the_first_calibration_window_never_opens_an_interval() {
+    fn speech_during_calibration_is_retained_until_finish() {
         let mut s = Segmenter::new(RATE);
-        // 最初の 200 ミリ秒に音があっても区間にならない
-        let closed = s.push(&tone(0.15, 0.1));
-        assert!(closed.is_empty());
-        assert!(s.finish().is_none());
+        let samples = tone(0.15, 0.1);
+        assert!(s.push(&samples).is_empty());
+        assert_eq!(s.finish().unwrap(), samples);
     }
 
     #[test]
@@ -428,11 +469,11 @@ mod tests {
         let mut s = Segmenter::new(RATE);
         s.push(&tone(0.3, 0.1));
         s.push(&tone(0.3, 0.1));
-        // キャリブレーションの 200 ミリ秒を除いた分が開いている区間になる
+        // 雑音を学習している間の発話も残す
         let got = s.open_samples().len() as f64 / RATE as f64;
         assert!(
-            (0.35..=0.45).contains(&got),
-            "開いている区間は流した音からキャリブレーションを引いた長さのはず: {got}"
+            (0.59..=0.61).contains(&got),
+            "開いている区間は流した発話全体の長さのはず: {got}"
         );
     }
 

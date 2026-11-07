@@ -639,15 +639,20 @@ unsafe fn render_text_wrapped(
     DrawTextW(dc, &mut buf, &mut rc, flags | DT_CALCRECT);
     let w = (rc.right - rc.left).clamp(1, max_w);
     let full_h = (rc.bottom - rc.top).max(px_height);
-    let line_h = px_height * 3 / 2;
+    let mut metrics = windows::Win32::Graphics::Gdi::TEXTMETRICW::default();
+    let line_h = if windows::Win32::Graphics::Gdi::GetTextMetricsW(dc, &mut metrics).as_bool() {
+        metrics.tmHeight.max(1)
+    } else {
+        px_height.max(1)
+    };
     let h = full_h.min(line_h * max_lines as i32);
     let mut cov = vec![0u8; (w * h) as usize];
-    // 折り返しの全体を 1 枚に描き、下の行だけを切り出す
+    let skip_rows = ((full_h - h) / line_h) * line_h;
     let full_info = BITMAPINFO {
         bmiHeader: BITMAPINFOHEADER {
             biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
             biWidth: w,
-            biHeight: -full_h,
+            biHeight: -h,
             biPlanes: 1,
             biBitCount: 32,
             biCompression: BI_RGB.0,
@@ -663,22 +668,15 @@ unsafe fn render_text_wrapped(
         SetTextColor(dc, COLORREF(0x00FFFFFF));
         let mut rc = RECT {
             left: 0,
-            top: 0,
+            top: -skip_rows,
             right: w,
-            bottom: full_h,
+            bottom: full_h - skip_rows,
         };
         let mut buf: Vec<u16> = text.encode_utf16().collect();
         DrawTextW(dc, &mut buf, &mut rc, flags);
-        let full_pixels =
-            std::slice::from_raw_parts(full_bits as *const u8, (w * full_h * 4) as usize);
-        // 下から h 行分だけをコピーする。行の途中で切れないよう行の高さに揃える
-        let skip_rows = ((full_h - h) / line_h) * line_h;
-        for y in 0..h {
-            let src_y = skip_rows + y;
-            for x in 0..w {
-                let i = (src_y * w + x) as usize;
-                cov[(y * w + x) as usize] = full_pixels[i * 4 + 1];
-            }
+        let full_pixels = std::slice::from_raw_parts(full_bits as *const u8, (w * h * 4) as usize);
+        for (i, pixel) in cov.iter_mut().enumerate() {
+            *pixel = full_pixels[i * 4 + 1];
         }
         SelectObject(dc, old_bmp);
         let _ = DeleteObject(full_bmp);
