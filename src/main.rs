@@ -1571,6 +1571,88 @@ mod flow_tests {
         assert_eq!(app.state, State::Recording);
     }
 
+    /// 送られた JSON 行を、型ごとに確かめられる形で読む
+    fn sent_lines(recorder: &std::sync::Arc<std::sync::Mutex<String>>) -> Vec<serde_json::Value> {
+        recorder
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| serde_json::from_str(l).unwrap_or(serde_json::Value::Null))
+            .collect()
+    }
+
+    fn wait_for_written(recorder: &std::sync::Arc<std::sync::Mutex<String>>, min_lines: usize) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            if sent_lines(recorder).len() >= min_lines {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn a_new_partial_cancels_the_old_partial_request_first() {
+        let mut app = test_app();
+        let (_tx, rx) = channel();
+        let (worker, recorder) = asr::test_worker_with_recorder(rx);
+        app.session.worker = Some(worker);
+        app.set_state(State::Recording);
+        // 開いている区間が仮の認識の対象になる
+        let speech = vec![0.3f32; 16000];
+        assert!(app.session.feed_segmenter(&speech));
+        // p0 が飛行中で、前回の送信から 1 秒以上たった状態
+        app.session.partial = Some(Partial {
+            id: "p0".to_string(),
+        });
+        app.session.next_partial_index = 1;
+        app.session.last_partial_at = Some(Instant::now() - Duration::from_secs(2));
+        for _ in 0..50 {
+            app.tick_session();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        wait_for_written(&recorder, 3);
+        let lines = sent_lines(&recorder);
+        let cancelled = lines
+            .iter()
+            .any(|v| v["type"] == "cancel" && v["id"] == "p0");
+        assert!(cancelled, "古い仮 p0 を cancel する: {lines:?}");
+        // cancel のあとに、新しい仮 p1 の音と transcribe が続く
+        let p1_index = lines
+            .iter()
+            .position(|v| v["type"] == "chunk" && v["id"] == "p1");
+        assert!(p1_index.is_some(), "次の仮 p1 が送られる: {lines:?}");
+        assert!(lines
+            .iter()
+            .any(|v| v["type"] == "transcribe" && v["id"] == "p1"));
+    }
+
+    #[test]
+    fn enter_cancels_the_partial_in_flight() {
+        let mut app = test_app();
+        let (_tx, rx) = channel();
+        let (worker, recorder) = asr::test_worker_with_recorder(rx);
+        app.session.worker = Some(worker);
+        app.set_state(State::Recording);
+        app.session.partial = Some(Partial {
+            id: "p3".to_string(),
+        });
+        // Enter は録音を止めて認識へ進む。指示の途中の仮の文字がそのまま
+        // 貼られるのを防ぐため、飛行中の仮を cancel する
+        app.dispatch(Event::Enter);
+        assert!(matches!(app.state, State::Recognizing { .. }));
+        assert!(app.session.partial.is_none());
+        wait_for_written(&recorder, 1);
+        let lines = sent_lines(&recorder);
+        assert!(
+            lines
+                .iter()
+                .any(|v| v["type"] == "cancel" && v["id"] == "p3"),
+            "Enter で飛行中の仮 p3 を cancel する: {lines:?}"
+        );
+    }
+
     #[test]
     fn partial_recognition_sends_open_audio_and_waits_for_confirmed_work() {
         let mut app = test_app();
