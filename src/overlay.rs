@@ -262,6 +262,7 @@ pub fn set_caption(confirmed: &str, partial: &str) {
 /// リアルタイム表示を消す。録音の終わりと Esc で呼ぶ
 pub fn clear_caption() {
     *caption_lock() = None;
+    *CAPTION_MASKS.lock().unwrap_or_else(|p| p.into_inner()) = None;
 }
 
 /// 帯の場所を設定から渡す。"top" か "caret"。それ以外は "top" 扱いにする
@@ -1235,6 +1236,17 @@ mod tests {
         );
         clear_caption();
         assert_eq!(caption_for_test(), None);
+    }
+
+    #[test]
+    fn clearing_the_caption_releases_its_cached_text_and_image() {
+        *CAPTION_MASKS.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some(unsafe { caption_masks("確定した文", "", 13, 520) });
+        clear_caption();
+        assert!(CAPTION_MASKS
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_none());
     }
 
     #[test]

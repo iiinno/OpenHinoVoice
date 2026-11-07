@@ -130,8 +130,6 @@ impl FormatGeneration {
 struct Interval {
     id: String,
     pcm: Vec<u8>,
-    chunks_sent: bool,
-    transcribe_sent: bool,
     transcribe_at: Option<Instant>,
     /// 認識文。空の区間は空文字
     text: String,
@@ -271,8 +269,6 @@ impl Session {
         self.intervals.push(Interval {
             id,
             pcm,
-            chunks_sent: false,
-            transcribe_sent: false,
             transcribe_at: None,
             text: String::new(),
             done: false,
@@ -875,8 +871,7 @@ impl App {
         if !restart {
             let now = Instant::now();
             let stalled = self.session.intervals.iter().any(|i| {
-                i.transcribe_sent
-                    && !i.done
+                !i.done
                     && i.transcribe_at.is_some_and(|at| {
                         now.saturating_duration_since(at) >= asr::TRANSCRIPTION_TIMEOUT
                     })
@@ -960,23 +955,7 @@ impl App {
 
         // 送り直し。worker を殺し、結果が出ていない区間を送り直すために印を戻す
         if restart && fatal.is_none() {
-            usage::log(
-                "asr_resend",
-                serde_json::json!({"failures": self.session.asr_failures}),
-            );
-            if let Some(worker) = self.session.worker.take() {
-                worker.shutdown();
-            }
-            self.session.sending = None;
-            self.session.partial = None;
-            self.session.last_spawn_attempt = None;
-            for interval in &mut self.session.intervals {
-                if !interval.done {
-                    interval.chunks_sent = false;
-                    interval.transcribe_sent = false;
-                    interval.transcribe_at = None;
-                }
-            }
+            self.restart_worker();
         }
 
         // 送りパイプライン。1 区間ずつ chunk を送り、終わったら transcribe を送る。
@@ -1017,8 +996,6 @@ impl App {
                             } else if let Some(interval) =
                                 self.session.intervals.iter_mut().find(|i| i.id == id)
                             {
-                                interval.chunks_sent = true;
-                                interval.transcribe_sent = true;
                                 interval.transcribe_at = Some(Instant::now());
                             }
                             self.session.sending = None;
@@ -1027,19 +1004,28 @@ impl App {
                         Err(_) => send_failed = true,
                     }
                 }
-            } else if let Some((id, pcm)) = self
+            } else if !self
                 .session
                 .intervals
                 .iter()
-                .find(|i| !i.chunks_sent && !i.done)
-                .map(|i| (i.id.clone(), i.pcm.clone()))
+                .any(|i| !i.done && i.transcribe_at.is_some())
             {
-                self.session.sending = Some(Sending::new(false, id, &pcm));
+                if let Some(interval) = self
+                    .session
+                    .intervals
+                    .iter()
+                    .find(|i| !i.done && i.transcribe_at.is_none())
+                {
+                    self.session.sending =
+                        Some(Sending::new(false, interval.id.clone(), &interval.pcm));
+                }
             }
             if send_failed {
                 self.session.asr_failures += 1;
                 if self.session.asr_failures > MAX_ASR_FAILURES {
                     fatal = Some("認識エンジンとの通信に失敗しました".into());
+                } else {
+                    self.restart_worker();
                 }
             }
         }
@@ -1120,6 +1106,24 @@ impl App {
         self.session.next_partial_index += 1;
         self.session.last_partial_at = Some(Instant::now());
         self.session.sending = Some(Sending::new(true, id, &pcm));
+    }
+
+    fn restart_worker(&mut self) {
+        usage::log(
+            "asr_resend",
+            serde_json::json!({"failures": self.session.asr_failures}),
+        );
+        if let Some(worker) = self.session.worker.take() {
+            worker.shutdown();
+        }
+        self.session.sending = None;
+        self.session.partial = None;
+        self.session.last_spawn_attempt = None;
+        for interval in &mut self.session.intervals {
+            if !interval.done {
+                interval.transcribe_at = None;
+            }
+        }
     }
 
     fn cancel_partial(&mut self) -> Result<bool, asr::AsrError> {
@@ -1619,8 +1623,6 @@ mod flow_tests {
         )
         .unwrap();
         app.session.worker = Some(asr::test_worker(rx, false));
-        app.session.intervals[1].chunks_sent = true;
-        app.session.intervals[1].transcribe_sent = true;
         app.session.intervals[1].transcribe_at = Some(Instant::now());
         app.set_state(State::Recognizing {
             raw_requested: false,
@@ -1630,8 +1632,7 @@ mod flow_tests {
         // s0 の文章は残り、s1 は送り直しのために印が戻る。worker は起動し直し待ち
         assert!(app.session.intervals[0].done);
         assert_eq!(app.session.joined_text(), "ひとつめ。");
-        assert!(!app.session.intervals[1].chunks_sent);
-        assert!(!app.session.intervals[1].transcribe_sent);
+        assert!(app.session.intervals[1].transcribe_at.is_none());
         assert!(app.session.worker.is_none());
         assert_eq!(app.session.asr_failures, 1);
         assert_eq!(
@@ -1673,7 +1674,7 @@ mod flow_tests {
         let mut audio = vec![0.3f32; 16000];
         audio.extend(std::iter::repeat_n(0.0f32, 16000));
         assert!(app.session.feed_segmenter(&audio));
-        let (_, rx) = channel();
+        let (_tx, rx) = channel();
         app.session.worker = Some(asr::test_worker(rx, true));
         app.set_state(State::Recording);
         // 書き込みの失敗は送信スレッドが非同期に気づくので、tick を繰り返して待つ
@@ -1685,9 +1686,8 @@ mod flow_tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         // 送信の失敗は録音を続けたまま、送り直しとして扱う。
-        // 失敗の回数は tick の回し方で 1 か 2 になるので、起こったことだけを見る
         assert!(app.session.worker.is_none(), "worker を起動し直す");
-        assert!(app.session.asr_failures >= 1);
+        assert_eq!(app.session.asr_failures, 1);
         assert!(!app.session.intervals[0].done);
         assert_eq!(app.state, State::Recording);
     }
@@ -1891,6 +1891,27 @@ mod flow_tests {
             "失敗したときは何も貼らない: {:?}",
             app.failed_pastes
         );
+    }
+
+    #[test]
+    fn confirmed_requests_wait_for_the_previous_result_before_starting_their_timeout() {
+        let mut app = test_app();
+        let (_tx, rx) = channel();
+        let (worker, recorder) = asr::test_worker_with_recorder(rx);
+        app.session.worker = Some(worker);
+        app.session.open_interval(vec![0.3; 1600]);
+        app.session.open_interval(vec![0.3; 1600]);
+        app.set_state(State::Recording);
+        for _ in 0..20 {
+            app.tick_session();
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let lines = sent_lines(&recorder);
+        assert_eq!(
+            lines.iter().filter(|v| v["type"] == "transcribe").count(),
+            1
+        );
+        assert!(app.session.intervals[1].transcribe_at.is_none());
     }
 
     #[test]

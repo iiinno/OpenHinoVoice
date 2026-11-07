@@ -147,6 +147,15 @@ fn parse_terminal(line: &str) -> Result<Option<Terminal>, AsrError> {
     };
     match value["type"].as_str() {
         Some("end") => {
+            if value["stop"].as_str() == Some("model_limit") {
+                return Ok(Some(Terminal {
+                    id,
+                    stop: "model_limit".into(),
+                    outcome: TerminalOutcome::Error(
+                        "認識結果がモデルの上限で途中で切れました".into(),
+                    ),
+                }));
+            }
             let text = value["text"].as_str().map(str::trim).unwrap_or("");
             let outcome = if text.is_empty() {
                 TerminalOutcome::Text(None)
@@ -928,6 +937,15 @@ mod tests {
     use std::sync::mpsc::Sender;
 
     #[test]
+    fn a_model_limit_is_not_a_complete_transcript() {
+        let terminal =
+            parse_terminal(r#"{"type":"end","id":"s0","stop":"model_limit","text":"途中だけ"}"#)
+                .unwrap()
+                .unwrap();
+        assert!(matches!(terminal.outcome, TerminalOutcome::Error(_)));
+    }
+
+    #[test]
     fn file_interval_errors_are_not_successful_empty_results() {
         for line in [
             r#"{"type":"error","id":"f0","error":{"code":"worker","message":"認識失敗"}}"#,
@@ -984,16 +1002,13 @@ mod tests {
             terminal.outcome,
             TerminalOutcome::Text(Some("おはよう。".into()))
         );
-        // model_limit でも書けたところまでの文は使う
+        // 途中までの文を完成した結果として貼り付けない
         let limited =
             parse_terminal(r#"{"type":"end","id":"s1","text":"ここまで","stop":"model_limit"}"#)
                 .unwrap()
                 .unwrap();
         assert_eq!(limited.stop, "model_limit");
-        assert_eq!(
-            limited.outcome,
-            TerminalOutcome::Text(Some("ここまで".into()))
-        );
+        assert!(matches!(limited.outcome, TerminalOutcome::Error(_)));
         // 空の結果は区間としては正常(無音の区間がありうる)
         for line in [
             r#"{"type":"end","id":"s2","text":"","stop":"complete"}"#,
