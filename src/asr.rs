@@ -411,6 +411,12 @@ impl Worker {
         self.writer.enqueue(msg)
     }
 
+    /// 要求 id の採番を忘れる。録音のあとに worker を残して次の録音で
+    /// 使い回すとき、同じ区間 id(s0, s1…)を seq 0 から使い直すため
+    pub fn forget_ids(&mut self) {
+        self.seqs.clear();
+    }
+
     /// 仮の認識を止める。実行中の要求は次の止められる場所で
     /// cancelled で終わる。飛行中でない id への cancel は無視される
     pub fn cancel(&mut self, id: &str) -> Result<bool, AsrError> {
@@ -1202,6 +1208,57 @@ mod tests {
             assert!(empty.get("words").is_none());
             assert!(empty.get("keywords").is_none());
         }
+    }
+
+    #[test]
+    fn forget_ids_restart_sequence_numbers_per_request() {
+        // 録音のあとに worker を残して使い回すとき、同じ区間 id を seq 0 から
+        // 使い直せる。worker は「chunk 0 で新しい要求が始まる」規則だから
+        let buffer = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        struct Recording {
+            buffer: std::sync::Arc<std::sync::Mutex<String>>,
+        }
+        impl Write for Recording {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.buffer
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .push_str(&String::from_utf8_lossy(buf));
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut worker = Worker {
+            child: dead_child(),
+            writer: WriterQueue::spawn(Recording {
+                buffer: buffer.clone(),
+            }),
+            lines: channel().1,
+            seqs: HashMap::new(),
+            ready: true,
+            protocol: 4,
+        };
+        assert!(worker.send_chunk("s0", &[1, 2]).unwrap());
+        assert!(worker.send_chunk("s0", &[3, 4]).unwrap());
+        worker.forget_ids();
+        assert!(worker.send_chunk("s0", &[5, 6]).unwrap());
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while worker.writer.pending_len() > 0 && Instant::now() < deadline {
+            worker.poll_writer().unwrap();
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let sent = buffer.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let seqs: Vec<u64> = sent
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|line| {
+                let v: serde_json::Value = serde_json::from_str(line).unwrap();
+                v["seq"].as_u64().unwrap()
+            })
+            .collect();
+        assert_eq!(seqs, vec![0, 1, 0], "使い回した id は seq 0 から始まる");
     }
 
     #[test]

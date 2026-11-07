@@ -36,6 +36,18 @@ static ENTER_HELD: AtomicBool = AtomicBool::new(false);
 static ENTER_CAPTURED: AtomicBool = AtomicBool::new(false);
 static HOOK_HANDLE: OnceLock<isize> = OnceLock::new();
 
+/// キーの通知を待ちループに知らせる。待機中はスリープでなくメッセージ待ちで
+/// 起きるため、通知にはウィンドウメッセージを使う
+fn wake_resident() {
+    use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
+    let hwnd = crate::overlay::hwnd();
+    if !hwnd.0.is_null() {
+        unsafe {
+            let _ = PostMessageW(hwnd, crate::overlay::WM_WAKE, WPARAM(0), LPARAM(0));
+        }
+    }
+}
+
 /// Returns (swallow, send_event). Also captures the matching key-up even if
 /// the app state changes while the key is held.
 fn capture_press(
@@ -147,6 +159,7 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                         if let Some(sender) = SENDER.get() {
                             let _ = sender.send(KeyEvent::Hotkey);
                         }
+                        wake_resident();
                     }
                     hit
                 } else {
@@ -164,6 +177,7 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                     if let Some(sender) = SENDER.get() {
                         let _ = sender.send(KeyEvent::Enter);
                     }
+                    wake_resident();
                 }
                 if swallow {
                     return LRESULT(1);
@@ -184,6 +198,7 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                     if let Some(sender) = SENDER.get() {
                         let _ = sender.send(ev);
                     }
+                    wake_resident();
                 }
                 return LRESULT(1);
             }

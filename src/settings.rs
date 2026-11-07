@@ -245,6 +245,11 @@ impl Settings {
                 V::from(self.cfg.caption_position.as_str()),
             ),
             (None, "edit_mode", V::from(self.cfg.edit_mode)),
+            (
+                None,
+                "keep_worker_minutes",
+                V::from(self.cfg.keep_worker_minutes as i64),
+            ),
             (Some("format"), "provider", V::from(f.provider.as_str())),
             (Some("format"), "offline", V::from(f.offline)),
             (Some("format"), "base_url", V::from(f.base_url.trim())),
@@ -564,6 +569,31 @@ impl Settings {
                     "文を選んだ状態で録音を始めると、話した指示で選んだ部分を書き換える",
                 );
                 hint(ui, "専用のキーはありません。選択の確認は画面の部品の情報(UI Automation)だけで行い、キー操作を送らず、クリップボードにも触れません。選択を読めないアプリでは Edit を使えないことを表示して、通常の音声入力になります。整形(AI)の接続先が必要です");
+            });
+            ui.end_row();
+
+            ui.label("認識エンジンを残す時間");
+            ui.vertical(|ui| {
+                egui::ComboBox::from_id_salt("keep_worker_minutes")
+                    .selected_text(if self.cfg.keep_worker_minutes == 0 {
+                        "残さない(今までどおり)".to_string()
+                    } else {
+                        format!("{}分", self.cfg.keep_worker_minutes)
+                    })
+                    .show_ui(ui, |ui| {
+                        for minutes in [0, 1, 3, 5, 10] {
+                            ui.selectable_value(
+                                &mut self.cfg.keep_worker_minutes,
+                                minutes,
+                                if minutes == 0 {
+                                    "残さない".to_string()
+                                } else {
+                                    format!("{minutes}分")
+                                },
+                            );
+                        }
+                    });
+                hint(ui, "続けて話すとき、認識エンジンの起動とモデルの読み込み(1 秒前後)を飛ばせるようになります。残している間はモデルぶんのメモリ(約 0.35GB)を使います");
             });
             ui.end_row();
 

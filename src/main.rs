@@ -36,7 +36,8 @@ use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, WM_QUIT,
+    DispatchMessageW, MsgWaitForMultipleObjectsEx, PeekMessageW, TranslateMessage, MSG,
+    MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT, WM_QUIT,
 };
 
 // 10 minutes at 96 kHz mono PCM16 is 115.2 MB. Higher sample rates can hit the cap early.
@@ -47,6 +48,11 @@ const PCM_LIMIT_MESSAGE: &str = "録音データが128 MiBの安全上限を超�
 const MAX_ASR_FAILURES: u32 = 4;
 /// Edit で選べる文の上限。これを超える選択は Edit にしない
 const MAX_EDIT_SELECTION_CHARS: usize = 6000;
+
+/// 録音のあとに worker を残すか。残す時間の設定と、worker が ready かで決める
+fn keep_worker_decision(minutes: u32, ready: bool) -> bool {
+    minutes > 0 && ready
+}
 
 enum FormatOutcome {
     Done {
@@ -309,6 +315,8 @@ struct App {
     cfg: Config,
     state: State,
     session: Session,
+    /// 録音のあとに残した認識エンジン。keep_worker_minutes の設定があるときだけ
+    kept_worker: Option<(Worker, Instant)>,
     format_tx: Sender<FormatOutcome>,
     /// 整形の結果の受け口。main のループが読み、テストも使う
     format_rx: std::sync::Mutex<Option<Receiver<FormatOutcome>>>,
@@ -378,7 +386,33 @@ impl App {
     fn execute(&mut self, action: Action) -> bool {
         match action {
             Action::StartSession => {
+                // 前の録音の worker を、設定があればいったん残す
+                if let Some(previous) = self.session.worker.take() {
+                    if keep_worker_decision(self.cfg.keep_worker_minutes, previous.is_ready()) {
+                        self.kept_worker = Some((
+                            previous,
+                            Instant::now()
+                                + Duration::from_secs(u64::from(self.cfg.keep_worker_minutes) * 60),
+                        ));
+                    } else {
+                        previous.shutdown();
+                    }
+                }
+                // 残しておいた worker があれば、起動とモデルの読み込みを飛ばして使う
+                let kept = match self.kept_worker.take() {
+                    Some((worker, expires)) if Instant::now() < expires => {
+                        let mut worker = worker;
+                        worker.forget_ids();
+                        Some(worker)
+                    }
+                    Some((worker, _)) => {
+                        worker.shutdown();
+                        None
+                    }
+                    None => None,
+                };
                 self.session = Session::new();
+                self.session.worker = kept;
                 match paste::capture_target() {
                     Ok(target) => {
                         self.session.input_app = context::process_name(target.process_id());
@@ -389,13 +423,15 @@ impl App {
                         return false;
                     }
                 }
-                match Worker::spawn(&self.cfg.speech_exe, &self.cfg.model) {
-                    Ok(worker) => {
-                        self.session.worker = Some(worker);
-                    }
-                    Err(e) => {
-                        self.fail_session(e.to_string());
-                        return false;
+                if self.session.worker.is_none() {
+                    match Worker::spawn(&self.cfg.speech_exe, &self.cfg.model) {
+                        Ok(worker) => {
+                            self.session.worker = Some(worker);
+                        }
+                        Err(e) => {
+                            self.fail_session(e.to_string());
+                            return false;
+                        }
                     }
                 }
                 match Recorder::start_with_device(Some(self.cfg.microphone.as_str())) {
@@ -1162,6 +1198,7 @@ fn main() {
         cfg,
         state: State::Idle,
         session: Session::new(),
+        kept_worker: None,
         format_tx,
         format_rx: std::sync::Mutex::new(Some(format_rx)),
         format_generation: FormatGeneration::default(),
@@ -1188,6 +1225,14 @@ fn main() {
 
         if overlay::take_recovery_request() {
             app.copy_failed_text();
+        }
+        // 残していた worker の時間が来たら殺す
+        if let Some((worker, expires)) = app.kept_worker.take() {
+            if Instant::now() < expires {
+                app.kept_worker = Some((worker, expires));
+            } else {
+                worker.shutdown();
+            }
         }
         unsafe {
             while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
@@ -1306,24 +1351,40 @@ fn main() {
             }
         }
 
-        // 何も表示していない待機中だけ起床回数を減らす。録音と表示の応答は従来どおり。
-        std::thread::sleep(idle_sleep_duration(
-            &app.state,
-            app.transient_until.is_some(),
-            overlay::is_visible(),
-        ));
+        // 何も表示していない待機中は、キーの通知(ウィンドウメッセージ)が来るまで
+        // 寝る。設定の更新を見落とさないよう 1 秒で起きる。録音と表示の応答は
+        // 従来どおり短い間隔で回す
+        unsafe {
+            MsgWaitForMultipleObjectsEx(
+                None,
+                idle_sleep_duration(
+                    &app.state,
+                    app.transient_until.is_some(),
+                    overlay::is_visible(),
+                )
+                .as_millis() as u32,
+                QS_ALLINPUT,
+                MWMO_INPUTAVAILABLE,
+            );
+        }
     }
 
     app.teardown_session();
+    if let Some((worker, _)) = app.kept_worker.take() {
+        worker.shutdown();
+    }
     hook::uninstall();
     overlay::remove_tray();
     let _ = LPARAM(0);
     let _ = WPARAM(0);
 }
 
+/// 待機中に次に起きるまでの長さ。待機中はメッセージで起こされるので、
+/// 設定の更新の確認(1 秒ごと)だけを狙って 1 秒まで待つ。
+/// 録音と表示の応答は従来どおり 10 ミリ秒
 fn idle_sleep_duration(state: &State, transient: bool, overlay_visible: bool) -> Duration {
     if matches!(state, State::Idle) && !transient && !overlay_visible {
-        Duration::from_millis(30)
+        Duration::from_secs(1)
     } else {
         Duration::from_millis(10)
     }
@@ -1343,7 +1404,7 @@ mod flow_tests {
     fn idle_loop_slows_only_when_nothing_is_on_screen() {
         assert_eq!(
             idle_sleep_duration(&State::Idle, false, false),
-            Duration::from_millis(30)
+            Duration::from_secs(1)
         );
         assert_eq!(
             idle_sleep_duration(&State::Idle, true, false),
@@ -1648,6 +1709,15 @@ mod flow_tests {
         );
     }
 
+    #[test]
+    fn a_ready_worker_is_kept_when_the_setting_says_so() {
+        // 残す時間が 0(初期値)のときは殺し、1 以上で ready なら残す
+        let _app = test_app();
+        assert!(!keep_worker_decision(0, true));
+        assert!(!keep_worker_decision(3, false));
+        assert!(keep_worker_decision(3, true));
+    }
+
     fn test_app() -> App {
         let mut cfg: Config = toml::from_str("").unwrap();
         cfg.speech_exe = "__openhinovoice_missing_test_worker__.exe".into();
@@ -1657,6 +1727,7 @@ mod flow_tests {
             cfg,
             state: State::Idle,
             session: Session::new(),
+            kept_worker: None,
             format_tx,
             format_rx: std::sync::Mutex::new(None),
             format_generation: FormatGeneration::default(),

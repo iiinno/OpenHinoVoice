@@ -65,6 +65,9 @@ caption_position = "top"
 # Edit モード。文を選んだ状態で録音を始めると、話した指示で選んだ部分を
 # 書き換える。専用のキーはなく、いつもの録音開始キーを使う
 edit_mode = true
+# 録音のあと、この分数の間は認識エンジンを残す(0、1、3、5、10)。
+# 続けて話すときの準備時間がなくなるが、その間はモデルぶんのメモリを使う
+keep_worker_minutes = 0
 
 [format]
 base_url = "https://opencode.ai/inference/go/openai/v1"
@@ -206,6 +209,11 @@ pub struct Config {
     /// 選んだ部分を書き換える。オフのときは選択の確認そのものをしない
     #[serde(default = "default_true")]
     pub edit_mode: bool,
+    /// 録音のあと、この分数の間は認識エンジンを残す。続けて話すときの
+    /// 準備時間(起動とモデルの読み込み)がなくなる。代わりにその間、
+    /// モデルのぶんのメモリを使う。0 は残さない(今までどおり)
+    #[serde(default)]
+    pub keep_worker_minutes: u32,
     #[serde(default)]
     pub format: FormatConfig,
 }
@@ -453,6 +461,9 @@ pub fn parse(text: &str) -> Result<Config, String> {
         toml::from_str(text).map_err(|e| format!("設定ファイルの形式が不正です: {e}"))?;
     if !matches!(cfg.max_recording_minutes, 1 | 3 | 5 | 10 | 30 | 60) {
         return Err("最大録音時間は1、3、5、10、30、60分から選択してください".into());
+    }
+    if !matches!(cfg.keep_worker_minutes, 0 | 1 | 3 | 5 | 10) {
+        return Err("認識エンジンを残す時間は0、1、3、5、10分から選択してください".into());
     }
     crate::lexicon::validate(&cfg.terms)?;
     Ok(cfg)

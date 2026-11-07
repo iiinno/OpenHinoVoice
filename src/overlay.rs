@@ -29,6 +29,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 pub const WM_TRAY: u32 = WM_APP + 1;
+/// キーフックが録音の開始などを通知するときに送るメッセージ。待機中の
+/// メッセージ待ちを起こすためのもの
+pub const WM_WAKE: u32 = WM_APP + 2;
 pub const CMD_EXIT: usize = 1001;
 pub const CMD_SETTINGS: usize = 1002;
 pub const CMD_RECOVER_TEXT: usize = 1003;

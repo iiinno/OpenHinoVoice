@@ -32,6 +32,9 @@ caption_position = "top"
 # Edit モード。文を選んだ状態で録音を始めると、話した指示で選んだ部分を
 # 書き換える。専用のキーはなく、いつもの録音開始キーを使う
 edit_mode = true
+# 録音のあと、この分数の間は認識エンジンを残す(0、1、3、5、10)。
+# 続けて話すときの準備時間がなくなるが、その間はモデルぶんのメモリを使う
+keep_worker_minutes = 0
 
 [format]
 base_url = "https://opencode.ai/inference/go/openai/v1"
