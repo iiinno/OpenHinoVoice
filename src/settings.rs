@@ -186,10 +186,15 @@ impl Settings {
         };
         let extra_body_text =
             serde_json::to_string_pretty(&cfg.format.extra_body).unwrap_or_else(|_| "{}".into());
+        let page = if Self::needs_setup(&cfg) {
+            Page::Start
+        } else {
+            Page::Home
+        };
         Settings {
             timeout_secs: cfg.format.timeout_ms as f32 / 1000.0,
             cfg,
-            page: Page::Home,
+            page,
             show_key: false,
             startup: startup::is_enabled(),
             message,
@@ -215,7 +220,18 @@ impl Settings {
     /// speech.cpp が見つからないときは、始め方の案内を最初に出す
     fn needs_setup(cfg: &config::Config) -> bool {
         let exe = cfg.speech_exe.trim();
-        exe.is_empty() || exe == "speech.exe"
+        if exe.is_empty() {
+            return true;
+        }
+        let path = std::path::Path::new(exe);
+        if path.is_file() {
+            return false;
+        }
+        if path.is_absolute() || path.components().count() > 1 {
+            return true;
+        }
+        !std::env::var_os("PATH")
+            .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(path).is_file()))
     }
 
     fn save(&mut self) -> Result<(), String> {
@@ -290,14 +306,7 @@ impl Settings {
             ),
             (Some("format"), "prompt", V::from(f.prompt.as_str())),
         ];
-        // extra_body は JSON で編集してもらい、保存のときに確かめる
-        let extra_body_text = self.extra_body_text.trim();
-        let extra_body: serde_json::Map<String, serde_json::Value> = if extra_body_text.is_empty() {
-            serde_json::Map::new()
-        } else {
-            serde_json::from_str(extra_body_text)
-                .map_err(|e| format!("リクエストの追加項目(extra_body)の JSON が不正です: {e}"))?
-        };
+        let extra_body = config::parse_extra_body(&self.extra_body_text)?;
         let updated = config::set_values(text.trim_start_matches('\u{feff}'), &edits)?;
         let mut doc: toml_edit::DocumentMut = updated
             .parse()
@@ -324,26 +333,18 @@ impl Settings {
             }
             doc["terms"] = toml_edit::Item::ArrayOfTables(tables);
         }
-        // extra_body の表を置き換える。空のときは項目を消す
-        if extra_body.is_empty() {
-            doc["format"]["extra_body"] = toml_edit::Item::None;
-        } else {
-            let mut table = toml_edit::Table::new();
-            for (key, value) in &extra_body {
-                table.insert(key, toml_edit::Item::Value(json_value_to_toml(value)));
-            }
-            doc["format"]["extra_body"] = toml_edit::Item::Table(table);
-        }
+        config::update_extra_body(&mut doc, &extra_body)?;
         config::save_api_keys(f.api_key.trim(), f.openai_api_key.trim())?;
         config::save(&doc.to_string())?;
         startup::set_enabled(self.startup)
     }
 
     /// 編集中の内容で整形の設定を作る。接続テストとモデル一覧に使う
-    fn draft_format(&self) -> config::FormatConfig {
+    fn draft_format(&self) -> Result<config::FormatConfig, String> {
         let mut f = self.cfg.format.clone();
         f.timeout_ms = (self.timeout_secs * 1000.0).round() as u64;
-        f
+        f.extra_body = config::parse_extra_body(&self.extra_body_text)?;
+        Ok(f)
     }
 }
 
@@ -952,18 +953,23 @@ impl Settings {
                 self.test_result = None;
                 self.test_job = Some(spawn(ui.ctx(), move || {
                     let t = Instant::now();
-                    let r = crate::format::format_with_retry(&f, SAMPLE, &|| false, |_| {})
-                        .and_then(|text| {
-                            if text == SAMPLE || text.contains("えーと") || text.contains("あのー")
-                            {
-                                Err(crate::format::FormatError::BadResponse(
-                                    "接続しましたが、例文の言い淀みを整形できませんでした".into(),
-                                ))
-                            } else {
-                                Ok(text)
-                            }
-                        })
-                        .map_err(|e| e.to_string());
+                    let r = f.and_then(|f| {
+                        crate::format::format_with_retry(&f, SAMPLE, &|| false, |_| {})
+                            .and_then(|text| {
+                                if text == SAMPLE
+                                    || text.contains("えーと")
+                                    || text.contains("あのー")
+                                {
+                                    Err(crate::format::FormatError::BadResponse(
+                                        "接続しましたが、例文の言い淀みを整形できませんでした"
+                                            .into(),
+                                    ))
+                                } else {
+                                    Ok(text)
+                                }
+                            })
+                            .map_err(|e| e.to_string())
+                    });
                     (r, t.elapsed().as_secs_f32())
                 }));
             }
@@ -1023,7 +1029,9 @@ impl Settings {
         });
         if fetch {
             let f = self.draft_format();
-            self.models_job = Some(spawn(ui.ctx(), move || crate::format::list_models(&f)));
+            self.models_job = Some(spawn(ui.ctx(), move || {
+                f.and_then(|f| crate::format::list_models(&f))
+            }));
         }
         if chosen != current {
             match provider.as_str() {
@@ -1483,35 +1491,6 @@ impl Settings {
     }
 }
 
-fn json_value_to_toml(value: &serde_json::Value) -> toml_edit::Value {
-    match value {
-        serde_json::Value::String(s) => toml_edit::Value::from(s.as_str()),
-        serde_json::Value::Bool(b) => toml_edit::Value::from(*b),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                toml_edit::Value::from(i)
-            } else {
-                toml_edit::Value::from(n.as_f64().unwrap_or(0.0))
-            }
-        }
-        serde_json::Value::Array(a) => {
-            let mut array = toml_edit::Array::new();
-            for item in a {
-                array.push(json_value_to_toml(item));
-            }
-            toml_edit::Value::Array(array)
-        }
-        serde_json::Value::Object(o) => {
-            let mut table = toml_edit::InlineTable::new();
-            for (k, v) in o {
-                table.insert(k, json_value_to_toml(v));
-            }
-            toml_edit::Value::InlineTable(table)
-        }
-        serde_json::Value::Null => toml_edit::Value::from(""),
-    }
-}
-
 #[cfg(test)]
 mod clipboard_tests {
     use super::*;
@@ -1519,6 +1498,18 @@ mod clipboard_tests {
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_POPUP,
     };
+
+    #[test]
+    fn setup_detects_a_missing_configured_executable() {
+        let mut cfg: config::Config = toml::from_str("").unwrap();
+        cfg.speech_exe = r"C:\存在しない場所\speech.exe".into();
+        assert!(Settings::needs_setup(&cfg));
+        cfg.speech_exe = std::env::current_exe()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert!(!Settings::needs_setup(&cfg));
+    }
 
     #[test]
     fn clipboard_owner_requires_a_live_window_in_this_process() {

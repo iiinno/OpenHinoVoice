@@ -58,6 +58,8 @@ prompt = """
 offline = false
 # Edit モードの、書き換え方の追加の指示(任意)。例: 「ですます調にする」
 edit_prompt = ""
+# この PC だけで動作と待ち時間を記録する。音声は保存せず、外へ送らない
+usage_log = true
 
 # リクエスト本体に混ぜる項目。deepseek-v4.1-flash は推論を止めないと応答が倍近く遅くなる
 [format.extra_body]

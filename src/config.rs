@@ -533,6 +533,80 @@ pub fn set_values(
     Ok(doc.to_string())
 }
 
+pub fn parse_extra_body(text: &str) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    let extra = if text.trim().is_empty() {
+        serde_json::Map::new()
+    } else {
+        serde_json::from_str(text).map_err(|e| format!("追加項目の JSON が不正です: {e}"))?
+    };
+    toml::Value::try_from(&extra).map_err(|e| format!("追加項目を TOML に保存できません: {e}"))?;
+    Ok(extra)
+}
+
+pub fn update_extra_body(
+    doc: &mut toml_edit::DocumentMut,
+    extra: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    if extra.is_empty()
+        && doc
+            .get("format")
+            .and_then(|f| f.get("extra_body"))
+            .is_none()
+    {
+        return Ok(());
+    }
+    update_json_item(
+        &mut doc["format"]["extra_body"],
+        &serde_json::Value::Object(extra.clone()),
+    )
+}
+
+fn json_toml_value(value: &serde_json::Value) -> Result<toml_edit::Value, String> {
+    toml::Value::try_from(value)
+        .map_err(|e| format!("追加項目を TOML に保存できません: {e}"))?
+        .to_string()
+        .parse()
+        .map_err(|e| format!("追加項目の形式が不正です: {e}"))
+}
+
+fn update_json_item(item: &mut toml_edit::Item, value: &serde_json::Value) -> Result<(), String> {
+    if let Some(old) = item.as_value() {
+        let document: toml::Value = toml::from_str(&format!("value = {old}"))
+            .map_err(|e| format!("保存済みの追加項目を読めません: {e}"))?;
+        if serde_json::to_value(&document["value"]).map_err(|e| e.to_string())? == *value {
+            return Ok(());
+        }
+    }
+    if let serde_json::Value::Object(fields) = value {
+        if item.as_table_like().is_none() {
+            *item = toml_edit::Item::Table(toml_edit::Table::new());
+        }
+        let table = item.as_table_like_mut().unwrap();
+        let removed: Vec<String> = table
+            .iter()
+            .filter(|(k, _)| !fields.contains_key(*k))
+            .map(|(k, _)| k.to_string())
+            .collect();
+        for key in removed {
+            table.remove(&key);
+        }
+        for (key, value) in fields {
+            if let Some(old) = table.get_mut(key) {
+                update_json_item(old, value)?;
+            } else {
+                table.insert(key, toml_edit::Item::Value(json_toml_value(value)?));
+            }
+        }
+    } else {
+        let mut new_value = json_toml_value(value)?;
+        if let Some(old) = item.as_value() {
+            *new_value.decor_mut() = old.decor().clone();
+        }
+        *item = toml_edit::Item::Value(new_value);
+    }
+    Ok(())
+}
+
 pub fn save(text: &str) -> Result<(), String> {
     parse(text)?;
     std::fs::write(config_path(), text).map_err(|e| format!("設定ファイルを書けません: {e}"))
@@ -885,6 +959,42 @@ mod tests {
         cfg.format.model = "my-local-model".into();
         cfg.format.base_url = "http://127.0.0.1:8080/v1".into();
         assert!(cfg.has_api_key());
+    }
+
+    #[test]
+    fn extra_body_edits_preserve_nested_comments_and_unchanged_values() {
+        let text = "[format]\nprovider = 'local' # 接続先\n[format.extra_body] # 追加設定\nreasoning_effort = 'none' # 推論\n[format.extra_body.chat_template_kwargs] # テンプレート\nenable_thinking = true # 考えるか\n";
+        let mut doc: toml_edit::DocumentMut = text.parse().unwrap();
+        let unchanged = parse_extra_body(
+            r#"{"reasoning_effort":"none","chat_template_kwargs":{"enable_thinking":true}}"#,
+        )
+        .unwrap();
+        update_extra_body(&mut doc, &unchanged).unwrap();
+        assert_eq!(doc.to_string(), text);
+        let changed = parse_extra_body(
+            r#"{"reasoning_effort":"none","chat_template_kwargs":{"enable_thinking":false}}"#,
+        )
+        .unwrap();
+        update_extra_body(&mut doc, &changed).unwrap();
+        let updated = doc.to_string();
+        for comment in [
+            "# 接続先",
+            "# 追加設定",
+            "# 推論",
+            "# テンプレート",
+            "# 考えるか",
+        ] {
+            assert!(updated.contains(comment), "{updated}");
+        }
+        assert!(updated.contains("reasoning_effort = 'none'"));
+        assert!(updated.contains("enable_thinking = false # 考えるか"));
+    }
+
+    #[test]
+    fn extra_body_refuses_values_that_toml_cannot_represent() {
+        assert!(parse_extra_body(r#"{"value":null}"#).is_err());
+        assert!(parse_extra_body(r#"{"nested":{"value":null}}"#).is_err());
+        assert!(parse_extra_body("[]").is_err());
     }
 
     #[test]

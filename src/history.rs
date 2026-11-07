@@ -178,7 +178,7 @@ pub fn recent(limit: usize) -> io::Result<Vec<RecoveryEntry>> {
 /// ホームに出す入力の統計。復旧履歴から、今日と今週(7 日)の入力文字数を数える
 pub fn usage_stats() -> io::Result<(usize, usize)> {
     let entries = recent(MAX_RECOVERY_ENTRIES)?;
-    let today_start = start_of_local_day_ms();
+    let today_start = start_of_local_day_ms()?;
     let week_start = today_start.saturating_sub(6 * 24 * 60 * 60 * 1000);
     let mut today = 0usize;
     let mut week = 0usize;
@@ -194,23 +194,36 @@ pub fn usage_stats() -> io::Result<(usize, usize)> {
     Ok((today, week))
 }
 
-/// 指定のミリ秒時刻が属する、現地時刻の午前 0 時(UTC からのミリ秒)。
-/// 現地時刻は Windows の設定から取る
-fn start_of_local_day_ms() -> u64 {
-    use windows::Win32::System::SystemInformation::GetLocalTime;
-    let now = unsafe { GetLocalTime() };
-    let utc_today_start = days_from_epoch(now.wYear, now.wMonth, now.wDay) * 86_400_000;
-    // 現地の午前 0 時に対応する UTC の時刻を出す
-    use windows::Win32::System::Time::{GetTimeZoneInformation, TIME_ZONE_INFORMATION};
-    let mut tz = TIME_ZONE_INFORMATION::default();
-    // TIME_ZONE_ID_DAYLIGHT(2)のときは、夏時間の差を足す
-    let daylight = unsafe { GetTimeZoneInformation(&mut tz) } == 2;
-    let mut offset_minutes = i64::from(tz.Bias);
-    if daylight {
-        offset_minutes += i64::from(tz.DaylightBias);
+fn start_of_local_day_ms() -> io::Result<u64> {
+    let now = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+    local_midnight_utc_ms(now, None)
+}
+
+fn local_midnight_utc_ms(
+    date: windows::Win32::Foundation::SYSTEMTIME,
+    timezone: Option<&windows::Win32::System::Time::TIME_ZONE_INFORMATION>,
+) -> io::Result<u64> {
+    use windows::Win32::Foundation::SYSTEMTIME;
+    let midnight = SYSTEMTIME {
+        wYear: date.wYear,
+        wMonth: date.wMonth,
+        wDay: date.wDay,
+        ..SYSTEMTIME::default()
+    };
+    let mut utc = SYSTEMTIME::default();
+    unsafe {
+        windows::Win32::System::Time::TzSpecificLocalTimeToSystemTime(
+            timezone.map(|tz| tz as *const _),
+            &midnight,
+            &mut utc,
+        )
+        .map_err(io::Error::other)?;
     }
-    // Bias は「UTC = 現地 + Bias」の形(東京は -540)
-    utc_today_start - u64::try_from(offset_minutes * 60_000).unwrap_or(0)
+    Ok(
+        days_from_epoch(utc.wYear, utc.wMonth, utc.wDay) * 86_400_000
+            + u64::from(utc.wHour) * 3_600_000
+            + u64::from(utc.wMinute) * 60_000,
+    )
 }
 
 /// 西暦からの経過日数(1970-01-01 を 0 とする)
@@ -239,6 +252,65 @@ pub fn clear_recovery() -> io::Result<()> {
 #[cfg(test)]
 mod usage_tests {
     use super::*;
+
+    #[test]
+    fn local_midnight_has_the_correct_sign_in_east_and_west_timezones() {
+        use windows::Win32::Foundation::SYSTEMTIME;
+        use windows::Win32::System::Time::TIME_ZONE_INFORMATION;
+        let date = SYSTEMTIME {
+            wYear: 2026,
+            wMonth: 11,
+            wDay: 7,
+            ..SYSTEMTIME::default()
+        };
+        let base = days_from_epoch(2026, 11, 7) * 86_400_000;
+        for (bias, expected) in [(-540, base - 9 * 3_600_000), (480, base + 8 * 3_600_000)] {
+            let timezone = TIME_ZONE_INFORMATION {
+                Bias: bias,
+                ..TIME_ZONE_INFORMATION::default()
+            };
+            assert_eq!(
+                local_midnight_utc_ms(date, Some(&timezone)).unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn daylight_transition_uses_the_offset_at_midnight() {
+        use windows::Win32::Foundation::SYSTEMTIME;
+        use windows::Win32::System::Time::TIME_ZONE_INFORMATION;
+        let timezone = TIME_ZONE_INFORMATION {
+            Bias: 480,
+            DaylightBias: -60,
+            StandardDate: SYSTEMTIME {
+                wMonth: 11,
+                wDay: 1,
+                wHour: 2,
+                ..SYSTEMTIME::default()
+            },
+            DaylightDate: SYSTEMTIME {
+                wMonth: 3,
+                wDay: 2,
+                wHour: 2,
+                ..SYSTEMTIME::default()
+            },
+            ..TIME_ZONE_INFORMATION::default()
+        };
+        for (day, hours) in [(1, 7), (2, 8)] {
+            let date = SYSTEMTIME {
+                wYear: 2026,
+                wMonth: 11,
+                wDay: day,
+                ..SYSTEMTIME::default()
+            };
+            let expected = days_from_epoch(2026, 11, day) * 86_400_000 + hours * 3_600_000;
+            assert_eq!(
+                local_midnight_utc_ms(date, Some(&timezone)).unwrap(),
+                expected
+            );
+        }
+    }
 
     #[test]
     fn days_from_epoch_matches_known_dates() {
