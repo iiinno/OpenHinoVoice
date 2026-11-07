@@ -258,6 +258,7 @@ impl Config {
     /// 選んだ接続先で整形できる資格情報があるか。なければ整形せずに生テキストを貼る
     pub fn has_api_key(&self) -> bool {
         match self.format.provider.as_str() {
+            "local" => !self.format.model.trim().is_empty(),
             "openai" => !self.format.openai_api_key.trim().is_empty(),
             "chatgpt" => crate::chatgpt::is_signed_in(),
             _ => !self.format.api_key.trim().is_empty(),
@@ -875,6 +876,15 @@ mod tests {
         assert_eq!(parse_hotkey("Ctrl+J+K"), None);
         assert_eq!(parse_hotkey("Hyper+J"), None);
         assert_eq!(parse_hotkey(""), None);
+    }
+
+    #[test]
+    fn a_local_model_does_not_need_credentials() {
+        let mut cfg: Config = toml::from_str("").unwrap();
+        cfg.format.provider = "local".into();
+        cfg.format.model = "my-local-model".into();
+        cfg.format.base_url = "http://127.0.0.1:8080/v1".into();
+        assert!(cfg.has_api_key());
     }
 
     #[test]

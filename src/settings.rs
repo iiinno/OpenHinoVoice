@@ -1023,18 +1023,7 @@ impl Settings {
         });
         if fetch {
             let f = self.draft_format();
-            self.models_job = Some(spawn(ui.ctx(), move || match f.provider.as_str() {
-                "chatgpt" => chatgpt::list_models()
-                    .map(|m| m.into_iter().map(|m| (m.slug, m.display_name)).collect()),
-                "openai" => {
-                    crate::format::list_models("https://api.openai.com/v1", &f.openai_api_key)
-                }
-                // OpenCode Go の一覧は整形の窓口(/openai/v1)ではなく /inference/go/v1 にある
-                "opencode-go" => {
-                    crate::format::list_models("https://opencode.ai/inference/go/v1", &f.api_key)
-                }
-                _ => crate::format::list_models(&f.base_url, &f.api_key),
-            }));
+            self.models_job = Some(spawn(ui.ctx(), move || crate::format::list_models(&f)));
         }
         if chosen != current {
             match provider.as_str() {
@@ -1059,7 +1048,10 @@ impl Settings {
                 .fill(Color32::BLACK)
                 .min_size(egui::vec2(220.0, 34.0));
                 ui.horizontal(|ui| {
-                    if ui.add_enabled(!busy, button).clicked() {
+                    if ui
+                        .add_enabled(!busy && !self.cfg.format.offline, button)
+                        .clicked()
+                    {
                         self.chatgpt_job = Some(spawn(ui.ctx(), chatgpt::sign_in));
                     }
                     if busy {
@@ -1083,7 +1075,10 @@ impl Settings {
                 if plan_usage {
                     ui.horizontal(|ui| {
                         ui.colored_label(OK_GREEN, "Using ChatGPT plan");
-                        if ui.link("Manage usage").clicked() {
+                        if ui
+                            .add_enabled(!self.cfg.format.offline, egui::Link::new("Manage usage"))
+                            .clicked()
+                        {
                             chatgpt::open_browser(chatgpt::USAGE_URL);
                         }
                     });

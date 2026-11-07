@@ -66,12 +66,6 @@ impl fmt::Display for FormatError {
 
 impl std::error::Error for FormatError {}
 
-// 接続を使い回すため、プロセスで 1 つの Agent を共有する。新規の TCP と TLS の確立に約 280ms かかる
-pub(crate) fn agent() -> &'static ureq::Agent {
-    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
-    AGENT.get_or_init(ureq::Agent::new)
-}
-
 /// api.openai.com は使い回した接続に応答を返さないことがあった(2026-10 の実測)ので、毎回新しく接続する
 pub(crate) fn openai_agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
@@ -80,18 +74,22 @@ pub(crate) fn openai_agent() -> &'static ureq::Agent {
 
 /// 整形用の Agent。合計時間ではなく、応答が wait の間ずっと途切れたら打ち切る(読み取り 1 回ごとの上限)。
 /// 長く話すと整形した文を返すだけで数秒かかるので、合計時間で切ると話した内容の整形が必ず失敗する
-pub(crate) fn streaming_agent(wait: Duration, pooled: bool) -> ureq::Agent {
-    static AGENTS: OnceLock<Mutex<HashMap<(u128, bool), ureq::Agent>>> = OnceLock::new();
+pub(crate) fn streaming_agent(wait: Duration, pooled: bool, base_url: &str) -> ureq::Agent {
+    type AgentKey = (u128, bool, bool);
+    static AGENTS: OnceLock<Mutex<HashMap<AgentKey, ureq::Agent>>> = OnceLock::new();
+    let local = crate::provider::is_local_url(base_url);
     let mut agents = AGENTS
         .get_or_init(Default::default)
         .lock()
         .unwrap_or_else(|p| p.into_inner());
     agents
-        .entry((wait.as_millis(), pooled))
+        .entry((wait.as_millis(), pooled, local))
         .or_insert_with(|| {
             let builder = ureq::AgentBuilder::new()
                 .timeout_connect(wait)
-                .timeout_read(wait);
+                .timeout_read(wait)
+                .redirects(0)
+                .try_proxy_from_env(!local);
             if pooled {
                 builder
             } else {
@@ -107,7 +105,7 @@ fn wait_of(cfg: &FormatConfig) -> Duration {
     // 初期値のままなら、読み込みに間に合うよう長めにしておく。利用者が
     // 手で変えた値はそのまま使う
     let ms = if cfg.timeout_ms == crate::config::default_timeout_ms()
-        && crate::provider::is_local_url(&cfg.base_url)
+        && crate::provider::is_local_url(&resolve_target(cfg).0)
     {
         cfg.timeout_ms.max(60_000)
     } else {
@@ -119,6 +117,9 @@ fn wait_of(cfg: &FormatConfig) -> Duration {
 /// プリセットに載っている接続先で、URL とモデルが空のときは初期値を使う。
 /// 古い設定ファイルや手で書いた設定でも動くようにする
 fn resolve_target(cfg: &FormatConfig) -> (String, String) {
+    if cfg.provider == "openai" {
+        return (OPENAI_API.into(), cfg.openai_model.clone());
+    }
     let preset = crate::provider::find(&cfg.provider);
     let base_url = if cfg.base_url.trim().is_empty() {
         preset
@@ -176,6 +177,9 @@ pub fn format_with_retry_and_deltas(
 ) -> Result<String, FormatError> {
     let mut attempt = 1;
     loop {
+        if cancelled() {
+            return Err(FormatError::Provider("整形を中止しました".into()));
+        }
         let result = format_with_deltas(cfg, raw, on_delta);
         match &result {
             Err(e) if e.retryable() && attempt < MAX_ATTEMPTS && !cancelled() => {
@@ -206,6 +210,9 @@ pub fn format_edit(
 ) -> Result<String, FormatError> {
     let mut attempt = 1;
     loop {
+        if cancelled() {
+            return Err(FormatError::Provider("Edit を中止しました".into()));
+        }
         let result = format_edit_once(cfg, selection, instruction);
         let validated = result.and_then(|text| validate_edit_replacement(selection, &text));
         match &validated {
@@ -256,13 +263,10 @@ fn format_edit_once(
             if cfg.chatgpt_model.trim().is_empty() {
                 return Err(FormatError::MissingModel);
             }
-            // ChatGPT のプランは入力を 1 つのメッセージにまとめて送る。
-            // システムの指示で、元の文章の中の指示には従わないことを伝える
-            let combined = format!("【元の文章】\n{selection}\n\n【指示】\n{instruction}");
             crate::chatgpt::format_with_deltas(
                 &cfg.chatgpt_model,
                 &system_prompt,
-                &combined,
+                &messages,
                 cfg.fast,
                 timeout,
                 &|_| {},
@@ -319,7 +323,9 @@ fn validate_edit_replacement(selection: &str, text: &str) -> Result<String, Form
     }
     let selection_chars = selection.chars().count();
     let out_chars = text.chars().count();
-    if out_chars > selection_chars * 4 + 256 {
+    if out_chars > selection_chars.saturating_mul(4).saturating_add(256)
+        || out_chars.saturating_mul(10) < selection_chars
+    {
         return Err(FormatError::BadResponse(
             "Edit の応答の長さが極端に変わるため置き換えません".into(),
         ));
@@ -413,7 +419,11 @@ pub fn format_long(
             });
         match result {
             Ok(text) => joined.push_str(&text),
-            Err(e) if !e.retryable() || cancelled() => return Err(e),
+            Err(e)
+                if cancelled() || !matches!(e, FormatError::BadResponse(_)) && !e.retryable() =>
+            {
+                return Err(e)
+            }
             // 送り直しでも通らなかった部分は、整形前の文をそのまま使う
             Err(_) => {
                 joined.push_str(piece.trim());
@@ -473,7 +483,7 @@ pub fn format_with_deltas(
             crate::chatgpt::format_with_deltas(
                 &cfg.chatgpt_model,
                 &prompt,
-                raw,
+                &[raw.to_string()],
                 cfg.fast,
                 timeout,
                 on_delta,
@@ -561,8 +571,8 @@ pub fn validate_base_url(raw: &str) -> Result<(), FormatError> {
 /// ローカルの OpenAI 互換エンジンには、さらに小さな要求を送ってモデルを
 /// メモリに読み込ませる。初回の読み込みが Enter 後の整形に間に合わなくなるのを防ぐ
 pub fn prewarm(cfg: &FormatConfig) {
-    if cfg.offline && !crate::provider::is_local_url(&cfg.base_url) {
-        // オフラインでは外へ出ない。ChatGPT のトークンの更新もしない
+    let (base_url, model) = resolve_target(cfg);
+    if offline_gate(cfg, &base_url).is_err() {
         return;
     }
     match cfg.provider.as_str() {
@@ -574,11 +584,11 @@ pub fn prewarm(cfg: &FormatConfig) {
         "openai" => return,
         _ => {}
     }
-    let (base, key) = (cfg.base_url.trim_end_matches('/'), cfg.api_key.as_str());
+    let (base, key) = (base_url.trim_end_matches('/'), cfg.api_key.as_str());
     if validate_base_url(base).is_err() {
         return;
     }
-    let resp = streaming_agent(wait_of(cfg), true)
+    let resp = streaming_agent(wait_of(cfg), true, base)
         .get(&format!("{base}/models"))
         .timeout(Duration::from_secs(5))
         .set("Authorization", &format!("Bearer {key}"))
@@ -590,15 +600,15 @@ pub fn prewarm(cfg: &FormatConfig) {
         Err(ureq::Error::Transport(_)) => return,
     };
     let _ = resp.into_string();
-    if crate::provider::is_local_url(base) && !cfg.model.trim().is_empty() {
+    if crate::provider::is_local_url(base) && !model.trim().is_empty() {
         // モデル名が決まっているローカルのエンジンに、1 トークンだけ返させる要求を送る。
         // 読み込みに時間がかかっても録音中なので待ちには入らない
         let body = serde_json::json!({
-            "model": cfg.model,
+            "model": model,
             "max_tokens": 1,
             "messages": [{ "role": "user", "content": "hi" }]
         });
-        let loaded = streaming_agent(Duration::from_secs(120), true)
+        let loaded = streaming_agent(Duration::from_secs(120), true, base)
             .post(&format!("{base}/chat/completions"))
             .timeout(Duration::from_secs(120))
             .set("Authorization", &format!("Bearer {key}"))
@@ -644,7 +654,7 @@ fn anthropic_messages(
         "system": prompt,
         "messages": messages
     });
-    let agent = streaming_agent(wait, false);
+    let agent = streaming_agent(wait, false, base_url);
     let started = std::time::Instant::now();
     let resp = agent
         .post(&url)
@@ -687,6 +697,15 @@ fn read_anthropic_stream(
                     on_delta(&text);
                 }
             }
+            "message_delta"
+                if event["delta"]["stop_reason"]
+                    .as_str()
+                    .is_some_and(|r| r != "end_turn" && r != "stop_sequence") =>
+            {
+                return Err(FormatError::BadResponse(
+                    "整形結果が途中で切れました".into(),
+                ));
+            }
             "message_stop" => return Ok(text.trim().to_string()),
             "error" => {
                 return Err(FormatError::BadResponse(
@@ -712,7 +731,7 @@ fn chat_completions(
     on_delta: &dyn Fn(&str),
 ) -> Result<String, FormatError> {
     validate_base_url(base_url)?;
-    if api_key.trim().is_empty() {
+    if api_key.trim().is_empty() && !crate::provider::is_local_url(base_url) {
         return Err(FormatError::MissingApiKey);
     }
     if model.trim().is_empty() {
@@ -738,11 +757,13 @@ fn chat_completions(
         }
         obj.extend(extra.clone());
     }
-    let agent = streaming_agent(wait, base_url.trim_end_matches('/') != OPENAI_API);
+    let agent = streaming_agent(wait, base_url.trim_end_matches('/') != OPENAI_API, base_url);
     let started = std::time::Instant::now();
-    let resp = agent
-        .post(&url)
-        .set("Authorization", &format!("Bearer {api_key}"))
+    let mut request = agent.post(&url);
+    if !api_key.trim().is_empty() {
+        request = request.set("Authorization", &format!("Bearer {api_key}"));
+    }
+    let resp = request
         .set("Content-Type", "application/json")
         .set("User-Agent", USER_AGENT)
         .set("x-opencode-session", session_id())
@@ -818,13 +839,41 @@ fn read_chat_stream(
 }
 
 /// OpenAI 互換の /models から使えるモデルの ID を取る。(ID, 表示名) の組で返す
-pub fn list_models(base_url: &str, api_key: &str) -> Result<Vec<(String, String)>, String> {
-    validate_base_url(base_url).map_err(|e| e.to_string())?;
-    let resp = agent()
+pub fn list_models(cfg: &FormatConfig) -> Result<Vec<(String, String)>, String> {
+    let (mut base_url, _) = resolve_target(cfg);
+    if cfg.provider == "opencode-go" {
+        base_url = "https://opencode.ai/inference/go/v1".into();
+    }
+    offline_gate(cfg, &base_url).map_err(|e| e.to_string())?;
+    if cfg.provider == "chatgpt" {
+        return crate::chatgpt::list_models().map(|models| {
+            models
+                .into_iter()
+                .map(|model| (model.slug, model.display_name))
+                .collect()
+        });
+    }
+    validate_base_url(&base_url).map_err(|e| e.to_string())?;
+    let key = if cfg.provider == "openai" {
+        &cfg.openai_api_key
+    } else {
+        &cfg.api_key
+    };
+    let agent = streaming_agent(Duration::from_secs(15), true, &base_url);
+    let mut request = agent
         .get(&format!("{}/models", base_url.trim_end_matches('/')))
         .timeout(Duration::from_secs(15))
-        .set("Authorization", &format!("Bearer {api_key}"))
-        .set("User-Agent", USER_AGENT)
+        .set("User-Agent", USER_AGENT);
+    if !key.trim().is_empty() {
+        request = if cfg.provider == "anthropic" {
+            request
+                .set("x-api-key", key)
+                .set("anthropic-version", "2023-06-01")
+        } else {
+            request.set("Authorization", &format!("Bearer {key}"))
+        };
+    }
+    let resp = request
         .call()
         .map_err(|e| format!("モデル一覧を取得できません: {e}"))?;
     let v: serde_json::Value = resp.into_json().map_err(|e| e.to_string())?;
@@ -884,57 +933,43 @@ mod tests {
     where
         F: FnOnce(&str) -> (u16, String) + Send + 'static,
     {
+        serve_http_once(move |request| {
+            let (code, body) = handler(request);
+            format!("HTTP/1.1 {code} Response\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
+        })
+    }
+
+    fn serve_http_once<F>(handler: F) -> String
+    where
+        F: FnOnce(&str) -> String + Send + 'static,
+    {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
         thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
-                let mut buf = Vec::new();
-                let mut chunk = [0u8; 4096];
-                let mut content_length = 0usize;
-                let mut header_done = false;
-                loop {
-                    let n = stream.read(&mut chunk).unwrap_or(0);
-                    if n == 0 {
-                        break;
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            loop {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream.set_nonblocking(false).unwrap();
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(3)))
+                            .unwrap();
+                        stream
+                            .set_write_timeout(Some(Duration::from_secs(3)))
+                            .unwrap();
+                        let request = read_request(&mut stream);
+                        let _ = stream.write_all(handler(&request).as_bytes());
+                        return;
                     }
-                    buf.extend_from_slice(&chunk[..n]);
-                    if !header_done {
-                        let text = String::from_utf8_lossy(&buf).to_string();
-                        if let Some(pos) = text.find("\r\n\r\n") {
-                            header_done = true;
-                            for line in text[..pos].lines() {
-                                if let Some(v) =
-                                    line.to_ascii_lowercase().strip_prefix("content-length:")
-                                {
-                                    content_length = v.trim().parse().unwrap_or(0);
-                                }
-                            }
-                            if buf.len() >= pos + 4 + content_length {
-                                break;
-                            }
-                        }
-                    } else if buf.len() >= content_length {
-                        break;
+                    Err(e)
+                        if e.kind() == std::io::ErrorKind::WouldBlock
+                            && std::time::Instant::now() < deadline =>
+                    {
+                        thread::sleep(Duration::from_millis(2))
                     }
-                    if header_done {
-                        let text = String::from_utf8_lossy(&buf).to_string();
-                        if let Some(pos) = text.find("\r\n\r\n") {
-                            if buf.len() >= pos + 4 + content_length {
-                                break;
-                            }
-                        }
-                    }
+                    _ => return,
                 }
-                let request = String::from_utf8_lossy(&buf).to_string();
-                let (code, body) = handler(&request);
-                let reason = if code == 200 { "OK" } else { "Error" };
-                let response = format!(
-                    "HTTP/1.1 {code} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    body.len(),
-                    body
-                );
-                let _ = stream.write_all(response.as_bytes());
-                let _ = stream.flush();
             }
         });
         format!("http://{addr}")
@@ -1039,8 +1074,81 @@ mod tests {
     }
 
     #[test]
+    fn local_requests_do_not_follow_redirects() {
+        let destination = TcpListener::bind("127.0.0.1:0").unwrap();
+        destination.set_nonblocking(true).unwrap();
+        let target = destination.local_addr().unwrap();
+        let url = serve_http_once(move |_| {
+            format!("HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{target}/elsewhere\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        });
+        let mut cfg = cfg_for(url);
+        cfg.offline = true;
+        let _ = format(&cfg, "文");
+        assert!(
+            matches!(destination.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock)
+        );
+    }
+
+    #[test]
+    fn offline_model_listing_refuses_cloud_providers_before_authentication() {
+        for provider in ["openai", "chatgpt", "opencode-go"] {
+            let mut cfg = cfg_for("http://127.0.0.1:1".into());
+            cfg.offline = true;
+            cfg.provider = provider.into();
+            assert!(list_models(&cfg).unwrap_err().contains("オフライン"));
+        }
+    }
+
+    #[test]
+    fn local_formatting_works_without_an_api_key() {
+        let url = serve_once(|request| {
+            assert!(!request.to_ascii_lowercase().contains("authorization:"));
+            (
+                200,
+                r#"{"choices":[{"message":{"content":"整いました。"}}]}"#.into(),
+            )
+        });
+        let mut cfg = cfg_for(url);
+        cfg.provider = "local".into();
+        cfg.api_key.clear();
+        assert_eq!(format(&cfg, "整えてください。").unwrap(), "整いました。");
+    }
+
+    #[test]
+    fn offline_openai_uses_the_actual_destination_for_the_gate() {
+        let mut cfg = cfg_for("http://127.0.0.1:1/v1".into());
+        cfg.provider = "openai".into();
+        cfg.offline = true;
+        assert!(matches!(format(&cfg, "文"), Err(FormatError::Provider(_))));
+    }
+
+    #[test]
+    fn one_bad_long_format_piece_keeps_its_raw_text_and_formats_the_rest() {
+        let raw = "あ".repeat(2001);
+        let (url, _) = serve_sequence(vec![sse_ok("```不正な応答```"), sse_ok("い")]);
+        let cfg = cfg_for(url);
+        let text = format_long(&cfg, &raw, &|| false, |_| {}, &|_| {}).unwrap();
+        assert_eq!(text, format!("{}い", "あ".repeat(2000)));
+    }
+
+    #[test]
+    fn edit_refuses_an_extreme_shrink() {
+        assert!(validate_edit_replacement(&"元の文章".repeat(100), "はい").is_err());
+    }
+
+    #[test]
+    fn anthropic_rejects_a_response_cut_off_by_the_token_limit() {
+        let sse = concat!(
+            "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"途中の文\"}}\n\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"}}\n\n",
+            "data: {\"type\":\"message_stop\"}\n\n"
+        );
+        assert!(read_anthropic_stream(sse.as_bytes(), std::time::Instant::now(), &|_| {}).is_err());
+    }
+
+    #[test]
     fn missing_key_is_rejected_before_http() {
-        let mut cfg = cfg_for("http://127.0.0.1:1".to_string());
+        let mut cfg = cfg_for("https://api.example.com/v1".to_string());
         cfg.api_key = String::new();
         assert_eq!(format(&cfg, "x"), Err(FormatError::MissingApiKey));
     }
@@ -1441,7 +1549,7 @@ Connection: close
 
     #[test]
     fn anthropic_messages_sends_key_headers_and_reads_sse() {
-        let url = serve_once(|req| {
+        let url = serve_http_once(|req| {
             let lower = req.to_ascii_lowercase();
             assert!(lower.contains("x-api-key: test-key"), "request: {req}");
             assert!(
@@ -1462,12 +1570,7 @@ Connection: close
                 "event: message_stop\n",
                 "data: {\"type\":\"message_stop\"}\n\n"
             );
-            (
-                200,
-                format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{sse}"
-                ),
-            )
+            format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{sse}", sse.len())
         });
         let mut cfg = cfg_for(url);
         cfg.provider = "anthropic".into();
