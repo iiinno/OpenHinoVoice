@@ -10,6 +10,11 @@ on:
         type: boolean
         required: true
         default: false
+      perf_check:
+        description: Compare release builds with and without the accessibility feature
+        type: boolean
+        required: true
+        default: false
 
 permissions:
   contents: read
@@ -66,6 +71,9 @@ jobs:
             runId = $env:GITHUB_RUN_ID
             runAttempt = $env:GITHUB_RUN_ATTEMPT
             target = 'x86_64-pc-windows-msvc'
+            rustcVersion = (rustc -Vv | Out-String).Trim()
+            profile = 'release'
+            features = 'default'
             verification = 'scripts/verify.ps1 -Mode Full'
             desktopUiVerified = $false
             liveAudioOrModelTestsExecuted = $false
@@ -113,4 +121,12 @@ jobs:
     uses: ./.github/workflows/ui-check.yml
     with:
       settings_ui: true
+      release_artifact: windows-release-${{ github.sha }}
+
+  perf-check:
+    name: Explicit accessibility cost comparison
+    needs: build-and-test
+    if: ${{ (github.event_name == 'push' && contains(github.event.head_commit.message, '[perf-check]')) || (github.event_name == 'workflow_dispatch' && inputs.perf_check) }}
+    uses: ./.github/workflows/perf-check.yml
+    with:
       release_artifact: windows-release-${{ github.sha }}
