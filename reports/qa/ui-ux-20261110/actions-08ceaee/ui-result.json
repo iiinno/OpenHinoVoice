@@ -1,0 +1,75 @@
+{
+  "schemaVersion": 1,
+  "mode": "HiddenDesktopUI",
+  "runId": "ui-20261109T165808-762c857d",
+  "status": "failed",
+  "startedAt": "2026-11-09T16:58:08.6444620Z",
+  "finishedAt": "2026-11-09T16:58:21.8025297Z",
+  "scope": "settings UIA + client capture at 600x420 and 720x520 logical pixels",
+  "executable": "D:\\a\\OpenHinoVoice\\OpenHinoVoice\\target\\release\\openhinovoice.exe",
+  "executableSha256": "2368DCF4DF4D20365A36BFBDCD53801EB1EAD3CEAE555C01804CD255D63D1305",
+  "harnessSha256": "93C6F487CB51D3B0895DACE861FAD33BA7D5AE3A0EA833167BB9EFA5A917D109",
+  "compile": "passed",
+  "ui": "failed",
+  "sourceRevision": "08ceaee502a69fdac9219f20e4b43591005098aa",
+  "inputDesktopSwitched": false,
+  "audioRequested": false,
+  "microphoneRequested": false,
+  "limitations": [
+    "画像の見た目は別途確認が必要",
+    "WindowsのDPIと高コントラスト設定は変更しない",
+    "キーボード操作・音・ASR・貼付・外部APIは未実施"
+  ],
+  "controller-result": {
+    "schemaVersion": 1,
+    "status": "failed",
+    "startedAt": "2026-11-09T16:58:10.6541874Z",
+    "desktopSwitched": false,
+    "timeoutMs": 90000,
+    "inputDesktopBefore": "Default",
+    "workerExitCode": 1,
+    "scope": "hidden desktop settings UIA and client capture",
+    "windowStation": "WinSta0",
+    "desktopName": "OHV_ui-20261109T165808-762c857d",
+    "workerPid": 4420,
+    "error": "System.InvalidOperationException: UI worker reported failure.\r\n   at HiddenUiProbe.Controller(String app, String namespaceValue)",
+    "desktopClosed": true,
+    "inputDesktopAfter": "Default",
+    "finishedAt": "2026-11-09T16:58:21.7737807Z"
+  },
+  "worker-result": {
+    "schemaVersion": 1,
+    "status": "failed",
+    "startedAt": "2026-11-09T16:58:11.1460124Z",
+    "cases": [
+      {
+        "sizeLogical": "600x420",
+        "status": "failed",
+        "pid": 9264,
+        "gracefulExit": true,
+        "error": "System.InvalidOperationException: Settings client did not reach the requested logical size.\r\n   at HiddenUiProbe.Worker(String app, String namespaceValue)",
+        "exitCode": 0
+      },
+      {
+        "sizeLogical": "720x520",
+        "status": "failed",
+        "pid": 5084,
+        "gracefulExit": true,
+        "error": "System.InvalidOperationException: Settings client did not reach the requested logical size.\r\n   at HiddenUiProbe.Worker(String app, String namespaceValue)",
+        "exitCode": 0
+      }
+    ],
+    "audioRequested": false,
+    "microphoneRequested": false,
+    "globalInputSent": false,
+    "limitations": [
+      "Capture success requires human inspection; nonblank is only a transport check.",
+      "Native DPI is the existing Windows value; no user display settings are changed.",
+      "UIA Invoke tests presets, restore, silent preview start/stop and page exit. Keyboard shortcuts, audio, ASR, paste and external APIs remain untested."
+    ],
+    "phase": "complete",
+    "updatedAt": "2026-11-09T16:58:21.7657458Z",
+    "finishedAt": "2026-11-09T16:58:21.7657458Z"
+  },
+  "error": "別desktopでのUI検証が失敗しました。phaseとエラー、画像を確認してください。"
+}

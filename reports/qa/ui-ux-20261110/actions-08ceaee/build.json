@@ -1,0 +1,9 @@
+{
+  "revision": "08ceaee502a69fdac9219f20e4b43591005098aa",
+  "runId": "42657871038",
+  "runAttempt": "1",
+  "target": "x86_64-pc-windows-msvc",
+  "verification": "scripts/verify.ps1 -Mode Full",
+  "desktopUiVerified": false,
+  "liveAudioOrModelTestsExecuted": false
+}

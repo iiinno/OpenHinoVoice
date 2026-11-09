@@ -55,3 +55,11 @@ Windows 125%DPIで600x420/720x520の実settingsを別desktopで起動し、UIA52
 - 最新のActions結果と成果物は確認後に別項へ記録する。
 
 未確認は実キーボードのTab/Esc/Ctrl+S、実マイクと他アプリへの貼付、実モニターのDPI/配色変更、常駐・UIA増分と入力遅延の性能予算、モデルを使うU12反復測定。U13はその測定結果で原因を選ぶため未実装。
+
+### Actions Full 合格（08ceaee）
+
+https://github.com/iiinno/OpenHinoVoice/actions/runs/42657871038 の build-and-test jobでfmt・clippy・294テスト・release buildが成功。失敗0、実資源を必要とする11試験はignore。sourceSha256 E9D85EED736EFD8C228FF18EA961F14DD3B6EBD40F1ADEC7A4A745579889C43B。生ログとresult.jsonは actions-08ceaee/。UI診断jobは別判定。
+
+Actions生成openhinovoice.exeは8,438,784 bytes、SHA256 2368dcf4df4d20365a36bfbdcd53801eb1ead3ceae555c01804cd255d63d1305。overlay_preview.exeは261,120 bytes。このPCでexeを起動・導入していない。
+
+同runのUI jobは720 fixture生成・renderer 24測定が成功し、設定windowのサイズ検証で失敗。renderer計測時はWindowsの動き設定が無効だったため、これは静止描画の結果で、リッチの稼働時予算の合格ではない。CPU描画を100切替×2周後、2周目Private増分0、GDI/USER非増加。ネイティブ表示・入力遅延は対象外。ui-result.json/visual-status.jsonに失敗も保持。

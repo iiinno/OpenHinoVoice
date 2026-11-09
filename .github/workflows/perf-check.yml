@@ -29,7 +29,8 @@ jobs:
           persist-credentials: false
       - name: Download the verified default-feature release from this run
         id: download
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8.0.2
+        timeout-minutes: 5
         with:
           name: ${{ inputs.release_artifact }}
           path: target/perf-artifacts/default

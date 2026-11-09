@@ -1,0 +1,20 @@
+{
+  "revision": "08ceaee502a69fdac9219f20e4b43591005098aa",
+  "releaseArtifact": "windows-release-08ceaee502a69fdac9219f20e4b43591005098aa",
+  "artifactDownload": "success",
+  "artifactValidation": "success",
+  "binarySource": "verified_same_run_artifact",
+  "dependencies": "skipped",
+  "build": "skipped",
+  "offscreenFixtures": "success",
+  "settingsUi": "failure",
+  "humanVisualReview": "not_run",
+  "rendererBenchmark": "success",
+  "wholeApplicationPerformanceBenchmark": "not_run",
+  "liveMicrophoneAndModelTests": "not_run",
+  "limitations": [
+    "Hosted desktop/OpenGL availability is not guaranteed.",
+    "Rendered fixtures do not prove settings UI behavior.",
+    "Captured images still require visual review."
+  ]
+}

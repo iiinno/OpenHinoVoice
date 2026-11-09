@@ -80,6 +80,10 @@ internal static class HiddenUiProbe
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
     [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr window, out Rect rect);
+    [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr window, out Rect rect);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowTextW(IntPtr window, StringBuilder text, int length);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassNameW(IntPtr window, StringBuilder text, int length);
+    [DllImport("user32.dll")] static extern IntPtr GetMenu(IntPtr window);
     [DllImport("user32.dll")] static extern uint GetDpiForWindow(IntPtr window);
     [DllImport("user32.dll", SetLastError = true)] static extern bool AdjustWindowRectExForDpi(ref Rect rect, uint style, bool menu, uint extended, uint dpi);
     [DllImport("user32.dll", EntryPoint = "GetWindowLongW")] static extern int GetWindowLong(IntPtr window, int index);
@@ -88,7 +92,7 @@ internal static class HiddenUiProbe
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern uint RegisterWindowMessageW(string name);
     [DllImport("user32.dll", SetLastError = true)] static extern bool PostMessageW(IntPtr window, uint message, IntPtr wparam, IntPtr lparam);
     [DllImport("user32.dll")] static extern uint GetGuiResources(IntPtr process, uint flags);
-    [DllImport("user32.dll")] static extern bool SetProcessDpiAwarenessContext(IntPtr context);
+    [DllImport("user32.dll", SetLastError = true)] static extern bool SetProcessDpiAwarenessContext(IntPtr context);
 
     static Dictionary<string, object> Map(params object[] pairs)
     {
@@ -216,20 +220,105 @@ internal static class HiddenUiProbe
         return exitCode;
     }
 
-    static IntPtr FindWindowFor(int pid)
+    const string SettingsWindowTitle = "OpenHinoVoice";
+    // winit 0.30.13's Windows default; eframe 0.37 does not override it.
+    const string SettingsWindowClass = "Window Class";
+
+    static string WindowTitle(IntPtr window)
     {
-        IntPtr found = IntPtr.Zero;
+        var value = new StringBuilder(2048);
+        GetWindowTextW(window, value, value.Capacity);
+        return value.ToString();
+    }
+    static string WindowClass(IntPtr window)
+    {
+        var value = new StringBuilder(256);
+        GetClassNameW(window, value, value.Capacity);
+        return value.ToString();
+    }
+    static bool IsSettingsWindow(IntPtr window)
+    {
+        return IsWindowVisible(window)
+            && String.Equals(WindowTitle(window), SettingsWindowTitle, StringComparison.Ordinal)
+            && String.Equals(WindowClass(window), SettingsWindowClass, StringComparison.Ordinal);
+    }
+    static List<IntPtr> VisibleWindowsFor(int pid)
+    {
+        var windows = new List<IntPtr>();
         EnumWindows(delegate(IntPtr window, IntPtr parameter)
         {
             uint owner;
             GetWindowThreadProcessId(window, out owner);
-            Rect rect;
-            if (owner == (uint)pid && IsWindowVisible(window) && GetClientRect(window, out rect)
-                && rect.right - rect.left > 100 && rect.bottom - rect.top > 100)
-            { found = window; return false; }
-            return true;
+            if (owner == (uint)pid && IsWindowVisible(window)) windows.Add(window);
+            return windows.Count < 32;
         }, IntPtr.Zero);
-        return found;
+        return windows;
+    }
+    static Dictionary<string, object> WindowDetails(IntPtr window)
+    {
+        uint owner;
+        uint thread = GetWindowThreadProcessId(window, out owner);
+        Rect client, outer;
+        bool haveClient = GetClientRect(window, out client);
+        bool haveOuter = GetWindowRect(window, out outer);
+        return Map("hwnd", "0x" + window.ToInt64().ToString("X"), "pid", owner, "threadId", thread,
+            "title", WindowTitle(window), "class", WindowClass(window), "visible", IsWindowVisible(window),
+            "matchesSettingsIdentity", IsSettingsWindow(window), "dpi", GetDpiForWindow(window),
+            "style", "0x" + unchecked((uint)GetWindowLong(window, -16)).ToString("X8"),
+            "extendedStyle", "0x" + unchecked((uint)GetWindowLong(window, -20)).ToString("X8"),
+            "hasMenu", GetMenu(window) != IntPtr.Zero,
+            "client", haveClient ? Map("left", client.left, "top", client.top, "right", client.right,
+                "bottom", client.bottom, "width", client.right - client.left, "height", client.bottom - client.top) : null,
+            "outer", haveOuter ? Map("left", outer.left, "top", outer.top, "right", outer.right,
+                "bottom", outer.bottom, "width", outer.right - outer.left, "height", outer.bottom - outer.top) : null);
+    }
+    static void SaveWindowDiagnostics(IntPtr window, string label, string name, bool includeImage)
+    {
+        string relative = Path.Combine(label, name + ".json");
+        var report = WindowDetails(window);
+        report["purpose"] = "failure diagnostics only; not a successful settings/framebuffer check";
+        // Save native evidence before calling a provider, so even a blocked UIA
+        // implementation cannot hide the selected window's identity or bounds.
+        Save(relative, report);
+        try
+        {
+            var task = System.Threading.Tasks.Task.Run(delegate { return Uia(window); });
+            if (task.Wait(2000))
+            {
+                report["uiaStatus"] = "captured";
+                report["uia"] = task.Result;
+            }
+            else report["uiaStatus"] = "timeout_after_2000ms";
+        }
+        catch (Exception error) { report["uiaStatus"] = "failed"; report["uiaError"] = error.ToString(); }
+        Save(relative, report);
+        if (includeImage)
+        {
+            string image = Path.Combine(Output, label, name + ".png");
+            report["printWindowPath"] = label + "/" + name + ".png";
+            try
+            {
+                var task = System.Threading.Tasks.Task.Run(delegate {
+                    int colors;
+                    bool nonblank = Capture(window, image, out colors);
+                    return Map("nonblank", nonblank, "colors", colors);
+                });
+                if (task.Wait(2000))
+                {
+                    report["printWindowStatus"] = "captured_for_diagnostics";
+                    report["printWindow"] = task.Result;
+                }
+                else report["printWindowStatus"] = "timeout_after_2000ms";
+            }
+            catch (Exception error) { report["printWindowStatus"] = "failed"; report["printWindowError"] = error.ToString(); }
+            Save(relative, report);
+        }
+    }
+    static bool ClientMatches(IntPtr window, int width, int height)
+    {
+        Rect actual;
+        return GetClientRect(window, out actual)
+            && actual.right - actual.left == width && actual.bottom - actual.top == height;
     }
     static bool Until(Func<bool> condition, int milliseconds)
     {
@@ -393,13 +482,16 @@ internal static class HiddenUiProbe
 
     static int Worker(string app, string namespaceValue)
     {
-        SetProcessDpiAwarenessContext(new IntPtr(-4));
+        bool perMonitorDpi = SetProcessDpiAwarenessContext(new IntPtr(-4));
+        int dpiError = perMonitorDpi ? 0 : Marshal.GetLastWin32Error();
         var cases = new List<object>();
         Report = Map("schemaVersion", 1, "status", "running", "startedAt", DateTime.UtcNow.ToString("o"), "cases", cases,
             "audioRequested", false, "microphoneRequested", false, "globalInputSent", false,
             "limitations", new[] { "Capture success requires human inspection; nonblank is only a transport check.",
                 "Native DPI is the existing Windows value; no user display settings are changed.",
                 "UIA Invoke tests presets, restore, silent preview start/stop and page exit. Keyboard shortcuts, audio, ASR, paste and external APIs remain untested." });
+        Report["perMonitorV2DpiAwarenessSet"] = perMonitorDpi;
+        Report["dpiAwarenessWin32Error"] = dpiError;
         Phase("starting");
         bool passed = true;
         foreach (var size in new[] { new[] { 600, 420 }, new[] { 720, 520 } })
@@ -437,18 +529,72 @@ internal static class HiddenUiProbe
                 stdout = process.StandardOutput.ReadToEndAsync();
                 stderr = process.StandardError.ReadToEndAsync();
                 Phase(label + ":await_window");
-                if (!Until(delegate { if (process.HasExited) return true; window = FindWindowFor(process.Id); return window != IntPtr.Zero; }, 15000)
-                    || process.HasExited || window == IntPtr.Zero) throw new InvalidOperationException("Visible settings window absent on the hidden desktop.");
+                var candidates = new List<IntPtr>();
+                IntPtr startupDialog = IntPtr.Zero;
+                bool foundWindow = Until(delegate {
+                    candidates = VisibleWindowsFor(process.Id);
+                    window = candidates.FirstOrDefault(IsSettingsWindow);
+                    startupDialog = candidates.FirstOrDefault(candidate =>
+                        WindowClass(candidate) == "#32770" && WindowTitle(candidate) == SettingsWindowTitle);
+                    return process.HasExited || window != IntPtr.Zero || startupDialog != IntPtr.Zero;
+                }, 15000);
+                result["expectedWindowIdentity"] = Map("title", SettingsWindowTitle, "class", SettingsWindowClass, "pid", process.Id);
+                result["startupWindows"] = candidates.Select(candidate => (object)WindowDetails(candidate)).ToList();
+                Save(Path.Combine(label, "startup-windows.json"), result["startupWindows"]);
+                Phase(label + ":window_identity");
+                if (startupDialog != IntPtr.Zero || !foundWindow || process.HasExited || window == IntPtr.Zero)
+                {
+                    // A startup MessageBox has the same application title. It
+                    // must never be resized or counted as the settings window.
+                    window = startupDialog != IntPtr.Zero ? startupDialog : candidates.FirstOrDefault();
+                    if (window != IntPtr.Zero)
+                    {
+                        result["startupDiagnostic"] = label + "/startup-window-diagnostic.json";
+                        Phase(label + ":startup_window_diagnostic");
+                        SaveWindowDiagnostics(window, label, "startup-window-diagnostic", true);
+                    }
+                    throw new InvalidOperationException(startupDialog != IntPtr.Zero
+                        ? "Settings startup dialog (#32770) observed; inspect startup-window-diagnostic.json for its UIA text."
+                        : "Expected settings window (OpenHinoVoice / Window Class) absent on the hidden desktop.");
+                }
+                result["beforeResize"] = WindowDetails(window);
+                result["beforeResizeDiagnostic"] = label + "/before-resize-diagnostic.json";
+                Phase(label + ":before_resize");
+                SaveWindowDiagnostics(window, label, "before-resize-diagnostic", false);
                 uint dpi = GetDpiForWindow(window);
                 if (dpi == 0) throw new InvalidOperationException("Could not read native window DPI.");
                 int width = (int)Math.Round(size[0] * dpi / 96.0), height = (int)Math.Round(size[1] * dpi / 96.0);
-                var rect = new Rect { right = width, bottom = height };
-                Require(AdjustWindowRectExForDpi(ref rect, (uint)GetWindowLong(window, -16), false,
-                    (uint)GetWindowLong(window, -20), dpi), "AdjustWindowRectExForDpi");
-                Require(SetWindowPos(window, IntPtr.Zero, 0, 0, rect.right - rect.left, rect.bottom - rect.top, 0x16), "SetWindowPos");
-                if (!Until(delegate { Rect actual; return GetClientRect(window, out actual) && actual.right == width && actual.bottom == height; }, 5000))
-                    throw new InvalidOperationException("Settings client did not reach the requested logical size.");
                 result["dpi"] = dpi;
+                result["expectedClientPixels"] = new[] { width, height };
+                var rect = new Rect { right = width, bottom = height };
+                Require(AdjustWindowRectExForDpi(ref rect, (uint)GetWindowLong(window, -16),
+                    GetMenu(window) != IntPtr.Zero, (uint)GetWindowLong(window, -20), dpi), "AdjustWindowRectExForDpi");
+                result["requestedOuterPixels"] = new[] { rect.right - rect.left, rect.bottom - rect.top };
+                // OHV_TEST_SETTINGS_SIZE normally creates the exact client size.
+                // Avoid a redundant native resize racing initial viewport setup.
+                result["resizeNeeded"] = !ClientMatches(window, width, height);
+                Phase(label + ":resize");
+                bool matched;
+                try
+                {
+                    if ((bool)result["resizeNeeded"])
+                        Require(SetWindowPos(window, IntPtr.Zero, 0, 0, rect.right - rect.left, rect.bottom - rect.top, 0x16), "SetWindowPos");
+                    matched = Until(delegate { return ClientMatches(window, width, height); }, 5000);
+                }
+                finally
+                {
+                    result["afterResize"] = WindowDetails(window);
+                    Save(Path.Combine(label, "resize.json"), Map("before", result["beforeResize"],
+                        "after", result["afterResize"], "expectedClientPixels", result["expectedClientPixels"],
+                        "requestedOuterPixels", result["requestedOuterPixels"], "resizeNeeded", result["resizeNeeded"]));
+                }
+                if (!matched)
+                {
+                    result["resizeDiagnostic"] = label + "/resize-failure-diagnostic.json";
+                    Phase(label + ":resize_failure_diagnostic");
+                    SaveWindowDiagnostics(window, label, "resize-failure-diagnostic", true);
+                    throw new InvalidOperationException("Settings client did not reach the exact requested logical size; inspect resize.json.");
+                }
                 result["clientPixels"] = new[] { width, height };
                 result["metricsBefore"] = Metrics(process);
                 Phase(label + ":uia");

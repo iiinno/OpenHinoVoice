@@ -91,6 +91,7 @@ internal static class PerformanceProbe
     [DllImport("user32.dll")] static extern bool EnumWindows(EnumWindow callback, IntPtr parameter);
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassNameW(IntPtr window, StringBuilder name, int count);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowTextW(IntPtr window, StringBuilder text, int count);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
     [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr window, out Rect rect);
     [DllImport("user32.dll")] static extern uint GetDpiForWindow(IntPtr window);
@@ -286,9 +287,11 @@ internal static class PerformanceProbe
             uint owner; GetWindowThreadProcessId(window, out owner);
             if (owner != (uint)pid) return true;
             var className = new StringBuilder(256); GetClassNameW(window, className, className.Capacity);
+            var title = new StringBuilder(256); GetWindowTextW(window, title, title.Capacity);
             Rect rect;
             bool matches = settings
-                ? IsWindowVisible(window) && GetClientRect(window, out rect) && rect.right > 100 && rect.bottom > 100
+                ? className.ToString() == "Window Class" && title.ToString() == "OpenHinoVoice"
+                    && IsWindowVisible(window) && GetClientRect(window, out rect) && rect.right > 100 && rect.bottom > 100
                 : className.ToString() == "OpenHinoVoiceOverlay";
             if (matches) { found = window; return false; }
             return true;
