@@ -94,3 +94,9 @@ Realtimeはマイク・AI・貼付を使わず、既存WAVを実時間で本番�
 Reuseの先頭は初回起動。後続3sessionが同じPID・追加spawnなしの比較対象になる。各sessionにPID、spawn数、ready、仮認識、Enter後、backlog、CER、要求受付と終端の時刻を記録する。受付から終端まではqueue待ちと推論の両方を含む。取消終端欠損、未対応終端、未送信確定区間、未完了要求、trace上限超過を完了扱いしない。現プロトコルで同じIDを再使用した後の古い終端を厳密識別できない制約も結果へ記録する。UI/描画/通常buildとASRの測定は同時に実行しない。
 
 長いverifyの実行中は各checkの `*.stdout.log` / `*.stderr.log` を読める。終了後の集約 `*.log` とresult.jsonでexit code・成功数を判断し、途中ログだけで成功としない。起動した子の完了まで待ち、途中で失われた検証は成功に含めない。
+
+## CI上の反復性能測定
+
+`scripts/measure-ui.ps1` はGitHub Actions専用。`-CompileOnly`はハーネスのコンパイルだけを確認し、測定成功とは区別する。測定では明示した2つのexeを別desktopで交互の順に3〜10回起動し、各条件30〜60秒観測する。`-Mode Settings`はUIA照会の前後を分け、UIAなし・ありは同じソースとrelease条件で比較する。exe hash/bytes、Private/WS、CPU時間、GDI/USER、応答するウィンドウまでの時間、正常終了をJSONへ記録する。
+
+UIAなしは初回の空のtreeだけで判定せず5秒間観測する。子孫processがケース間に残れば後続の測定を止める。採取成功のstatus=measuredと予算合格は別で、privateExceeded/executableExceededを必ず読む。非対話desktopやOpenGL不足で起動できない場合は失敗のまま記録する。実HUD稼働・入力遅延・マイク・ASR・貼付はこの測定に含まない。
