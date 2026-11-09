@@ -4,6 +4,12 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      ui_check:
+        description: Run the separate hosted desktop UI diagnostic job
+        type: boolean
+        required: true
+        default: false
 
 permissions:
   contents: read
@@ -97,3 +103,11 @@ jobs:
             target/qa/ci/*.log
           if-no-files-found: error
           retention-days: 14
+
+  ui-check:
+    name: Explicit UI diagnostics
+    needs: build-and-test
+    if: ${{ (github.event_name == 'push' && contains(github.event.head_commit.message, '[ui-check]')) || (github.event_name == 'workflow_dispatch' && inputs.ui_check) }}
+    uses: ./.github/workflows/ui-check.yml
+    with:
+      settings_ui: true

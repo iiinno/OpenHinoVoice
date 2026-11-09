@@ -138,7 +138,14 @@ function Invoke-Check([object]$Check, [string]$Executable, [string[]]$Arguments)
         $Check.durationMs = $watch.ElapsedMilliseconds
         Save-Result
     }
-    if ($Check.status -ne 'passed') { throw "$($Check.name) が失敗しました。$($Check.log)を確認してください。" }
+    Write-Host ("{0}: {1} ({2} ms)" -f $Check.name, $Check.status, $Check.durationMs)
+    if ($Check.status -ne 'passed') {
+        $logPath = Join-Path $OutputDir $Check.log
+        if (Test-Path -LiteralPath $logPath) {
+            Get-Content -LiteralPath $logPath -Tail 100 | ForEach-Object { Write-Host $_ }
+        }
+        throw "$($Check.name) が失敗しました。$($Check.log)を確認してください。"
+    }
 }
 
 $savedEnvironment = @{}

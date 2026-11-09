@@ -1,0 +1,105 @@
+name: Explicit UI diagnostics
+
+on:
+  workflow_call:
+    inputs:
+      settings_ui:
+        description: Attempt settings UIA and capture on the hosted desktop
+        type: boolean
+        required: false
+        default: false
+  workflow_dispatch:
+    inputs:
+      settings_ui:
+        description: 'Attempt settings UIA/capture; requires a compatible OpenGL desktop. Unsupported runners fail this check.'
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: visual-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  visual-diagnostics:
+    name: Offscreen fixtures and optional settings capture
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Prepare locked dependencies
+        id: dependencies
+        run: |
+          New-Item -ItemType Directory -Force -Path target/qa/visual | Out-Null
+          cargo fetch --locked 2>&1 | Tee-Object -FilePath target/qa/visual/fetch.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build release binaries for this revision
+        id: build
+        run: |
+          cargo build --release --locked --offline --bin openhinovoice --example overlay_preview 2>&1 | Tee-Object -FilePath target/qa/visual/build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Render offscreen HUD fixtures
+        id: render
+        run: |
+          ./target/release/examples/overlay_preview.exe target/qa/visual/overlay --all-dpi 2>&1 | Tee-Object -FilePath target/qa/visual/render.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $index = Get-Content -LiteralPath target/qa/visual/overlay/index.json -Raw | ConvertFrom-Json
+          if ($index.frames.Count -ne 720) { throw 'Expected all 720 style/theme/state/motion/DPI fixtures.' }
+          if (@($index.frames.file | Sort-Object -Unique).Count -ne 720) { throw 'Fixture file names are not unique.' }
+          if ($index.windows_created -ne 0 -or $index.audio_played -ne $false -or $index.microphone_accessed -ne $false) {
+            throw 'The offscreen renderer did not report its expected side-effect boundary.'
+          }
+          foreach ($frame in $index.frames) {
+            $path = Join-Path target/qa/visual/overlay $frame.file
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -le 54) {
+              throw "Missing or empty fixture: $path"
+            }
+          }
+      - name: Check settings UIA and capture on the hosted desktop
+        id: settings_ui
+        if: ${{ inputs.settings_ui }}
+        run: ./scripts/verify-ui.ps1 -Executable target/release/openhinovoice.exe -OutputDir target/qa/visual/settings-ui
+      - name: Record visual diagnostic scope
+        if: always()
+        env:
+          DEPENDENCIES_RESULT: ${{ steps.dependencies.outcome }}
+          BUILD_RESULT: ${{ steps.build.outcome }}
+          RENDER_RESULT: ${{ steps.render.outcome }}
+          SETTINGS_UI_RESULT: ${{ steps.settings_ui.outcome }}
+        run: |
+          New-Item -ItemType Directory -Force -Path target/qa/visual | Out-Null
+          $uiResult = if ($env:SETTINGS_UI_RESULT -eq 'skipped') { 'not_run' } else { $env:SETTINGS_UI_RESULT }
+          [ordered]@{
+            revision = $env:GITHUB_SHA
+            dependencies = $env:DEPENDENCIES_RESULT
+            build = $env:BUILD_RESULT
+            offscreenFixtures = $env:RENDER_RESULT
+            settingsUi = $uiResult
+            humanVisualReview = 'not_run'
+            performanceBenchmark = 'not_run'
+            liveMicrophoneAndModelTests = 'not_run'
+            limitations = @('Hosted desktop/OpenGL availability is not guaranteed.', 'Rendered fixtures do not prove settings UI behavior.', 'Captured images still require visual review.')
+          } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath target/qa/visual/status.json -Encoding utf8NoBOM
+          "Offscreen fixtures: $env:RENDER_RESULT; settings UI: $uiResult; visual review: not_run." | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+      - name: Keep diagnostic output even when capture fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-diagnostics-${{ github.sha }}
+          path: |
+            target/qa/visual/**/*.json
+            target/qa/visual/**/*.log
+            target/qa/visual/**/*.png
+            target/qa/visual/**/*.bmp
+          if-no-files-found: error
+          retention-days: 14

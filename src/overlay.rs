@@ -219,10 +219,12 @@ pub fn create() -> Result<HWND, String> {
         let hinstance = GetModuleHandleW(None)
             .map_err(|e| format!("モジュールハンドルを取得できません: {e}"))?;
         let class_name = wide("OpenHinoVoiceOverlay");
+        // Win32 encodes integer resource ID 1 in this pointer-shaped parameter.
+        #[allow(clippy::manual_dangling_ptr)]
+        let app_icon_resource = PCWSTR(1usize as *const u16);
         let wc = WNDCLASSW {
             lpfnWndProc: Some(wnd_proc),
-            hIcon: LoadIconW(HINSTANCE(hinstance.0), PCWSTR(1usize as *const u16))
-                .unwrap_or_default(),
+            hIcon: LoadIconW(HINSTANCE(hinstance.0), app_icon_resource).unwrap_or_default(),
             hInstance: hinstance.into(),
             lpszClassName: PCWSTR(class_name.as_ptr()),
             ..Default::default()
@@ -2548,8 +2550,8 @@ mod tests {
         assert_eq!(standard.rgba.len(), standard.width * standard.height * 4);
         assert!(minimal.width < standard.width);
         assert!(minimal.height < standard.height);
-        assert!(standard.rgba.chunks_exact(4).any(|pixel| pixel[3] > 0));
-        assert!(standard.rgba.chunks_exact(4).any(|pixel| pixel[3] == 0));
+        assert!(standard.rgba.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0));
+        assert!(standard.rgba.as_chunks::<4>().0.iter().any(|pixel| pixel[3] == 0));
     }
 
     #[test]
