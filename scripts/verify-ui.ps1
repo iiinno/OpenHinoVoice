@@ -1,7 +1,7 @@
 #Requires -Version 7.2
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][string]$Executable,
+    [string]$Executable,
     [string]$OutputDir,
     [switch]$CompileOnly
 )
@@ -13,7 +13,7 @@ $repo = Split-Path -Parent $PSScriptRoot
 $runId = 'ui-{0}-{1}' -f [DateTime]::UtcNow.ToString('yyyyMMddTHHmmss'), [Guid]::NewGuid().ToString('N').Substring(0, 8)
 if (-not $OutputDir) { $OutputDir = Join-Path $repo "target/qa/$runId" }
 $OutputDir = [IO.Path]::GetFullPath($OutputDir)
-$Executable = [IO.Path]::GetFullPath($Executable)
+$Executable = if ($Executable) { [IO.Path]::GetFullPath($Executable) } else { $null }
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 $resultPath = Join-Path $OutputDir 'result.json'
 $result = [ordered]@{
@@ -48,8 +48,12 @@ function Run-Hidden([string]$File, [string[]]$Arguments, [int]$TimeoutMs) {
 $exitCode = 1
 try {
     Save-Result
-    if (-not (Test-Path -LiteralPath $Executable -PathType Leaf)) { throw '検証するビルド済みexeがありません。' }
-    $result.executableSha256 = (Get-FileHash -LiteralPath $Executable -Algorithm SHA256).Hash
+    if ($Executable) {
+        if (-not (Test-Path -LiteralPath $Executable -PathType Leaf)) { throw '検証するビルド済みexeがありません。' }
+        $result.executableSha256 = (Get-FileHash -LiteralPath $Executable -Algorithm SHA256).Hash
+    } elseif (-not $CompileOnly) {
+        throw 'UI検証には -Executable でビルド済みexeを指定してください。'
+    }
     $source = Join-Path $PSScriptRoot 'ui-harness.cs'
     $result.harnessSha256 = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
     $framework = Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319'

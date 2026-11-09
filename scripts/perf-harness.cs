@@ -88,6 +88,15 @@ internal static class PerformanceProbe
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern bool QueryInformationJobObject(IntPtr job, int type, out Accounting value, uint length, IntPtr returnedLength);
+    [DllImport("kernel32.dll", EntryPoint = "QueryInformationJobObject", SetLastError = true)]
+    static extern bool QueryJobProcessIds(IntPtr job, int type, IntPtr value, uint length, IntPtr returnedLength);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool IsProcessInJob(IntPtr process, IntPtr job, out bool member);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(uint access, bool inherit, uint processId);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern bool QueryFullProcessImageNameW(IntPtr process, uint flags, StringBuilder path, ref uint length);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool GetProcessTimes(IntPtr process, out long created, out long exited, out long kernel, out long user);
+    [DllImport("kernel32.dll")] static extern IntPtr GetConsoleWindow();
     [DllImport("user32.dll")] static extern bool EnumWindows(EnumWindow callback, IntPtr parameter);
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassNameW(IntPtr window, StringBuilder name, int count);
@@ -231,11 +240,15 @@ internal static class PerformanceProbe
             uint workerCode;
             Require(GetExitCodeProcess(child.process, out workerCode), "GetExitCodeProcess");
             result["workerExitCode"] = workerCode;
-            Accounting accounting;
-            Require(QueryInformationJobObject(job, 1, out accounting, (uint)Marshal.SizeOf(typeof(Accounting)), IntPtr.Zero),
-                "QueryInformationJobObject");
-            result["residualChildProcesses"] = accounting.activeProcesses;
-            if (workerCode != 0 || accounting.activeProcesses != 0)
+            JobState finalJob = null;
+            bool empty = Until(delegate
+            {
+                finalJob = ReadJobState(job);
+                return finalJob.error == null && finalJob.processes.Count == 0;
+            }, 5000);
+            result["finalJobState"] = finalJob;
+            result["residualChildProcesses"] = finalJob.error == null ? (object)finalJob.processes.Count : null;
+            if (workerCode != 0 || !empty)
                 throw new InvalidOperationException("Worker failed or left child processes; inspect worker-result.json.");
             result["status"] = "measured";
             code = 0;
@@ -394,19 +407,130 @@ internal static class PerformanceProbe
             "durationMs", watch.Elapsed.TotalMilliseconds, "error", lastError);
     }
     static string JobName() { return @"Local\OpenHinoVoice.Perf." + Settings.namespaceValue; }
-    static bool WorkerOnly(IntPtr job, out uint active)
+    public sealed class JobProcess
     {
-        uint observed = UInt32.MaxValue;
+        public uint pid;
+        public string imagePath, error;
+        public long creationTime;
+        public bool ownedJob;
+    }
+    public sealed class JobState
+    {
+        public string observedAt = DateTime.UtcNow.ToString("o"), error;
+        public uint accountingActiveProcesses, assignedProcesses;
+        public int accountingStructureBytes = Marshal.SizeOf(typeof(Accounting));
+        public List<JobProcess> processes = new List<JobProcess>();
+    }
+    static JobProcess ReadJobProcess(uint pid, IntPtr job)
+    {
+        var identity = new JobProcess { pid = pid };
+        IntPtr process = OpenProcess(0x1000, false, pid); // QUERY_LIMITED_INFORMATION only.
+        try
+        {
+            Require(process != IntPtr.Zero, "OpenProcess for job identity");
+            Require(IsProcessInJob(process, job, out identity.ownedJob), "IsProcessInJob");
+            if (!identity.ownedJob) throw new InvalidOperationException("PID no longer belongs to this job.");
+            uint length = 32768; var path = new StringBuilder((int)length);
+            Require(QueryFullProcessImageNameW(process, 0, path, ref length), "QueryFullProcessImageNameW");
+            identity.imagePath = path.ToString();
+            long exited, kernel, user;
+            Require(GetProcessTimes(process, out identity.creationTime, out exited, out kernel, out user), "GetProcessTimes");
+            uint code;
+            Require(GetExitCodeProcess(process, out code), "GetExitCodeProcess for job identity");
+            if (code != 259) throw new InvalidOperationException("Process exited during the job snapshot.");
+        }
+        catch (Exception error) { identity.error = error.Message; }
+        finally { if (process != IntPtr.Zero) CloseHandle(process); }
+        return identity;
+    }
+    static JobState ReadJobState(IntPtr job)
+    {
+        var state = new JobState();
+        try
+        {
+            // Four LARGE_INTEGERs followed by four DWORDs; ActiveProcesses is at byte 40.
+            if (state.accountingStructureBytes != 48 || Marshal.OffsetOf(typeof(Accounting), "activeProcesses").ToInt32() != 40)
+                throw new InvalidOperationException("Unexpected JOBOBJECT_BASIC_ACCOUNTING_INFORMATION layout.");
+            Accounting accounting;
+            Require(QueryInformationJobObject(job, 1, out accounting, 48, IntPtr.Zero), "Query job accounting");
+            state.accountingActiveProcesses = accounting.activeProcesses;
+            // JOBOBJECT_BASIC_PROCESS_ID_LIST: two DWORDs, then pointer-sized PIDs.
+            for (int capacity = 16; capacity <= 1024; capacity *= 2)
+            {
+                int bytes = 8 + capacity * IntPtr.Size;
+                IntPtr buffer = Marshal.AllocHGlobal(bytes);
+                try
+                {
+                    bool read = QueryJobProcessIds(job, 3, buffer, (uint)bytes, IntPtr.Zero);
+                    int error = Marshal.GetLastWin32Error();
+                    if (!read)
+                    {
+                        if (error == 234) continue; // ERROR_MORE_DATA, never accept a partial list.
+                        throw new Win32Exception(error, "Query job process IDs");
+                    }
+                    uint assigned = unchecked((uint)Marshal.ReadInt32(buffer, 0));
+                    uint listed = unchecked((uint)Marshal.ReadInt32(buffer, 4));
+                    if (listed < assigned || listed > capacity) continue;
+                    state.assignedProcesses = assigned;
+                    for (int i = 0; i < listed; i++)
+                    {
+                        long pid = Marshal.ReadIntPtr(buffer, 8 + i * IntPtr.Size).ToInt64();
+                        if (pid <= 0 || pid > UInt32.MaxValue) throw new InvalidOperationException("Invalid job PID.");
+                        state.processes.Add(ReadJobProcess((uint)pid, job));
+                    }
+                    return state;
+                }
+                finally { Marshal.FreeHGlobal(buffer); }
+            }
+            throw new InvalidOperationException("Job process-list bound exceeded.");
+        }
+        catch (Exception error) { state.error = error.Message; }
+        return state;
+    }
+    static bool SameProcess(JobProcess left, JobProcess right)
+    {
+        return left.error == null && right.error == null && left.pid == right.pid
+            && left.creationTime == right.creationTime
+            && String.Equals(left.imagePath, right.imagePath, StringComparison.OrdinalIgnoreCase);
+    }
+    static List<JobProcess> CaptureJobBaseline(IntPtr job, JobProcess worker)
+    {
+        JobState first = null, last = null;
+        string consoleImage = Path.Combine(Environment.SystemDirectory, "conhost.exe");
+        int attempts = 0;
+        bool valid = Until(delegate
+        {
+            last = ReadJobState(job); attempts++;
+            if (first == null) first = last;
+            return last.error == null && last.processes.Any(p => SameProcess(p, worker))
+                && last.processes.All(p => SameProcess(p, worker) || (p.error == null
+                    && p.creationTime >= worker.creationTime
+                    && String.Equals(p.imagePath, consoleImage, StringComparison.OrdinalIgnoreCase)));
+        }, 5000);
+        uint consoleOwner = 0;
+        IntPtr console = GetConsoleWindow();
+        if (console != IntPtr.Zero) GetWindowThreadProcessId(console, out consoleOwner);
+        Report["jobBaseline"] = Map("status", valid ? "confirmed" : "failed", "first", first, "last", last,
+            "attempts", attempts, "workerConsoleWindowOwnerPid", consoleOwner, "allowedConsoleImage", consoleImage,
+            "rule", "Before any app launch: own worker and job-member System32 conhost created no earlier than the worker. Later boundaries allow only these exact PID/creation-time/image identities; console hosts may exit.");
+        Phase("job_baseline");
+        if (!valid) throw new InvalidOperationException("Initial job contains an unverified process; inspect jobBaseline.");
+        return last.processes;
+    }
+    static Dictionary<string, object> ObserveJobBoundary(IntPtr job, JobProcess worker, List<JobProcess> baseline)
+    {
+        JobState first = null, last = null;
+        int attempts = 0;
+        var watch = Stopwatch.StartNew();
         bool clean = Until(delegate
         {
-            Accounting accounting;
-            Require(QueryInformationJobObject(job, 1, out accounting, (uint)Marshal.SizeOf(typeof(Accounting)), IntPtr.Zero),
-                "QueryInformationJobObject case boundary");
-            observed = accounting.activeProcesses;
-            return observed == 1;
+            last = ReadJobState(job); attempts++;
+            if (first == null) first = last;
+            return last.error == null && last.processes.Any(p => SameProcess(p, worker))
+                && last.processes.All(p => baseline.Any(known => SameProcess(p, known)));
         }, 5000);
-        active = observed;
-        return clean;
+        return Map("status", clean ? "confirmed" : "failed", "first", first, "last", last,
+            "attempts", attempts, "deadlineMs", 5000, "durationMs", watch.Elapsed.TotalMilliseconds);
     }
     static Dictionary<string, object> Measure(Artifact artifact, int round, int order)
     {
@@ -540,6 +664,9 @@ internal static class PerformanceProbe
         {
             job = OpenJobObjectW(0x0004, false, JobName()); // QUERY only; the controller owns job lifetime.
             Require(job != IntPtr.Zero, "OpenJobObjectW");
+            var worker = ReadJobProcess((uint)Process.GetCurrentProcess().Id, job);
+            if (worker.error != null) throw new InvalidOperationException(worker.error);
+            var baseline = CaptureJobBaseline(job, worker);
             for (int round = 1; round <= Settings.repetitions; round++)
             {
                 var order = round % 2 == 1 ? Settings.artifacts : Settings.artifacts.Reverse().ToArray();
@@ -551,32 +678,25 @@ internal static class PerformanceProbe
                             "status", "not_run_after_cleanup_failure"));
                         continue;
                     }
-                    uint active;
-                    if (!WorkerOnly(job, out active))
+                    var before = ObserveJobBoundary(job, worker, baseline);
+                    Report["lastCaseBoundary"] = before;
+                    if ((string)before["status"] != "confirmed")
                     {
                         passed = false; blocked = true;
-                        Report["cleanupError"] = "Owned job was not worker-only before the next case.";
-                        Report["activeProcessesAtFailure"] = active;
+                        Report["cleanupError"] = "Job identities did not return to the verified infrastructure baseline.";
                         notRun.Add(Map("artifact", order[i].label, "round", round, "order", i + 1,
-                            "status", "not_run_due_to_residual_processes"));
+                            "status", "not_run_due_to_residual_processes", "jobBoundary", before));
                         Phase("cleanup_failed");
                         continue;
                     }
                     var row = Measure(order[i], round, i + 1);
-                    bool cleaned;
-                    try { cleaned = WorkerOnly(job, out active); }
-                    catch (Exception error)
-                    {
-                        cleaned = false; active = UInt32.MaxValue;
-                        row["cleanupQueryError"] = error.ToString();
-                    }
-                    row["caseCleanup"] = Map("status", cleaned ? "confirmed" : "failed",
-                        "activeProcesses", active == UInt32.MaxValue ? null : (object)active,
-                        "expectedActiveProcesses", 1, "deadlineMs", 5000);
-                    if (!cleaned)
+                    row["caseStartBoundary"] = before;
+                    var after = ObserveJobBoundary(job, worker, baseline);
+                    row["caseCleanup"] = after;
+                    if ((string)after["status"] != "confirmed")
                     {
                         row["status"] = "failed";
-                        row["cleanupError"] = "Worker-only job state could not be confirmed after this case; later measurements were not started.";
+                        row["cleanupError"] = "A process outside the verified infrastructure baseline remained; later measurements were not started.";
                         blocked = true;
                     }
                     Save(Path.Combine(Settings.output, "r" + round + "-" + order[i].label, "result.json"), row);
@@ -588,6 +708,15 @@ internal static class PerformanceProbe
         catch (Exception error)
         {
             passed = false; Report["error"] = error.ToString();
+            for (int round = 1; round <= Settings.repetitions; round++)
+            {
+                foreach (var artifact in Settings.artifacts)
+                {
+                    if (!rows.Any(r => (int)r["round"] == round && (string)r["artifact"] == artifact.label)
+                        && !notRun.Any(r => (int)r["round"] == round && (string)r["artifact"] == artifact.label))
+                        notRun.Add(Map("artifact", artifact.label, "round", round, "status", "not_run_after_harness_failure"));
+                }
+            }
         }
         finally
         {

@@ -34,6 +34,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Compile verification helpers before Rust work
+        id: harnesses
+        run: |
+          ./scripts/verify-ui.ps1 -CompileOnly -OutputDir target/qa/ci/ui-harness
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./scripts/measure-ui.ps1 -CompileOnly -OutputDir target/qa/ci/perf-harness
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -88,6 +95,7 @@ jobs:
       - name: Record CI step outcomes
         if: always()
         env:
+          HARNESSES_RESULT: ${{ steps.harnesses.outcome }}
           DEPENDENCIES_RESULT: ${{ steps.dependencies.outcome }}
           VERIFY_RESULT: ${{ steps.verify.outcome }}
           PREVIEW_BUILD_RESULT: ${{ steps.preview-build.outcome }}
@@ -96,6 +104,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path target/qa/ci | Out-Null
           [ordered]@{
             revision = $env:GITHUB_SHA
+            helperCompilation = $env:HARNESSES_RESULT
             dependencies = $env:DEPENDENCIES_RESULT
             verify = $env:VERIFY_RESULT
             previewBuild = $env:PREVIEW_BUILD_RESULT
@@ -111,6 +120,10 @@ jobs:
           path: |
             target/qa/ci/*.json
             target/qa/ci/*.log
+            target/qa/ci/ui-harness/*.json
+            target/qa/ci/ui-harness/*.log
+            target/qa/ci/perf-harness/*.json
+            target/qa/ci/perf-harness/*.log
           if-no-files-found: error
           retention-days: 14
 

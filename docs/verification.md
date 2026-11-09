@@ -104,3 +104,5 @@ UIAなしは初回の空のtreeだけで判定せず5秒間観測する。子孫
 Actionsのrenderer専用ジョブは `verify-renderer.ps1` で一時的にclient-area animationを有効化し、子exe自身が有効状態を読んだことを確認する。720fixture/24測定の後、元の設定へfinallyで戻す。Windowsの動き設定を変更するこの処理はGitHub-hosted Windowsだけで動き、ローカル・self-hostedでは開始前に停止する。過去のmotion無効の数値は静止描画の比較として区別する。
 
 GitHub-hosted Windowsの標準OpenGLではeguiが起動できないことを実際のダイアログで確認したため、UI/設定Private比較には固定版Mesa llvmpipeを使う。`prepare-ci-opengl.ps1`が公開SHA256を照合してからtarget/qa配下へDLLを展開し、検証済みexeの隔離コピーだけを同じフォルダーへ置く。配布artifactへDLLは追加しない。software描画条件・archive/DLL hashを保存し、実機GPUの性能値とは扱わない。
+
+通常CIはRust作業の前にUI/性能ハーネスをcompile-onlyで検査し、C#の構文・参照エラーを先に止める。UIのcompile-onlyにはアプリexeは不要。選択式ボタンは公開されたToggle/SelectionItem、通常ボタンはInvokeで操作し、使用したpatternと状態変化を記録する。性能測定のケース間検査は単純なプロセス数ではなく、起動前に検証したworker/コンソール基盤のPID・実行ファイル・生成時刻を照合する。未知の残留があれば後続は実行しない。

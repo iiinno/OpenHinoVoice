@@ -437,8 +437,8 @@ internal static class HiddenUiProbe
         var current = control.Current;
         check["controlRole"] = current.ControlType.ProgrammaticName;
         check["controlEnabled"] = current.IsEnabled;
-        check["supportedPatterns"] = control.GetSupportedPatterns().Select(pattern =>
-            (object)Map("id", pattern.Id, "name", pattern.ProgrammaticName)).ToList();
+        check["supportedPatterns"] = control.GetSupportedPatterns().Select(availablePattern =>
+            (object)Map("id", availablePattern.Id, "name", availablePattern.ProgrammaticName)).ToList();
         Save("worker-result.json", Report);
         if (!current.IsEnabled) throw new InvalidOperationException("UIA button disabled: " + name);
         object pattern;
