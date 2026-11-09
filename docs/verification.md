@@ -1,3 +1,7 @@
+# 実行場所: GitHub Actions
+
+Rustのビルド・テスト・clippy・release生成はGitHub ActionsのWindows runnerで行う。利用者のPCでは実行しない。以下のCargo/verifyコマンド例もCI用である。verify.ps1はCI以外で既定停止する。ローカル実行には利用者の新たな明示許可が必要。ローカルでは編集、差分確認、リモートログと成果物の取得を行う。
+
 # 開発とAIの検証手順
 
 WindowsとPowerShell 7.2以降で、リポジトリ直下から実行する。初回だけRustの依存を `cargo fetch --locked` で取得する。検証中のCargoは `--offline --locked` を使う。モデル、マイク、APIキーは通常テストに不要。

@@ -3,25 +3,97 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
   build-and-test:
     runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       - name: Prepare locked dependencies
-        run: cargo fetch --locked
+        id: dependencies
+        run: |
+          New-Item -ItemType Directory -Force -Path target/qa/ci | Out-Null
+          cargo fetch --locked 2>&1 | Tee-Object -FilePath target/qa/ci/fetch.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify in isolated application directories
-        shell: pwsh
-        run: ./scripts/verify.ps1 -Mode Full
+        id: verify
+        run: ./scripts/verify.ps1 -Mode Full -OutputDir target/qa/ci
+      - name: Build the offscreen preview example
+        id: preview-build
+        run: |
+          cargo build --release --example overlay_preview --locked --offline 2>&1 | Tee-Object -FilePath target/qa/ci/preview-build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Prepare release artifacts and checksums
+        id: package
+        run: |
+          $destination = 'target/ci-artifacts'
+          New-Item -ItemType Directory -Force -Path $destination | Out-Null
+          Copy-Item -LiteralPath target/release/openhinovoice.exe -Destination "$destination/openhinovoice.exe"
+          Copy-Item -LiteralPath target/release/examples/overlay_preview.exe -Destination "$destination/overlay_preview.exe"
+          $checksums = foreach ($name in @('openhinovoice.exe', 'overlay_preview.exe')) {
+            $hash = Get-FileHash -LiteralPath (Join-Path $destination $name) -Algorithm SHA256
+            '{0} *{1}' -f $hash.Hash.ToLowerInvariant(), $name
+          }
+          $checksums | Set-Content -LiteralPath "$destination/SHA256SUMS.txt" -Encoding utf8NoBOM
+          [ordered]@{
+            revision = $env:GITHUB_SHA
+            runId = $env:GITHUB_RUN_ID
+            runAttempt = $env:GITHUB_RUN_ATTEMPT
+            target = 'x86_64-pc-windows-msvc'
+            verification = 'scripts/verify.ps1 -Mode Full'
+            desktopUiVerified = $false
+            liveAudioOrModelTestsExecuted = $false
+          } | ConvertTo-Json | Set-Content -LiteralPath "$destination/build.json" -Encoding utf8NoBOM
+      - name: Keep release binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release-${{ github.sha }}
+          path: target/ci-artifacts/*
+          if-no-files-found: error
+          retention-days: 14
+      - name: Record CI step outcomes
+        if: always()
+        env:
+          DEPENDENCIES_RESULT: ${{ steps.dependencies.outcome }}
+          VERIFY_RESULT: ${{ steps.verify.outcome }}
+          PREVIEW_BUILD_RESULT: ${{ steps.preview-build.outcome }}
+          PACKAGE_RESULT: ${{ steps.package.outcome }}
+        run: |
+          New-Item -ItemType Directory -Force -Path target/qa/ci | Out-Null
+          [ordered]@{
+            revision = $env:GITHUB_SHA
+            dependencies = $env:DEPENDENCIES_RESULT
+            verify = $env:VERIFY_RESULT
+            previewBuild = $env:PREVIEW_BUILD_RESULT
+            package = $env:PACKAGE_RESULT
+            desktopUi = 'not_run'
+            liveAudioOrModelTests = 'not_run'
+          } | ConvertTo-Json | Set-Content -LiteralPath target/qa/ci/ci-status.json -Encoding utf8NoBOM
       - name: Keep verification evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: verification
-          path: target/qa/**
-          if-no-files-found: warn
+          name: verification-${{ github.sha }}
+          path: |
+            target/qa/ci/*.json
+            target/qa/ci/*.log
+          if-no-files-found: error
+          retention-days: 14

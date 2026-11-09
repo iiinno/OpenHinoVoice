@@ -12,10 +12,14 @@ param(
     [string]$ModelPath,
     [string]$OutputDir,
     [string]$Cargo = 'cargo',
-    [string]$TargetDir
+    [string]$TargetDir,
+    [switch]$AllowLocalBuild
 )
 
 $ErrorActionPreference = 'Stop'
+if ($env:GITHUB_ACTIONS -ne 'true' -and -not $AllowLocalBuild) {
+    throw 'Rustのビルド・テストはGitHub Actionsで実行してください。ローカル実行は利用者の明示許可と -AllowLocalBuild が必要です。'
+}
 $repo = Split-Path -Parent $PSScriptRoot
 $runId = '{0}-{1}' -f [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ'), [Guid]::NewGuid().ToString('N').Substring(0, 8)
 if (-not $OutputDir) { $OutputDir = Join-Path $repo "target/qa/$runId" }
@@ -72,8 +76,8 @@ function Run-Command([string]$Executable, [string[]]$Arguments, [string]$LiveLog
         $started = $process.Start()
         if (-not $started) { throw "プロセスを開始できません: $Executable" }
         if ($LiveLogPrefix) {
-            $stdoutFile = [IO.File]::Open("$LiveLogPrefix.stdout.log", [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::Read)
-            $stderrFile = [IO.File]::Open("$LiveLogPrefix.stderr.log", [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+            $stdoutFile = [IO.FileStream]::new("$LiveLogPrefix.stdout.log", [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::Read, 1, [IO.FileOptions]::Asynchronous)
+            $stderrFile = [IO.FileStream]::new("$LiveLogPrefix.stderr.log", [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::Read, 1, [IO.FileOptions]::Asynchronous)
             $stdout = $process.StandardOutput.BaseStream.CopyToAsync($stdoutFile)
             $stderr = $process.StandardError.BaseStream.CopyToAsync($stderrFile)
         } else {

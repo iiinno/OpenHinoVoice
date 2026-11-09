@@ -2,11 +2,14 @@
 
 ## 開発・検証する場合
 
+- Rustのビルド・テスト・clippy・release生成はGitHub Actionsで実行する。利用者のPCでは実行しない。ローカル実行は利用者が改めて明示した場合だけにする。非表示であっても禁止は変わらない。
+- ローカルでは編集、差分確認、CIログ・成果物の取得を行う。CIへ検証用ブランチを送って結果を確認し、失敗を修正する。
+
 - 検証できる変更単位でこまめにコミットする。各単位の関連検証を通し、壊れた中間状態を残さない。
 - UI改善中も性能の計測と改善を継続する。演出で実際の遅延を解消した扱いにしない。UIとASRの性能測定は同時に実行しない。
 - 音・表示のプリセット、プレビュー、アイコンの実装は [UI・UX計画](docs/ui-ux-plan-20261109.md) の所有範囲と受入条件に従う。
 
-- 通常の修正は `pwsh -NoProfile -File scripts/verify.ps1 -Mode Fast`、統合後は `-Mode Full` を使う。詳細と実機試験は [docs/verification.md](docs/verification.md) を参照する。
+- GitHub Actions上の通常検証は `pwsh -NoProfile -File scripts/verify.ps1 -Mode Fast`、統合後は `-Mode Full` を使う。詳細と実機試験は [docs/verification.md](docs/verification.md) を参照する。
 - 検証は専用の APPDATA・LOCALAPPDATA と `OHV_TEST_NAMESPACE` を使う。利用者の設定、API キー、自動起動、稼働中のプロセスを検証用に変更しない。
 - コマンドは非表示で実行する。Windows では `CreateNoWindow` / `windowsHide: true` と直接の実行ファイル・引数を使い、検証のたびにターミナルを開かない。起動した子プロセスだけを回収する。
 - 担当ファイルを分け、既存の未コミット変更と他担当の変更を保持する。単体テストは共通ライブラリを使い、`#[path]` で実装を再取り込みしない。
