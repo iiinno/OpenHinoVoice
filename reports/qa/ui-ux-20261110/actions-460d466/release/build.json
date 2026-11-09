@@ -1,0 +1,12 @@
+{
+  "revision": "460d4667f4101966cd1161d2d872354d45fb8131",
+  "runId": "42665854698",
+  "runAttempt": "1",
+  "target": "x86_64-pc-windows-msvc",
+  "rustcVersion": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\r\nbinary: rustc\r\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\r\ncommit-date: 2026-10-13\r\nhost: x86_64-pc-windows-msvc\r\nrelease: 1.99.1\r\nLLVM version: 23.1.1",
+  "profile": "release",
+  "features": "default",
+  "verification": "scripts/verify.ps1 -Mode Full",
+  "desktopUiVerified": false,
+  "liveAudioOrModelTestsExecuted": false
+}

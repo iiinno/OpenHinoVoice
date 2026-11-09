@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "runId": "perf-20261109T173417-08cba72c",
+  "mode": "Resident",
+  "status": "compiled_only",
+  "startedAt": "2026-11-09T17:34:17.2906115Z",
+  "finishedAt": "2026-11-09T17:34:17.4718776Z",
+  "compile": "passed",
+  "measurement": "not_run",
+  "harnessSha256": "003DAD00EC1717F2084C1CE0F31B3F259B0C791D7C9366E2ECAD9988F709A3E0",
+  "repetitions": 3,
+  "durationSeconds": 30,
+  "intervalMs": 1000,
+  "warmupMs": 2000,
+  "measurementScope": "owned process on a separate inactive desktop; repeated samples after observed HWND responsiveness",
+  "desktopSwitched": false,
+  "audioRequested": false,
+  "microphoneRequested": false,
+  "limitations": [
+    "測定完了は性能予算の合格を意味しない",
+    "別desktopでトレイが使えず常駐が起動しない場合は失敗として記録する",
+    "SettingsのUIAなし・ありは同じソース/ビルド条件のexeを明示する。ソース同一性はharnessから推定しない",
+    "CPU背景負荷・キャッシュ・電源状態は操作しない",
+    "実マイク・HUD稼働・入力遅延・貼付・実画面品質は測定しない"
+  ]
+}

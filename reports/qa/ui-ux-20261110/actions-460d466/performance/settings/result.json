@@ -1,0 +1,3127 @@
+{
+  "schemaVersion": 1,
+  "runId": "perf-20261109T174111-df359cba",
+  "mode": "Settings",
+  "status": "measured",
+  "startedAt": "2026-11-09T17:41:11.7446030Z",
+  "finishedAt": "2026-11-09T17:44:59.0538788Z",
+  "compile": "passed",
+  "measurement": "measured",
+  "harnessSha256": "003DAD00EC1717F2084C1CE0F31B3F259B0C791D7C9366E2ECAD9988F709A3E0",
+  "repetitions": 3,
+  "durationSeconds": 30,
+  "intervalMs": 1000,
+  "warmupMs": 2000,
+  "measurementScope": "owned process on a separate inactive desktop; repeated samples after observed HWND responsiveness",
+  "desktopSwitched": false,
+  "audioRequested": false,
+  "microphoneRequested": false,
+  "limitations": [
+    "測定完了は性能予算の合格を意味しない",
+    "別desktopでトレイが使えず常駐が起動しない場合は失敗として記録する",
+    "SettingsのUIAなし・ありは同じソース/ビルド条件のexeを明示する。ソース同一性はharnessから推定しない",
+    "CPU背景負荷・キャッシュ・電源状態は操作しない",
+    "実マイク・HUD稼働・入力遅延・貼付・実画面品質は測定しない"
+  ],
+  "artifacts": [
+    {
+      "label": "baseline",
+      "path": "D:\\a\\OpenHinoVoice\\OpenHinoVoice\\target\\qa\\perf\\opengl\\baseline.exe",
+      "sha256": "18731FF71C8F6F4F5A8246A5D2DF2C484C3CE32424AFBA9349DEC6E566CF71DA",
+      "bytes": 8165888,
+      "revision": "460d4667f4101966cd1161d2d872354d45fb8131",
+      "features": "--no-default-features",
+      "uiaExpected": "Absent",
+      "hudStyle": "standard"
+    },
+    {
+      "label": "candidate",
+      "path": "D:\\a\\OpenHinoVoice\\OpenHinoVoice\\target\\qa\\perf\\opengl\\candidate.exe",
+      "sha256": "6EDAC60E342BDC2FAFEC853721ED0F8E6C7670687A69A17E5C13507E1CD97100",
+      "bytes": 8438784,
+      "revision": "460d4667f4101966cd1161d2d872354d45fb8131",
+      "features": "default (accessibility)",
+      "uiaExpected": "Present",
+      "hudStyle": "standard"
+    }
+  ],
+  "controller-result": {
+    "status": "measured",
+    "startedAt": "2026-11-09T17:41:12.8996966Z",
+    "inputDesktopBefore": "Default",
+    "desktopSwitched": false,
+    "workerExitCode": 0,
+    "desktop": "OHV_perf-20261109T174111-df359cba",
+    "jobName": "Local\\OpenHinoVoice.Perf.perf-20261109T174111-df359cba",
+    "windowStation": "WinSta0",
+    "workerPid": 4556,
+    "finalJobState": {
+      "observedAt": "2026-11-09T17:44:58.9480155Z",
+      "error": null,
+      "accountingActiveProcesses": 0,
+      "assignedProcesses": 0,
+      "accountingStructureBytes": 48,
+      "processes": []
+    },
+    "residualChildProcesses": 0,
+    "jobClosed": true,
+    "desktopClosed": true,
+    "inputDesktopAfter": "Default",
+    "finishedAt": "2026-11-09T17:44:58.9480155Z"
+  },
+  "worker-result": {
+    "schemaVersion": 1,
+    "status": "measured",
+    "startedAt": "2026-11-09T17:41:12.9816701Z",
+    "mode": "Settings",
+    "cases": [
+      {
+        "artifact": "baseline",
+        "round": 1,
+        "order": 1,
+        "status": "measured",
+        "pid": 2836,
+        "gracefulExit": true,
+        "windowResponsive": true,
+        "uiMode": "Settings",
+        "requestedPage": "display",
+        "hudStyle": "standard",
+        "startupToResponsiveWindowMs": 558.7301,
+        "dpi": 96,
+        "clientPixels": [
+          720,
+          520
+        ],
+        "warmup": {
+          "sampleCount": 3,
+          "elapsedMs": 2007.6016000000002,
+          "cpuMs": 0,
+          "peakPrivateBytes": 75624448,
+          "peakWorkingSetBytes": 94707712,
+          "startGdi": 12,
+          "endGdi": 12,
+          "peakGdi": 12,
+          "startUser": 31,
+          "endUser": 31,
+          "peakUser": 31
+        },
+        "beforeSamples": [
+          {
+            "elapsedMs": 0.0056,
+            "privateBytes": 75624448,
+            "workingSetBytes": 94707712,
+            "cpuMs": 390.625,
+            "gdi": 12,
+            "user": 31,
+            "handles": 255
+          },
+          {
+            "elapsedMs": 1002.0402,
+            "privateBytes": 75624448,
+            "workingSetBytes": 94707712,
+            "cpuMs": 390.625,
+            "gdi": 12,
+            "user": 31,
+            "handles": 255
+          },
+          {
+            "elapsedMs": 2005.1318,
+            "privateBytes": 75624448,
+            "workingSetBytes": 94707712,
+            "cpuMs": 390.625,
+            "gdi": 12,
+            "user": 31,
+            "handles": 255
+          },
+          {
+            "elapsedMs": 3006.3003000000003,
+            "privateBytes": 75624448,
+            "workingSetBytes": 94707712,
+            "cpuMs": 390.625,
+            "gdi": 12,
+            "user": 31,
+            "handles": 255
+          },
+          {
+            "elapsedMs": 4007.0288,
+            "privateBytes": 75624448,
+            "workingSetBytes": 94707712,
+            "cpuMs": 390.625,
+            "gdi": 12,
+            "user": 31,
+            "handles": 255
+          },
+          {
+            "elapsedMs": 5008.9762,
+            "privateBytes": 75624448,
+            "workingSetBytes": 94707712,
+            "cpuMs": 390.625,
+            "gdi": 12,
+            "user": 31,
+            "handles": 255
+          },
+          {
+            "elapsedMs": 6009.8265,
+            "privateBytes": 75624448,
+            "workingSetBytes": 94707712,
+            "cpuMs": 390.625,
+            "gdi": 12,
+            "user": 31,
+            "handles": 255
+          },
+          {
+            "elapsedMs": 7011.384800000001,
+            "privateBytes": 75624448,
+            "workingSetBytes": 94707712,
+            "cpuMs": 390.625,
+            "gdi": 12,
+            "user": 31,
+            "handles": 255
+          },
+          {
+            "elapsedMs": 8013.057400000001,
+            "privateBytes": 75624448,
+            "workingSetBytes": 94707712,
+            "cpuMs": 390.625,
+            "gdi": 12,
+            "user": 31,
+            "handles": 255
+          },
+          {
+            "elapsedMs": 9015.744200000001,
+            "privateBytes": 75624448,
+            "workingSetBytes": 94707712,
+            "cpuMs": 390.625,
+            "gdi": 12,
+            "user": 31,
+            "handles": 255
+          },
+          {
+            "elapsedMs": 10016.2922,
+            "privateBytes": 75624448,
+            "workingSetBytes": 94707712,
+            "cpuMs": 390.625,
+            "gdi": 12,
+            "user": 31,
+            "handles": 255
+          },
+          {
+            "elapsedMs": 11026.456100000001,
+            "privateBytes": 75624448,
+            "workingSetBytes": 94707712,
+            "cpuMs": 390.625,
+            "gdi": 12,
+            "user": 31,
+            "handles": 255
+          },
+          {
+            "elapsedMs": 12027.557700000001,
+            "privateBytes": 75624448,
+            "workingSetBytes": 94707712,
+            "cpuMs": 390.625,
+            "gdi": 12,
+            "user": 31,
+            "handles": 255
+          },
+          {
+            "elapsedMs": 13028.552300000001,
+            "privateBytes": 75624448,
+            "workingSetBytes": 94707712,
+            "cpuMs": 390.625,
+            "gdi": 12,
+            "user": 31,
+            "handles": 255
+          },
+          {
+            "elapsedMs": 14029.498800000001,
+            "privateBytes": 75624448,
+            "workingSetBytes": 94707712,
+            "cpuMs": 390.625,
+            "gdi": 12,
+            "user": 31,
+            "handles": 255
+          },
+          {
+            "elapsedMs": 15001.1599,
+            "privateBytes": 75624448,
+            "workingSetBytes": 94707712,
+            "cpuMs": 390.625,
+            "gdi": 12,
+            "user": 31,
+            "handles": 255
+          }
+        ],
+        "beforeUia": {
+          "sampleCount": 16,
+          "elapsedMs": 15001.1599,
+          "cpuMs": 0,
+          "peakPrivateBytes": 75624448,
+          "peakWorkingSetBytes": 94707712,
+          "startGdi": 12,
+          "endGdi": 12,
+          "peakGdi": 12,
+          "startUser": 31,
+          "endUser": 31,
+          "peakUser": 31
+        },
+        "uia": {
+          "status": "expected_absence",
+          "expected": "Absent",
+          "namedDisplayControl": false,
+          "nodes": 7,
+          "attempts": 43,
+          "successfulReads": 43,
+          "requiredObservationMs": 5000,
+          "fullObservationWindow": true,
+          "durationMs": 5000.6108,
+          "error": null
+        },
+        "afterSamples": [
+          {
+            "elapsedMs": 0.0035,
+            "privateBytes": 75624448,
+            "workingSetBytes": 94707712,
+            "cpuMs": 406.25,
+            "gdi": 12,
+            "user": 31,
+            "handles": 255
+          },
+          {
+            "elapsedMs": 1003.5123000000001,
+            "privateBytes": 75624448,
+            "workingSetBytes": 94707712,
+            "cpuMs": 406.25,
+            "gdi": 12,
+            "user": 31,
+            "handles": 255
+          },
+          {
+            "elapsedMs": 2005.2063,
+            "privateBytes": 75624448,
+            "workingSetBytes": 94707712,
+            "cpuMs": 406.25,
+            "gdi": 12,
+            "user": 31,
+            "handles": 255
+          },
+          {
+            "elapsedMs": 3014.2378000000003,
+            "privateBytes": 75624448,
+            "workingSetBytes": 94707712,
+            "cpuMs": 406.25,
+            "gdi": 12,
+            "user": 31,
+            "handles": 255
+          },
+          {
+            "elapsedMs": 4015.4767,
+            "privateBytes": 75624448,
+            "workingSetBytes": 94707712,
+            "cpuMs": 406.25,
+            "gdi": 12,
+            "user": 31,
+            "handles": 255
+          },
+          {
+            "elapsedMs": 5016.493100000001,
+            "privateBytes": 75624448,
+            "workingSetBytes": 94707712,
+            "cpuMs": 406.25,
+            "gdi": 12,
+            "user": 31,
+            "handles": 255
+          },
+          {
+            "elapsedMs": 6018.362,
+            "privateBytes": 75624448,
+            "workingSetBytes": 94707712,
+            "cpuMs": 406.25,
+            "gdi": 12,
+            "user": 31,
+            "handles": 255
+          },
+          {
+            "elapsedMs": 7023.247600000001,
+            "privateBytes": 75624448,
+            "workingSetBytes": 94707712,
+            "cpuMs": 406.25,
+            "gdi": 12,
+            "user": 31,
+            "handles": 255
+          },
+          {
+            "elapsedMs": 8034.7738,
+            "privateBytes": 75624448,
+            "workingSetBytes": 94707712,
+            "cpuMs": 406.25,
+            "gdi": 12,
+            "user": 31,
+            "handles": 255
+          },
+          {
+            "elapsedMs": 9036.2844,
+            "privateBytes": 75624448,
+            "workingSetBytes": 94707712,
+            "cpuMs": 406.25,
+            "gdi": 12,
+            "user": 31,
+            "handles": 255
+          },
+          {
+            "elapsedMs": 10047.7311,
+            "privateBytes": 75624448,
+            "workingSetBytes": 94707712,
+            "cpuMs": 406.25,
+            "gdi": 12,
+            "user": 31,
+            "handles": 255
+          },
+          {
+            "elapsedMs": 11047.9578,
+            "privateBytes": 75624448,
+            "workingSetBytes": 94707712,
+            "cpuMs": 406.25,
+            "gdi": 12,
+            "user": 31,
+            "handles": 255
+          },
+          {
+            "elapsedMs": 12048.7116,
+            "privateBytes": 75624448,
+            "workingSetBytes": 94707712,
+            "cpuMs": 406.25,
+            "gdi": 12,
+            "user": 31,
+            "handles": 255
+          },
+          {
+            "elapsedMs": 13051.5943,
+            "privateBytes": 75624448,
+            "workingSetBytes": 94707712,
+            "cpuMs": 406.25,
+            "gdi": 12,
+            "user": 31,
+            "handles": 255
+          },
+          {
+            "elapsedMs": 14054.3446,
+            "privateBytes": 75624448,
+            "workingSetBytes": 94707712,
+            "cpuMs": 406.25,
+            "gdi": 12,
+            "user": 31,
+            "handles": 255
+          },
+          {
+            "elapsedMs": 15001.2944,
+            "privateBytes": 75624448,
+            "workingSetBytes": 94707712,
+            "cpuMs": 406.25,
+            "gdi": 12,
+            "user": 31,
+            "handles": 255
+          }
+        ],
+        "afterUia": {
+          "sampleCount": 16,
+          "elapsedMs": 15001.2944,
+          "cpuMs": 0,
+          "peakPrivateBytes": 75624448,
+          "peakWorkingSetBytes": 94707712,
+          "startGdi": 12,
+          "endGdi": 12,
+          "peakGdi": 12,
+          "startUser": 31,
+          "endUser": 31,
+          "peakUser": 31
+        },
+        "closeMs": 23.7251,
+        "exitCode": 0,
+        "finishedAt": "2026-11-09T17:41:50.7910482Z",
+        "caseStartBoundary": {
+          "status": "confirmed",
+          "first": {
+            "observedAt": "2026-11-09T17:41:13.0028959Z",
+            "error": null,
+            "accountingActiveProcesses": 2,
+            "assignedProcesses": 2,
+            "accountingStructureBytes": 48,
+            "processes": [
+              {
+                "pid": 4556,
+                "imagePath": "D:\\a\\OpenHinoVoice\\OpenHinoVoice\\target\\qa\\perf\\settings\\perf-harness.exe",
+                "error": null,
+                "creationTime": 134387196729077644,
+                "ownedJob": true
+              },
+              {
+                "pid": 4628,
+                "imagePath": "C:\\Windows\\System32\\conhost.exe",
+                "error": null,
+                "creationTime": 134387196729117095,
+                "ownedJob": true
+              }
+            ]
+          },
+          "last": {
+            "observedAt": "2026-11-09T17:41:13.0028959Z",
+            "error": null,
+            "accountingActiveProcesses": 2,
+            "assignedProcesses": 2,
+            "accountingStructureBytes": 48,
+            "processes": [
+              {
+                "pid": 4556,
+                "imagePath": "D:\\a\\OpenHinoVoice\\OpenHinoVoice\\target\\qa\\perf\\settings\\perf-harness.exe",
+                "error": null,
+                "creationTime": 134387196729077644,
+                "ownedJob": true
+              },
+              {
+                "pid": 4628,
+                "imagePath": "C:\\Windows\\System32\\conhost.exe",
+                "error": null,
+                "creationTime": 134387196729117095,
+                "ownedJob": true
+              }
+            ]
+          },
+          "attempts": 1,
+          "deadlineMs": 5000,
+          "durationMs": 0.9937
+        },
+        "caseCleanup": {
+          "status": "confirmed",
+          "first": {
+            "observedAt": "2026-11-09T17:41:50.7918384Z",
+            "error": null,
+            "accountingActiveProcesses": 2,
+            "assignedProcesses": 2,
+            "accountingStructureBytes": 48,
+            "processes": [
+              {
+                "pid": 4556,
+                "imagePath": "D:\\a\\OpenHinoVoice\\OpenHinoVoice\\target\\qa\\perf\\settings\\perf-harness.exe",
+                "error": null,
+                "creationTime": 134387196729077644,
+                "ownedJob": true
+              },
+              {
+                "pid": 4628,
+                "imagePath": "C:\\Windows\\System32\\conhost.exe",
+                "error": null,
+                "creationTime": 134387196729117095,
+                "ownedJob": true
+              }
+            ]
+          },
+          "last": {
+            "observedAt": "2026-11-09T17:41:50.7918384Z",
+            "error": null,
+            "accountingActiveProcesses": 2,
+            "assignedProcesses": 2,
+            "accountingStructureBytes": 48,
+            "processes": [
+              {
+                "pid": 4556,
+                "imagePath": "D:\\a\\OpenHinoVoice\\OpenHinoVoice\\target\\qa\\perf\\settings\\perf-harness.exe",
+                "error": null,
+                "creationTime": 134387196729077644,
+                "ownedJob": true
+              },
+              {
+                "pid": 4628,
+                "imagePath": "C:\\Windows\\System32\\conhost.exe",
+                "error": null,
+                "creationTime": 134387196729117095,
+                "ownedJob": true
+              }
+            ]
+          },
+          "attempts": 1,
+          "deadlineMs": 5000,
+          "durationMs": 0.2538
+        }
+      },
+      {
+        "artifact": "candidate",
+        "round": 1,
+        "order": 2,
+        "status": "measured",
+        "pid": 5200,
+        "gracefulExit": true,
+        "windowResponsive": true,
+        "uiMode": "Settings",
+        "requestedPage": "display",
+        "hudStyle": "standard",
+        "startupToResponsiveWindowMs": 772.5286,
+        "dpi": 96,
+        "clientPixels": [
+          720,
+          520
+        ],
+        "warmup": {
+          "sampleCount": 3,
+          "elapsedMs": 2002.0698,
+          "cpuMs": 78.125,
+          "peakPrivateBytes": 73621504,
+          "peakWorkingSetBytes": 96342016,
+          "startGdi": 12,
+          "endGdi": 12,
+          "peakGdi": 12,
+          "startUser": 35,
+          "endUser": 35,
+          "peakUser": 35
+        },
+        "beforeSamples": [
+          {
+            "elapsedMs": 0.0055000000000000005,
+            "privateBytes": 73621504,
+            "workingSetBytes": 96342016,
+            "cpuMs": 453.125,
+            "gdi": 12,
+            "user": 35,
+            "handles": 284
+          },
+          {
+            "elapsedMs": 1001.2835,
+            "privateBytes": 73621504,
+            "workingSetBytes": 96342016,
+            "cpuMs": 453.125,
+            "gdi": 12,
+            "user": 35,
+            "handles": 284
+          },
+          {
+            "elapsedMs": 2003.8537000000001,
+            "privateBytes": 73621504,
+            "workingSetBytes": 96342016,
+            "cpuMs": 453.125,
+            "gdi": 12,
+            "user": 35,
+            "handles": 284
+          },
+          {
+            "elapsedMs": 3005.4958,
+            "privateBytes": 73621504,
+            "workingSetBytes": 96342016,
+            "cpuMs": 453.125,
+            "gdi": 12,
+            "user": 35,
+            "handles": 284
+          },
+          {
+            "elapsedMs": 4008.0808,
+            "privateBytes": 73621504,
+            "workingSetBytes": 96342016,
+            "cpuMs": 453.125,
+            "gdi": 12,
+            "user": 35,
+            "handles": 284
+          },
+          {
+            "elapsedMs": 5010.3819,
+            "privateBytes": 73621504,
+            "workingSetBytes": 96342016,
+            "cpuMs": 453.125,
+            "gdi": 12,
+            "user": 35,
+            "handles": 284
+          },
+          {
+            "elapsedMs": 6011.08,
+            "privateBytes": 73621504,
+            "workingSetBytes": 96342016,
+            "cpuMs": 453.125,
+            "gdi": 12,
+            "user": 35,
+            "handles": 284
+          },
+          {
+            "elapsedMs": 7011.223400000001,
+            "privateBytes": 73621504,
+            "workingSetBytes": 96342016,
+            "cpuMs": 453.125,
+            "gdi": 12,
+            "user": 35,
+            "handles": 284
+          },
+          {
+            "elapsedMs": 8012.8811000000005,
+            "privateBytes": 73621504,
+            "workingSetBytes": 96342016,
+            "cpuMs": 453.125,
+            "gdi": 12,
+            "user": 35,
+            "handles": 284
+          },
+          {
+            "elapsedMs": 9015.2345,
+            "privateBytes": 73621504,
+            "workingSetBytes": 96342016,
+            "cpuMs": 453.125,
+            "gdi": 12,
+            "user": 35,
+            "handles": 284
+          },
+          {
+            "elapsedMs": 10017.9909,
+            "privateBytes": 73621504,
+            "workingSetBytes": 96342016,
+            "cpuMs": 453.125,
+            "gdi": 12,
+            "user": 35,
+            "handles": 284
+          },
+          {
+            "elapsedMs": 11030.4877,
+            "privateBytes": 73621504,
+            "workingSetBytes": 96342016,
+            "cpuMs": 453.125,
+            "gdi": 12,
+            "user": 35,
+            "handles": 284
+          },
+          {
+            "elapsedMs": 12031.1263,
+            "privateBytes": 73621504,
+            "workingSetBytes": 96342016,
+            "cpuMs": 453.125,
+            "gdi": 12,
+            "user": 35,
+            "handles": 284
+          },
+          {
+            "elapsedMs": 13032.0714,
+            "privateBytes": 73621504,
+            "workingSetBytes": 96342016,
+            "cpuMs": 453.125,
+            "gdi": 12,
+            "user": 35,
+            "handles": 284
+          },
+          {
+            "elapsedMs": 14036.2957,
+            "privateBytes": 73621504,
+            "workingSetBytes": 96342016,
+            "cpuMs": 453.125,
+            "gdi": 12,
+            "user": 35,
+            "handles": 284
+          },
+          {
+            "elapsedMs": 15001.8503,
+            "privateBytes": 73621504,
+            "workingSetBytes": 96342016,
+            "cpuMs": 453.125,
+            "gdi": 12,
+            "user": 35,
+            "handles": 284
+          }
+        ],
+        "beforeUia": {
+          "sampleCount": 16,
+          "elapsedMs": 15001.8503,
+          "cpuMs": 0,
+          "peakPrivateBytes": 73621504,
+          "peakWorkingSetBytes": 96342016,
+          "startGdi": 12,
+          "endGdi": 12,
+          "peakGdi": 12,
+          "startUser": 35,
+          "endUser": 35,
+          "peakUser": 35
+        },
+        "uia": {
+          "status": "observed",
+          "expected": "Present",
+          "namedDisplayControl": true,
+          "nodes": 54,
+          "attempts": 42,
+          "successfulReads": 42,
+          "requiredObservationMs": 5000,
+          "fullObservationWindow": true,
+          "durationMs": 5014.4776,
+          "error": null
+        },
+        "afterSamples": [
+          {
+            "elapsedMs": 0.0037,
+            "privateBytes": 74059776,
+            "workingSetBytes": 97804288,
+            "cpuMs": 843.75,
+            "gdi": 12,
+            "user": 37,
+            "handles": 300
+          },
+          {
+            "elapsedMs": 1011.4589000000001,
+            "privateBytes": 74059776,
+            "workingSetBytes": 97804288,
+            "cpuMs": 843.75,
+            "gdi": 12,
+            "user": 37,
+            "handles": 300
+          },
+          {
+            "elapsedMs": 2013.6916,
+            "privateBytes": 74059776,
+            "workingSetBytes": 97804288,
+            "cpuMs": 843.75,
+            "gdi": 12,
+            "user": 37,
+            "handles": 300
+          },
+          {
+            "elapsedMs": 3013.8431,
+            "privateBytes": 74059776,
+            "workingSetBytes": 97804288,
+            "cpuMs": 843.75,
+            "gdi": 12,
+            "user": 37,
+            "handles": 300
+          },
+          {
+            "elapsedMs": 4014.8844000000004,
+            "privateBytes": 74059776,
+            "workingSetBytes": 97804288,
+            "cpuMs": 843.75,
+            "gdi": 12,
+            "user": 37,
+            "handles": 300
+          },
+          {
+            "elapsedMs": 5015.004,
+            "privateBytes": 74059776,
+            "workingSetBytes": 97804288,
+            "cpuMs": 843.75,
+            "gdi": 12,
+            "user": 37,
+            "handles": 300
+          },
+          {
+            "elapsedMs": 6016.4537,
+            "privateBytes": 74059776,
+            "workingSetBytes": 97804288,
+            "cpuMs": 843.75,
+            "gdi": 12,
+            "user": 37,
+            "handles": 300
+          },
+          {
+            "elapsedMs": 7018.354200000001,
+            "privateBytes": 74059776,
+            "workingSetBytes": 97804288,
+            "cpuMs": 843.75,
+            "gdi": 12,
+            "user": 37,
+            "handles": 300
+          },
+          {
+            "elapsedMs": 8021.0675,
+            "privateBytes": 74059776,
+            "workingSetBytes": 97804288,
+            "cpuMs": 843.75,
+            "gdi": 12,
+            "user": 37,
+            "handles": 300
+          },
+          {
+            "elapsedMs": 9021.9656,
+            "privateBytes": 74059776,
+            "workingSetBytes": 97804288,
+            "cpuMs": 843.75,
+            "gdi": 12,
+            "user": 37,
+            "handles": 300
+          },
+          {
+            "elapsedMs": 10023.3202,
+            "privateBytes": 74059776,
+            "workingSetBytes": 97804288,
+            "cpuMs": 843.75,
+            "gdi": 12,
+            "user": 37,
+            "handles": 300
+          },
+          {
+            "elapsedMs": 11023.2857,
+            "privateBytes": 74059776,
+            "workingSetBytes": 97804288,
+            "cpuMs": 843.75,
+            "gdi": 12,
+            "user": 37,
+            "handles": 300
+          },
+          {
+            "elapsedMs": 12023.5445,
+            "privateBytes": 74059776,
+            "workingSetBytes": 97804288,
+            "cpuMs": 843.75,
+            "gdi": 12,
+            "user": 37,
+            "handles": 300
+          },
+          {
+            "elapsedMs": 13024.413900000001,
+            "privateBytes": 74059776,
+            "workingSetBytes": 97804288,
+            "cpuMs": 843.75,
+            "gdi": 12,
+            "user": 37,
+            "handles": 300
+          },
+          {
+            "elapsedMs": 14033.445600000001,
+            "privateBytes": 74059776,
+            "workingSetBytes": 97759232,
+            "cpuMs": 843.75,
+            "gdi": 12,
+            "user": 37,
+            "handles": 300
+          },
+          {
+            "elapsedMs": 14999.9851,
+            "privateBytes": 74059776,
+            "workingSetBytes": 97759232,
+            "cpuMs": 843.75,
+            "gdi": 12,
+            "user": 37,
+            "handles": 300
+          }
+        ],
+        "afterUia": {
+          "sampleCount": 16,
+          "elapsedMs": 14999.9851,
+          "cpuMs": 0,
+          "peakPrivateBytes": 74059776,
+          "peakWorkingSetBytes": 97804288,
+          "startGdi": 12,
+          "endGdi": 12,
+          "peakGdi": 12,
+          "startUser": 37,
+          "endUser": 37,
+          "peakUser": 37
+        },
+        "closeMs": 21.322100000000002,
+        "exitCode": 0,
+        "finishedAt": "2026-11-09T17:42:28.8004233Z",
+        "caseStartBoundary": {
+          "status": "confirmed",
+          "first": {
+            "observedAt": "2026-11-09T17:41:50.9772221Z",
+            "error": null,
+            "accountingActiveProcesses": 2,
+            "assignedProcesses": 2,
+            "accountingStructureBytes": 48,
+            "processes": [
+              {
+                "pid": 4556,
+                "imagePath": "D:\\a\\OpenHinoVoice\\OpenHinoVoice\\target\\qa\\perf\\settings\\perf-harness.exe",
+                "error": null,
+                "creationTime": 134387196729077644,
+                "ownedJob": true
+              },
+              {
+                "pid": 4628,
+                "imagePath": "C:\\Windows\\System32\\conhost.exe",
+                "error": null,
+                "creationTime": 134387196729117095,
+                "ownedJob": true
+              }
+            ]
+          },
+          "last": {
+            "observedAt": "2026-11-09T17:41:50.9772221Z",
+            "error": null,
+            "accountingActiveProcesses": 2,
+            "assignedProcesses": 2,
+            "accountingStructureBytes": 48,
+            "processes": [
+              {
+                "pid": 4556,
+                "imagePath": "D:\\a\\OpenHinoVoice\\OpenHinoVoice\\target\\qa\\perf\\settings\\perf-harness.exe",
+                "error": null,
+                "creationTime": 134387196729077644,
+                "ownedJob": true
+              },
+              {
+                "pid": 4628,
+                "imagePath": "C:\\Windows\\System32\\conhost.exe",
+                "error": null,
+                "creationTime": 134387196729117095,
+                "ownedJob": true
+              }
+            ]
+          },
+          "attempts": 1,
+          "deadlineMs": 5000,
+          "durationMs": 0.1796
+        },
+        "caseCleanup": {
+          "status": "confirmed",
+          "first": {
+            "observedAt": "2026-11-09T17:42:28.8014434Z",
+            "error": null,
+            "accountingActiveProcesses": 2,
+            "assignedProcesses": 2,
+            "accountingStructureBytes": 48,
+            "processes": [
+              {
+                "pid": 4556,
+                "imagePath": "D:\\a\\OpenHinoVoice\\OpenHinoVoice\\target\\qa\\perf\\settings\\perf-harness.exe",
+                "error": null,
+                "creationTime": 134387196729077644,
+                "ownedJob": true
+              },
+              {
+                "pid": 4628,
+                "imagePath": "C:\\Windows\\System32\\conhost.exe",
+                "error": null,
+                "creationTime": 134387196729117095,
+                "ownedJob": true
+              }
+            ]
+          },
+          "last": {
+            "observedAt": "2026-11-09T17:42:28.8014434Z",
+            "error": null,
+            "accountingActiveProcesses": 2,
+            "assignedProcesses": 2,
+            "accountingStructureBytes": 48,
+            "processes": [
+              {
+                "pid": 4556,
+                "imagePath": "D:\\a\\OpenHinoVoice\\OpenHinoVoice\\target\\qa\\perf\\settings\\perf-harness.exe",
+                "error": null,
+                "creationTime": 134387196729077644,
+                "ownedJob": true
+              },
+              {
+                "pid": 4628,
+                "imagePath": "C:\\Windows\\System32\\conhost.exe",
+                "error": null,
+                "creationTime": 134387196729117095,
+                "ownedJob": true
+              }
+            ]
+          },
+          "attempts": 1,
+          "deadlineMs": 5000,
+          "durationMs": 0.16770000000000002
+        }
+      },
+      {
+        "artifact": "candidate",
+        "round": 2,
+        "order": 1,
+        "status": "measured",
+        "pid": 1328,
+        "gracefulExit": true,
+        "windowResponsive": true,
+        "uiMode": "Settings",
+        "requestedPage": "display",
+        "hudStyle": "standard",
+        "startupToResponsiveWindowMs": 382.40160000000003,
+        "dpi": 96,
+        "clientPixels": [
+          720,
+          520
+        ],
+        "warmup": {
+          "sampleCount": 3,
+          "elapsedMs": 1998.8998000000001,
+          "cpuMs": 0,
+          "peakPrivateBytes": 74698752,
+          "peakWorkingSetBytes": 95920128,
+          "startGdi": 12,
+          "endGdi": 12,
+          "peakGdi": 12,
+          "startUser": 35,
+          "endUser": 35,
+          "peakUser": 35
+        },
+        "beforeSamples": [
+          {
+            "elapsedMs": 0.0039000000000000003,
+            "privateBytes": 74698752,
+            "workingSetBytes": 95920128,
+            "cpuMs": 343.75,
+            "gdi": 12,
+            "user": 35,
+            "handles": 278
+          },
+          {
+            "elapsedMs": 1001.4318000000001,
+            "privateBytes": 74698752,
+            "workingSetBytes": 95920128,
+            "cpuMs": 343.75,
+            "gdi": 12,
+            "user": 35,
+            "handles": 278
+          },
+          {
+            "elapsedMs": 2003.4114000000002,
+            "privateBytes": 74698752,
+            "workingSetBytes": 95920128,
+            "cpuMs": 343.75,
+            "gdi": 12,
+            "user": 35,
+            "handles": 278
+          },
+          {
+            "elapsedMs": 3010.0119,
+            "privateBytes": 74698752,
+            "workingSetBytes": 95920128,
+            "cpuMs": 343.75,
+            "gdi": 12,
+            "user": 35,
+            "handles": 278
+          },
+          {
+            "elapsedMs": 4022.5913,
+            "privateBytes": 74698752,
+            "workingSetBytes": 95920128,
+            "cpuMs": 343.75,
+            "gdi": 12,
+            "user": 35,
+            "handles": 278
+          },
+          {
+            "elapsedMs": 5025.022,
+            "privateBytes": 74698752,
+            "workingSetBytes": 95920128,
+            "cpuMs": 343.75,
+            "gdi": 12,
+            "user": 35,
+            "handles": 278
+          },
+          {
+            "elapsedMs": 6026.5998,
+            "privateBytes": 74698752,
+            "workingSetBytes": 95920128,
+            "cpuMs": 343.75,
+            "gdi": 12,
+            "user": 35,
+            "handles": 278
+          },
+          {
+            "elapsedMs": 7027.6984,
+            "privateBytes": 74698752,
+            "workingSetBytes": 95920128,
+            "cpuMs": 343.75,
+            "gdi": 12,
+            "user": 35,
+            "handles": 278
+          },
+          {
+            "elapsedMs": 8028.52,
+            "privateBytes": 74698752,
+            "workingSetBytes": 95920128,
+            "cpuMs": 343.75,
+            "gdi": 12,
+            "user": 35,
+            "handles": 278
+          },
+          {
+            "elapsedMs": 9030.007,
+            "privateBytes": 74698752,
+            "workingSetBytes": 95920128,
+            "cpuMs": 343.75,
+            "gdi": 12,
+            "user": 35,
+            "handles": 278
+          },
+          {
+            "elapsedMs": 10035.661900000001,
+            "privateBytes": 74698752,
+            "workingSetBytes": 95911936,
+            "cpuMs": 343.75,
+            "gdi": 12,
+            "user": 35,
+            "handles": 278
+          },
+          {
+            "elapsedMs": 11036.2415,
+            "privateBytes": 74698752,
+            "workingSetBytes": 95911936,
+            "cpuMs": 343.75,
+            "gdi": 12,
+            "user": 35,
+            "handles": 278
+          },
+          {
+            "elapsedMs": 12037.4925,
+            "privateBytes": 74698752,
+            "workingSetBytes": 95911936,
+            "cpuMs": 343.75,
+            "gdi": 12,
+            "user": 35,
+            "handles": 278
+          },
+          {
+            "elapsedMs": 13042.677000000001,
+            "privateBytes": 74698752,
+            "workingSetBytes": 95911936,
+            "cpuMs": 343.75,
+            "gdi": 12,
+            "user": 35,
+            "handles": 278
+          },
+          {
+            "elapsedMs": 14043.298200000001,
+            "privateBytes": 74698752,
+            "workingSetBytes": 95911936,
+            "cpuMs": 343.75,
+            "gdi": 12,
+            "user": 35,
+            "handles": 278
+          },
+          {
+            "elapsedMs": 15000.0154,
+            "privateBytes": 74698752,
+            "workingSetBytes": 95911936,
+            "cpuMs": 343.75,
+            "gdi": 12,
+            "user": 35,
+            "handles": 278
+          }
+        ],
+        "beforeUia": {
+          "sampleCount": 16,
+          "elapsedMs": 15000.0154,
+          "cpuMs": 0,
+          "peakPrivateBytes": 74698752,
+          "peakWorkingSetBytes": 95920128,
+          "startGdi": 12,
+          "endGdi": 12,
+          "peakGdi": 12,
+          "startUser": 35,
+          "endUser": 35,
+          "peakUser": 35
+        },
+        "uia": {
+          "status": "observed",
+          "expected": "Present",
+          "namedDisplayControl": true,
+          "nodes": 54,
+          "attempts": 42,
+          "successfulReads": 42,
+          "requiredObservationMs": 5000,
+          "fullObservationWindow": true,
+          "durationMs": 5023.2644,
+          "error": null
+        },
+        "afterSamples": [
+          {
+            "elapsedMs": 0.0035,
+            "privateBytes": 74756096,
+            "workingSetBytes": 97300480,
+            "cpuMs": 734.375,
+            "gdi": 12,
+            "user": 37,
+            "handles": 294
+          },
+          {
+            "elapsedMs": 1001.3222000000001,
+            "privateBytes": 74756096,
+            "workingSetBytes": 97300480,
+            "cpuMs": 734.375,
+            "gdi": 12,
+            "user": 37,
+            "handles": 294
+          },
+          {
+            "elapsedMs": 2001.8300000000002,
+            "privateBytes": 74756096,
+            "workingSetBytes": 97300480,
+            "cpuMs": 734.375,
+            "gdi": 12,
+            "user": 37,
+            "handles": 294
+          },
+          {
+            "elapsedMs": 3003.3031,
+            "privateBytes": 74756096,
+            "workingSetBytes": 97300480,
+            "cpuMs": 734.375,
+            "gdi": 12,
+            "user": 37,
+            "handles": 294
+          },
+          {
+            "elapsedMs": 4004.6437,
+            "privateBytes": 74756096,
+            "workingSetBytes": 97300480,
+            "cpuMs": 734.375,
+            "gdi": 12,
+            "user": 37,
+            "handles": 294
+          },
+          {
+            "elapsedMs": 5006.3129,
+            "privateBytes": 74756096,
+            "workingSetBytes": 97300480,
+            "cpuMs": 734.375,
+            "gdi": 12,
+            "user": 37,
+            "handles": 294
+          },
+          {
+            "elapsedMs": 6007.5924,
+            "privateBytes": 74756096,
+            "workingSetBytes": 97300480,
+            "cpuMs": 734.375,
+            "gdi": 12,
+            "user": 37,
+            "handles": 294
+          },
+          {
+            "elapsedMs": 7007.808,
+            "privateBytes": 74756096,
+            "workingSetBytes": 97300480,
+            "cpuMs": 734.375,
+            "gdi": 12,
+            "user": 37,
+            "handles": 294
+          },
+          {
+            "elapsedMs": 8008.9139000000005,
+            "privateBytes": 74756096,
+            "workingSetBytes": 97300480,
+            "cpuMs": 734.375,
+            "gdi": 12,
+            "user": 37,
+            "handles": 294
+          },
+          {
+            "elapsedMs": 9010.2271,
+            "privateBytes": 74756096,
+            "workingSetBytes": 97300480,
+            "cpuMs": 734.375,
+            "gdi": 12,
+            "user": 37,
+            "handles": 294
+          },
+          {
+            "elapsedMs": 10012.3044,
+            "privateBytes": 74756096,
+            "workingSetBytes": 97300480,
+            "cpuMs": 734.375,
+            "gdi": 12,
+            "user": 37,
+            "handles": 294
+          },
+          {
+            "elapsedMs": 11012.6573,
+            "privateBytes": 74756096,
+            "workingSetBytes": 97300480,
+            "cpuMs": 734.375,
+            "gdi": 12,
+            "user": 37,
+            "handles": 294
+          },
+          {
+            "elapsedMs": 12013.3394,
+            "privateBytes": 74756096,
+            "workingSetBytes": 97300480,
+            "cpuMs": 734.375,
+            "gdi": 12,
+            "user": 37,
+            "handles": 294
+          },
+          {
+            "elapsedMs": 13013.4937,
+            "privateBytes": 74756096,
+            "workingSetBytes": 97300480,
+            "cpuMs": 734.375,
+            "gdi": 12,
+            "user": 37,
+            "handles": 294
+          },
+          {
+            "elapsedMs": 14014.0442,
+            "privateBytes": 74756096,
+            "workingSetBytes": 97300480,
+            "cpuMs": 734.375,
+            "gdi": 12,
+            "user": 37,
+            "handles": 294
+          },
+          {
+            "elapsedMs": 15012.1632,
+            "privateBytes": 74756096,
+            "workingSetBytes": 97300480,
+            "cpuMs": 734.375,
+            "gdi": 12,
+            "user": 37,
+            "handles": 294
+          }
+        ],
+        "afterUia": {
+          "sampleCount": 16,
+          "elapsedMs": 15012.1632,
+          "cpuMs": 0,
+          "peakPrivateBytes": 74756096,
+          "peakWorkingSetBytes": 97300480,
+          "startGdi": 12,
+          "endGdi": 12,
+          "peakGdi": 12,
+          "startUser": 37,
+          "endUser": 37,
+          "peakUser": 37
+        },
+        "closeMs": 22.5123,
+        "exitCode": 0,
+        "finishedAt": "2026-11-09T17:43:06.2745552Z",
+        "caseStartBoundary": {
+          "status": "confirmed",
+          "first": {
+            "observedAt": "2026-11-09T17:42:28.8240644Z",
+            "error": null,
+            "accountingActiveProcesses": 2,
+            "assignedProcesses": 2,
+            "accountingStructureBytes": 48,
+            "processes": [
+              {
+                "pid": 4556,
+                "imagePath": "D:\\a\\OpenHinoVoice\\OpenHinoVoice\\target\\qa\\perf\\settings\\perf-harness.exe",
+                "error": null,
+                "creationTime": 134387196729077644,
+                "ownedJob": true
+              },
+              {
+                "pid": 4628,
+                "imagePath": "C:\\Windows\\System32\\conhost.exe",
+                "error": null,
+                "creationTime": 134387196729117095,
+                "ownedJob": true
+              }
+            ]
+          },
+          "last": {
+            "observedAt": "2026-11-09T17:42:28.8240644Z",
+            "error": null,
+            "accountingActiveProcesses": 2,
+            "assignedProcesses": 2,
+            "accountingStructureBytes": 48,
+            "processes": [
+              {
+                "pid": 4556,
+                "imagePath": "D:\\a\\OpenHinoVoice\\OpenHinoVoice\\target\\qa\\perf\\settings\\perf-harness.exe",
+                "error": null,
+                "creationTime": 134387196729077644,
+                "ownedJob": true
+              },
+              {
+                "pid": 4628,
+                "imagePath": "C:\\Windows\\System32\\conhost.exe",
+                "error": null,
+                "creationTime": 134387196729117095,
+                "ownedJob": true
+              }
+            ]
+          },
+          "attempts": 1,
+          "deadlineMs": 5000,
+          "durationMs": 0.2631
+        },
+        "caseCleanup": {
+          "status": "confirmed",
+          "first": {
+            "observedAt": "2026-11-09T17:43:06.276576Z",
+            "error": null,
+            "accountingActiveProcesses": 2,
+            "assignedProcesses": 2,
+            "accountingStructureBytes": 48,
+            "processes": [
+              {
+                "pid": 4556,
+                "imagePath": "D:\\a\\OpenHinoVoice\\OpenHinoVoice\\target\\qa\\perf\\settings\\perf-harness.exe",
+                "error": null,
+                "creationTime": 134387196729077644,
+                "ownedJob": true
+              },
+              {
+                "pid": 4628,
+                "imagePath": "C:\\Windows\\System32\\conhost.exe",
+                "error": null,
+                "creationTime": 134387196729117095,
+                "ownedJob": true
+              }
+            ]
+          },
+          "last": {
+            "observedAt": "2026-11-09T17:43:06.276576Z",
+            "error": null,
+            "accountingActiveProcesses": 2,
+            "assignedProcesses": 2,
+            "accountingStructureBytes": 48,
+            "processes": [
+              {
+                "pid": 4556,
+                "imagePath": "D:\\a\\OpenHinoVoice\\OpenHinoVoice\\target\\qa\\perf\\settings\\perf-harness.exe",
+                "error": null,
+                "creationTime": 134387196729077644,
+                "ownedJob": true
+              },
+              {
+                "pid": 4628,
+                "imagePath": "C:\\Windows\\System32\\conhost.exe",
+                "error": null,
+                "creationTime": 134387196729117095,
+                "ownedJob": true
+              }
+            ]
+          },
+          "attempts": 1,
+          "deadlineMs": 5000,
+          "durationMs": 0.2268
+        }
+      },
+      {
+        "artifact": "baseline",
+        "round": 2,
+        "order": 2,
+        "status": "measured",
+        "pid": 7156,
+        "gracefulExit": true,
+        "windowResponsive": true,
+        "uiMode": "Settings",
+        "requestedPage": "display",
+        "hudStyle": "standard",
+        "startupToResponsiveWindowMs": 400.77500000000003,
+        "dpi": 96,
+        "clientPixels": [
+          720,
+          520
+        ],
+        "warmup": {
+          "sampleCount": 3,
+          "elapsedMs": 2000.8882,
+          "cpuMs": 62.5,
+          "peakPrivateBytes": 74473472,
+          "peakWorkingSetBytes": 94359552,
+          "startGdi": 12,
+          "endGdi": 12,
+          "peakGdi": 12,
+          "startUser": 31,
+          "endUser": 31,
+          "peakUser": 31
+        },
+        "beforeSamples": [
+          {
+            "elapsedMs": 0.0051,
+            "privateBytes": 74473472,
+            "workingSetBytes": 94359552,
+            "cpuMs": 500,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 1001.2645,
+            "privateBytes": 74473472,
+            "workingSetBytes": 94359552,
+            "cpuMs": 500,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 2002.3067,
+            "privateBytes": 74473472,
+            "workingSetBytes": 94359552,
+            "cpuMs": 500,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 3003.0449000000003,
+            "privateBytes": 74473472,
+            "workingSetBytes": 94359552,
+            "cpuMs": 500,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 4004.9674,
+            "privateBytes": 74473472,
+            "workingSetBytes": 94359552,
+            "cpuMs": 500,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 5006.893300000001,
+            "privateBytes": 74473472,
+            "workingSetBytes": 94359552,
+            "cpuMs": 500,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 6007.4869,
+            "privateBytes": 74473472,
+            "workingSetBytes": 94359552,
+            "cpuMs": 500,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 7008.269700000001,
+            "privateBytes": 74473472,
+            "workingSetBytes": 94359552,
+            "cpuMs": 500,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 8008.4364000000005,
+            "privateBytes": 74473472,
+            "workingSetBytes": 94359552,
+            "cpuMs": 500,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 9009.1412,
+            "privateBytes": 74473472,
+            "workingSetBytes": 94359552,
+            "cpuMs": 500,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 10009.5925,
+            "privateBytes": 74473472,
+            "workingSetBytes": 94359552,
+            "cpuMs": 500,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 11010.580600000001,
+            "privateBytes": 74473472,
+            "workingSetBytes": 94359552,
+            "cpuMs": 500,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 12011.6852,
+            "privateBytes": 74473472,
+            "workingSetBytes": 94359552,
+            "cpuMs": 500,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 13012.0457,
+            "privateBytes": 74473472,
+            "workingSetBytes": 94359552,
+            "cpuMs": 500,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 14013.557200000001,
+            "privateBytes": 74473472,
+            "workingSetBytes": 94359552,
+            "cpuMs": 500,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 14999.635,
+            "privateBytes": 74473472,
+            "workingSetBytes": 94359552,
+            "cpuMs": 500,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          }
+        ],
+        "beforeUia": {
+          "sampleCount": 16,
+          "elapsedMs": 14999.635,
+          "cpuMs": 0,
+          "peakPrivateBytes": 74473472,
+          "peakWorkingSetBytes": 94359552,
+          "startGdi": 12,
+          "endGdi": 12,
+          "peakGdi": 12,
+          "startUser": 31,
+          "endUser": 31,
+          "peakUser": 31
+        },
+        "uia": {
+          "status": "expected_absence",
+          "expected": "Absent",
+          "namedDisplayControl": false,
+          "nodes": 7,
+          "attempts": 49,
+          "successfulReads": 49,
+          "requiredObservationMs": 5000,
+          "fullObservationWindow": true,
+          "durationMs": 5003.293500000001,
+          "error": null
+        },
+        "afterSamples": [
+          {
+            "elapsedMs": 0.0038,
+            "privateBytes": 74473472,
+            "workingSetBytes": 94359552,
+            "cpuMs": 515.625,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 1004.0586000000001,
+            "privateBytes": 74473472,
+            "workingSetBytes": 94359552,
+            "cpuMs": 515.625,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 2005.0642,
+            "privateBytes": 74473472,
+            "workingSetBytes": 94359552,
+            "cpuMs": 515.625,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 3006.6927,
+            "privateBytes": 74473472,
+            "workingSetBytes": 94359552,
+            "cpuMs": 515.625,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 4011.5963,
+            "privateBytes": 74473472,
+            "workingSetBytes": 94359552,
+            "cpuMs": 515.625,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 5012.1911,
+            "privateBytes": 74473472,
+            "workingSetBytes": 94359552,
+            "cpuMs": 515.625,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 6020.8059,
+            "privateBytes": 74473472,
+            "workingSetBytes": 94359552,
+            "cpuMs": 515.625,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 7021.7281,
+            "privateBytes": 74473472,
+            "workingSetBytes": 94359552,
+            "cpuMs": 515.625,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 8030.851100000001,
+            "privateBytes": 74473472,
+            "workingSetBytes": 94359552,
+            "cpuMs": 515.625,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 9031.6854,
+            "privateBytes": 74473472,
+            "workingSetBytes": 94359552,
+            "cpuMs": 515.625,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 10039.923700000001,
+            "privateBytes": 74473472,
+            "workingSetBytes": 94359552,
+            "cpuMs": 515.625,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 11041.4362,
+            "privateBytes": 74473472,
+            "workingSetBytes": 94359552,
+            "cpuMs": 515.625,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 12051.161600000001,
+            "privateBytes": 74473472,
+            "workingSetBytes": 94359552,
+            "cpuMs": 515.625,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 13052.728500000001,
+            "privateBytes": 74473472,
+            "workingSetBytes": 94359552,
+            "cpuMs": 515.625,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 14053.4153,
+            "privateBytes": 74473472,
+            "workingSetBytes": 94359552,
+            "cpuMs": 515.625,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 15010.4153,
+            "privateBytes": 74473472,
+            "workingSetBytes": 94334976,
+            "cpuMs": 515.625,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          }
+        ],
+        "afterUia": {
+          "sampleCount": 16,
+          "elapsedMs": 15010.4153,
+          "cpuMs": 0,
+          "peakPrivateBytes": 74473472,
+          "peakWorkingSetBytes": 94359552,
+          "startGdi": 12,
+          "endGdi": 12,
+          "peakGdi": 12,
+          "startUser": 31,
+          "endUser": 31,
+          "peakUser": 31
+        },
+        "closeMs": 24.337,
+        "exitCode": 0,
+        "finishedAt": "2026-11-09T17:43:43.7349586Z",
+        "caseStartBoundary": {
+          "status": "confirmed",
+          "first": {
+            "observedAt": "2026-11-09T17:43:06.2785971Z",
+            "error": null,
+            "accountingActiveProcesses": 2,
+            "assignedProcesses": 2,
+            "accountingStructureBytes": 48,
+            "processes": [
+              {
+                "pid": 4556,
+                "imagePath": "D:\\a\\OpenHinoVoice\\OpenHinoVoice\\target\\qa\\perf\\settings\\perf-harness.exe",
+                "error": null,
+                "creationTime": 134387196729077644,
+                "ownedJob": true
+              },
+              {
+                "pid": 4628,
+                "imagePath": "C:\\Windows\\System32\\conhost.exe",
+                "error": null,
+                "creationTime": 134387196729117095,
+                "ownedJob": true
+              }
+            ]
+          },
+          "last": {
+            "observedAt": "2026-11-09T17:43:06.2785971Z",
+            "error": null,
+            "accountingActiveProcesses": 2,
+            "assignedProcesses": 2,
+            "accountingStructureBytes": 48,
+            "processes": [
+              {
+                "pid": 4556,
+                "imagePath": "D:\\a\\OpenHinoVoice\\OpenHinoVoice\\target\\qa\\perf\\settings\\perf-harness.exe",
+                "error": null,
+                "creationTime": 134387196729077644,
+                "ownedJob": true
+              },
+              {
+                "pid": 4628,
+                "imagePath": "C:\\Windows\\System32\\conhost.exe",
+                "error": null,
+                "creationTime": 134387196729117095,
+                "ownedJob": true
+              }
+            ]
+          },
+          "attempts": 1,
+          "deadlineMs": 5000,
+          "durationMs": 0.19770000000000001
+        },
+        "caseCleanup": {
+          "status": "confirmed",
+          "first": {
+            "observedAt": "2026-11-09T17:43:43.7349586Z",
+            "error": null,
+            "accountingActiveProcesses": 2,
+            "assignedProcesses": 2,
+            "accountingStructureBytes": 48,
+            "processes": [
+              {
+                "pid": 4556,
+                "imagePath": "D:\\a\\OpenHinoVoice\\OpenHinoVoice\\target\\qa\\perf\\settings\\perf-harness.exe",
+                "error": null,
+                "creationTime": 134387196729077644,
+                "ownedJob": true
+              },
+              {
+                "pid": 4628,
+                "imagePath": "C:\\Windows\\System32\\conhost.exe",
+                "error": null,
+                "creationTime": 134387196729117095,
+                "ownedJob": true
+              }
+            ]
+          },
+          "last": {
+            "observedAt": "2026-11-09T17:43:43.7349586Z",
+            "error": null,
+            "accountingActiveProcesses": 2,
+            "assignedProcesses": 2,
+            "accountingStructureBytes": 48,
+            "processes": [
+              {
+                "pid": 4556,
+                "imagePath": "D:\\a\\OpenHinoVoice\\OpenHinoVoice\\target\\qa\\perf\\settings\\perf-harness.exe",
+                "error": null,
+                "creationTime": 134387196729077644,
+                "ownedJob": true
+              },
+              {
+                "pid": 4628,
+                "imagePath": "C:\\Windows\\System32\\conhost.exe",
+                "error": null,
+                "creationTime": 134387196729117095,
+                "ownedJob": true
+              }
+            ]
+          },
+          "attempts": 1,
+          "deadlineMs": 5000,
+          "durationMs": 0.2575
+        }
+      },
+      {
+        "artifact": "baseline",
+        "round": 3,
+        "order": 1,
+        "status": "measured",
+        "pid": 6636,
+        "gracefulExit": true,
+        "windowResponsive": true,
+        "uiMode": "Settings",
+        "requestedPage": "display",
+        "hudStyle": "standard",
+        "startupToResponsiveWindowMs": 378.6759,
+        "dpi": 96,
+        "clientPixels": [
+          720,
+          520
+        ],
+        "warmup": {
+          "sampleCount": 3,
+          "elapsedMs": 2000.2244,
+          "cpuMs": 62.5,
+          "peakPrivateBytes": 73072640,
+          "peakWorkingSetBytes": 94224384,
+          "startGdi": 12,
+          "endGdi": 12,
+          "peakGdi": 12,
+          "startUser": 31,
+          "endUser": 31,
+          "peakUser": 31
+        },
+        "beforeSamples": [
+          {
+            "elapsedMs": 0.0039000000000000003,
+            "privateBytes": 73072640,
+            "workingSetBytes": 94224384,
+            "cpuMs": 500,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 1004.5671000000001,
+            "privateBytes": 73072640,
+            "workingSetBytes": 94224384,
+            "cpuMs": 500,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 2018.035,
+            "privateBytes": 73072640,
+            "workingSetBytes": 94224384,
+            "cpuMs": 500,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 3033.0357000000004,
+            "privateBytes": 73072640,
+            "workingSetBytes": 94224384,
+            "cpuMs": 500,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 4035.4326,
+            "privateBytes": 73072640,
+            "workingSetBytes": 94224384,
+            "cpuMs": 500,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 5046.2351,
+            "privateBytes": 73072640,
+            "workingSetBytes": 94224384,
+            "cpuMs": 500,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 6046.056500000001,
+            "privateBytes": 73072640,
+            "workingSetBytes": 94224384,
+            "cpuMs": 500,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 7047.488,
+            "privateBytes": 73072640,
+            "workingSetBytes": 94224384,
+            "cpuMs": 500,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 8055.3496000000005,
+            "privateBytes": 73072640,
+            "workingSetBytes": 94224384,
+            "cpuMs": 500,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 9070.229500000001,
+            "privateBytes": 73072640,
+            "workingSetBytes": 94224384,
+            "cpuMs": 500,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 10072.2795,
+            "privateBytes": 73072640,
+            "workingSetBytes": 94224384,
+            "cpuMs": 500,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 11072.702500000001,
+            "privateBytes": 73072640,
+            "workingSetBytes": 94224384,
+            "cpuMs": 500,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 12073.9833,
+            "privateBytes": 73072640,
+            "workingSetBytes": 94224384,
+            "cpuMs": 500,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 13080.306700000001,
+            "privateBytes": 73072640,
+            "workingSetBytes": 94224384,
+            "cpuMs": 500,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 14080.717400000001,
+            "privateBytes": 73072640,
+            "workingSetBytes": 94224384,
+            "cpuMs": 500,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 15000.0642,
+            "privateBytes": 73072640,
+            "workingSetBytes": 94224384,
+            "cpuMs": 500,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          }
+        ],
+        "beforeUia": {
+          "sampleCount": 16,
+          "elapsedMs": 15000.0642,
+          "cpuMs": 0,
+          "peakPrivateBytes": 73072640,
+          "peakWorkingSetBytes": 94224384,
+          "startGdi": 12,
+          "endGdi": 12,
+          "peakGdi": 12,
+          "startUser": 31,
+          "endUser": 31,
+          "peakUser": 31
+        },
+        "uia": {
+          "status": "expected_absence",
+          "expected": "Absent",
+          "namedDisplayControl": false,
+          "nodes": 7,
+          "attempts": 49,
+          "successfulReads": 49,
+          "requiredObservationMs": 5000,
+          "fullObservationWindow": true,
+          "durationMs": 5007.0679,
+          "error": null
+        },
+        "afterSamples": [
+          {
+            "elapsedMs": 0.004,
+            "privateBytes": 73072640,
+            "workingSetBytes": 94224384,
+            "cpuMs": 531.25,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 1009.6568000000001,
+            "privateBytes": 73072640,
+            "workingSetBytes": 94224384,
+            "cpuMs": 531.25,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 2022.5102000000002,
+            "privateBytes": 73072640,
+            "workingSetBytes": 94224384,
+            "cpuMs": 531.25,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 3023.9142,
+            "privateBytes": 73072640,
+            "workingSetBytes": 94224384,
+            "cpuMs": 531.25,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 4032.9192000000003,
+            "privateBytes": 73072640,
+            "workingSetBytes": 94224384,
+            "cpuMs": 531.25,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 5046.3521,
+            "privateBytes": 73072640,
+            "workingSetBytes": 94224384,
+            "cpuMs": 531.25,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 6047.781800000001,
+            "privateBytes": 73072640,
+            "workingSetBytes": 94224384,
+            "cpuMs": 531.25,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 7048.4577,
+            "privateBytes": 73072640,
+            "workingSetBytes": 94224384,
+            "cpuMs": 531.25,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 8050.5238,
+            "privateBytes": 73072640,
+            "workingSetBytes": 94224384,
+            "cpuMs": 531.25,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 9052.574,
+            "privateBytes": 73072640,
+            "workingSetBytes": 94224384,
+            "cpuMs": 531.25,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 10053.6767,
+            "privateBytes": 73072640,
+            "workingSetBytes": 94224384,
+            "cpuMs": 531.25,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 11055.8155,
+            "privateBytes": 73072640,
+            "workingSetBytes": 94224384,
+            "cpuMs": 531.25,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 12056.9372,
+            "privateBytes": 73072640,
+            "workingSetBytes": 94224384,
+            "cpuMs": 531.25,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 13069.9873,
+            "privateBytes": 73072640,
+            "workingSetBytes": 94224384,
+            "cpuMs": 531.25,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 14082.3873,
+            "privateBytes": 73072640,
+            "workingSetBytes": 94224384,
+            "cpuMs": 531.25,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          },
+          {
+            "elapsedMs": 15001.3739,
+            "privateBytes": 73072640,
+            "workingSetBytes": 94224384,
+            "cpuMs": 531.25,
+            "gdi": 12,
+            "user": 31,
+            "handles": 250
+          }
+        ],
+        "afterUia": {
+          "sampleCount": 16,
+          "elapsedMs": 15001.3739,
+          "cpuMs": 0,
+          "peakPrivateBytes": 73072640,
+          "peakWorkingSetBytes": 94224384,
+          "startGdi": 12,
+          "endGdi": 12,
+          "peakGdi": 12,
+          "startUser": 31,
+          "endUser": 31,
+          "peakUser": 31
+        },
+        "closeMs": 21.1036,
+        "exitCode": 0,
+        "finishedAt": "2026-11-09T17:44:21.1603415Z",
+        "caseStartBoundary": {
+          "status": "confirmed",
+          "first": {
+            "observedAt": "2026-11-09T17:43:43.736974Z",
+            "error": null,
+            "accountingActiveProcesses": 2,
+            "assignedProcesses": 2,
+            "accountingStructureBytes": 48,
+            "processes": [
+              {
+                "pid": 4556,
+                "imagePath": "D:\\a\\OpenHinoVoice\\OpenHinoVoice\\target\\qa\\perf\\settings\\perf-harness.exe",
+                "error": null,
+                "creationTime": 134387196729077644,
+                "ownedJob": true
+              },
+              {
+                "pid": 4628,
+                "imagePath": "C:\\Windows\\System32\\conhost.exe",
+                "error": null,
+                "creationTime": 134387196729117095,
+                "ownedJob": true
+              }
+            ]
+          },
+          "last": {
+            "observedAt": "2026-11-09T17:43:43.736974Z",
+            "error": null,
+            "accountingActiveProcesses": 2,
+            "assignedProcesses": 2,
+            "accountingStructureBytes": 48,
+            "processes": [
+              {
+                "pid": 4556,
+                "imagePath": "D:\\a\\OpenHinoVoice\\OpenHinoVoice\\target\\qa\\perf\\settings\\perf-harness.exe",
+                "error": null,
+                "creationTime": 134387196729077644,
+                "ownedJob": true
+              },
+              {
+                "pid": 4628,
+                "imagePath": "C:\\Windows\\System32\\conhost.exe",
+                "error": null,
+                "creationTime": 134387196729117095,
+                "ownedJob": true
+              }
+            ]
+          },
+          "attempts": 1,
+          "deadlineMs": 5000,
+          "durationMs": 0.1882
+        },
+        "caseCleanup": {
+          "status": "confirmed",
+          "first": {
+            "observedAt": "2026-11-09T17:44:21.1619763Z",
+            "error": null,
+            "accountingActiveProcesses": 2,
+            "assignedProcesses": 2,
+            "accountingStructureBytes": 48,
+            "processes": [
+              {
+                "pid": 4556,
+                "imagePath": "D:\\a\\OpenHinoVoice\\OpenHinoVoice\\target\\qa\\perf\\settings\\perf-harness.exe",
+                "error": null,
+                "creationTime": 134387196729077644,
+                "ownedJob": true
+              },
+              {
+                "pid": 4628,
+                "imagePath": "C:\\Windows\\System32\\conhost.exe",
+                "error": null,
+                "creationTime": 134387196729117095,
+                "ownedJob": true
+              }
+            ]
+          },
+          "last": {
+            "observedAt": "2026-11-09T17:44:21.1619763Z",
+            "error": null,
+            "accountingActiveProcesses": 2,
+            "assignedProcesses": 2,
+            "accountingStructureBytes": 48,
+            "processes": [
+              {
+                "pid": 4556,
+                "imagePath": "D:\\a\\OpenHinoVoice\\OpenHinoVoice\\target\\qa\\perf\\settings\\perf-harness.exe",
+                "error": null,
+                "creationTime": 134387196729077644,
+                "ownedJob": true
+              },
+              {
+                "pid": 4628,
+                "imagePath": "C:\\Windows\\System32\\conhost.exe",
+                "error": null,
+                "creationTime": 134387196729117095,
+                "ownedJob": true
+              }
+            ]
+          },
+          "attempts": 1,
+          "deadlineMs": 5000,
+          "durationMs": 0.249
+        }
+      },
+      {
+        "artifact": "candidate",
+        "round": 3,
+        "order": 2,
+        "status": "measured",
+        "pid": 5596,
+        "gracefulExit": true,
+        "windowResponsive": true,
+        "uiMode": "Settings",
+        "requestedPage": "display",
+        "hudStyle": "standard",
+        "startupToResponsiveWindowMs": 415.79850000000005,
+        "dpi": 96,
+        "clientPixels": [
+          720,
+          520
+        ],
+        "warmup": {
+          "sampleCount": 3,
+          "elapsedMs": 2003.5217,
+          "cpuMs": 0,
+          "peakPrivateBytes": 75497472,
+          "peakWorkingSetBytes": 94699520,
+          "startGdi": 12,
+          "endGdi": 12,
+          "peakGdi": 12,
+          "startUser": 35,
+          "endUser": 35,
+          "peakUser": 35
+        },
+        "beforeSamples": [
+          {
+            "elapsedMs": 0.0048000000000000004,
+            "privateBytes": 75497472,
+            "workingSetBytes": 94699520,
+            "cpuMs": 375,
+            "gdi": 12,
+            "user": 35,
+            "handles": 278
+          },
+          {
+            "elapsedMs": 1001.6182,
+            "privateBytes": 75497472,
+            "workingSetBytes": 94699520,
+            "cpuMs": 375,
+            "gdi": 12,
+            "user": 35,
+            "handles": 278
+          },
+          {
+            "elapsedMs": 2003.4735,
+            "privateBytes": 75497472,
+            "workingSetBytes": 94699520,
+            "cpuMs": 375,
+            "gdi": 12,
+            "user": 35,
+            "handles": 278
+          },
+          {
+            "elapsedMs": 3006.7404,
+            "privateBytes": 75497472,
+            "workingSetBytes": 94699520,
+            "cpuMs": 375,
+            "gdi": 12,
+            "user": 35,
+            "handles": 278
+          },
+          {
+            "elapsedMs": 4007.9117,
+            "privateBytes": 75497472,
+            "workingSetBytes": 94699520,
+            "cpuMs": 375,
+            "gdi": 12,
+            "user": 35,
+            "handles": 278
+          },
+          {
+            "elapsedMs": 5008.5686000000005,
+            "privateBytes": 75497472,
+            "workingSetBytes": 94699520,
+            "cpuMs": 375,
+            "gdi": 12,
+            "user": 35,
+            "handles": 278
+          },
+          {
+            "elapsedMs": 6015.9353,
+            "privateBytes": 75497472,
+            "workingSetBytes": 94699520,
+            "cpuMs": 375,
+            "gdi": 12,
+            "user": 35,
+            "handles": 278
+          },
+          {
+            "elapsedMs": 7017.1314,
+            "privateBytes": 75497472,
+            "workingSetBytes": 94699520,
+            "cpuMs": 375,
+            "gdi": 12,
+            "user": 35,
+            "handles": 278
+          },
+          {
+            "elapsedMs": 8018.0247,
+            "privateBytes": 75497472,
+            "workingSetBytes": 94699520,
+            "cpuMs": 375,
+            "gdi": 12,
+            "user": 35,
+            "handles": 278
+          },
+          {
+            "elapsedMs": 9018.8551,
+            "privateBytes": 75497472,
+            "workingSetBytes": 94699520,
+            "cpuMs": 375,
+            "gdi": 12,
+            "user": 35,
+            "handles": 278
+          },
+          {
+            "elapsedMs": 10027.8444,
+            "privateBytes": 75497472,
+            "workingSetBytes": 94699520,
+            "cpuMs": 375,
+            "gdi": 12,
+            "user": 35,
+            "handles": 278
+          },
+          {
+            "elapsedMs": 11041.604500000001,
+            "privateBytes": 75497472,
+            "workingSetBytes": 94699520,
+            "cpuMs": 375,
+            "gdi": 12,
+            "user": 35,
+            "handles": 278
+          },
+          {
+            "elapsedMs": 12042.0092,
+            "privateBytes": 75497472,
+            "workingSetBytes": 94699520,
+            "cpuMs": 375,
+            "gdi": 12,
+            "user": 35,
+            "handles": 278
+          },
+          {
+            "elapsedMs": 13042.3003,
+            "privateBytes": 75497472,
+            "workingSetBytes": 94699520,
+            "cpuMs": 375,
+            "gdi": 12,
+            "user": 35,
+            "handles": 278
+          },
+          {
+            "elapsedMs": 14042.6744,
+            "privateBytes": 75497472,
+            "workingSetBytes": 94699520,
+            "cpuMs": 375,
+            "gdi": 12,
+            "user": 35,
+            "handles": 278
+          },
+          {
+            "elapsedMs": 14999.0709,
+            "privateBytes": 75497472,
+            "workingSetBytes": 94699520,
+            "cpuMs": 375,
+            "gdi": 12,
+            "user": 35,
+            "handles": 278
+          }
+        ],
+        "beforeUia": {
+          "sampleCount": 16,
+          "elapsedMs": 14999.0709,
+          "cpuMs": 0,
+          "peakPrivateBytes": 75497472,
+          "peakWorkingSetBytes": 94699520,
+          "startGdi": 12,
+          "endGdi": 12,
+          "peakGdi": 12,
+          "startUser": 35,
+          "endUser": 35,
+          "peakUser": 35
+        },
+        "uia": {
+          "status": "observed",
+          "expected": "Present",
+          "namedDisplayControl": true,
+          "nodes": 54,
+          "attempts": 43,
+          "successfulReads": 43,
+          "requiredObservationMs": 5000,
+          "fullObservationWindow": true,
+          "durationMs": 5019.322700000001,
+          "error": null
+        },
+        "afterSamples": [
+          {
+            "elapsedMs": 0.0046,
+            "privateBytes": 75558912,
+            "workingSetBytes": 96092160,
+            "cpuMs": 796.875,
+            "gdi": 12,
+            "user": 37,
+            "handles": 294
+          },
+          {
+            "elapsedMs": 1002.3257000000001,
+            "privateBytes": 75558912,
+            "workingSetBytes": 96092160,
+            "cpuMs": 796.875,
+            "gdi": 12,
+            "user": 37,
+            "handles": 294
+          },
+          {
+            "elapsedMs": 2003.9850000000001,
+            "privateBytes": 75558912,
+            "workingSetBytes": 96092160,
+            "cpuMs": 796.875,
+            "gdi": 12,
+            "user": 37,
+            "handles": 294
+          },
+          {
+            "elapsedMs": 3005.0348000000004,
+            "privateBytes": 75558912,
+            "workingSetBytes": 96092160,
+            "cpuMs": 796.875,
+            "gdi": 12,
+            "user": 37,
+            "handles": 294
+          },
+          {
+            "elapsedMs": 4005.6076000000003,
+            "privateBytes": 75558912,
+            "workingSetBytes": 96092160,
+            "cpuMs": 796.875,
+            "gdi": 12,
+            "user": 37,
+            "handles": 294
+          },
+          {
+            "elapsedMs": 5008.3804,
+            "privateBytes": 75558912,
+            "workingSetBytes": 96092160,
+            "cpuMs": 796.875,
+            "gdi": 12,
+            "user": 37,
+            "handles": 294
+          },
+          {
+            "elapsedMs": 6008.638,
+            "privateBytes": 75558912,
+            "workingSetBytes": 96092160,
+            "cpuMs": 796.875,
+            "gdi": 12,
+            "user": 37,
+            "handles": 294
+          },
+          {
+            "elapsedMs": 7010.450400000001,
+            "privateBytes": 75558912,
+            "workingSetBytes": 96092160,
+            "cpuMs": 796.875,
+            "gdi": 12,
+            "user": 37,
+            "handles": 294
+          },
+          {
+            "elapsedMs": 8011.650900000001,
+            "privateBytes": 75558912,
+            "workingSetBytes": 96092160,
+            "cpuMs": 796.875,
+            "gdi": 12,
+            "user": 37,
+            "handles": 294
+          },
+          {
+            "elapsedMs": 9012.3076,
+            "privateBytes": 75558912,
+            "workingSetBytes": 96092160,
+            "cpuMs": 796.875,
+            "gdi": 12,
+            "user": 37,
+            "handles": 294
+          },
+          {
+            "elapsedMs": 10022.4097,
+            "privateBytes": 75558912,
+            "workingSetBytes": 96092160,
+            "cpuMs": 796.875,
+            "gdi": 12,
+            "user": 37,
+            "handles": 294
+          },
+          {
+            "elapsedMs": 11037.019400000001,
+            "privateBytes": 75558912,
+            "workingSetBytes": 96092160,
+            "cpuMs": 796.875,
+            "gdi": 12,
+            "user": 37,
+            "handles": 294
+          },
+          {
+            "elapsedMs": 12039.008800000001,
+            "privateBytes": 75558912,
+            "workingSetBytes": 96092160,
+            "cpuMs": 796.875,
+            "gdi": 12,
+            "user": 37,
+            "handles": 294
+          },
+          {
+            "elapsedMs": 13040.68,
+            "privateBytes": 75558912,
+            "workingSetBytes": 96092160,
+            "cpuMs": 796.875,
+            "gdi": 12,
+            "user": 37,
+            "handles": 294
+          },
+          {
+            "elapsedMs": 14041.251900000001,
+            "privateBytes": 75558912,
+            "workingSetBytes": 96092160,
+            "cpuMs": 796.875,
+            "gdi": 12,
+            "user": 37,
+            "handles": 294
+          },
+          {
+            "elapsedMs": 15014.2844,
+            "privateBytes": 75558912,
+            "workingSetBytes": 96092160,
+            "cpuMs": 796.875,
+            "gdi": 12,
+            "user": 37,
+            "handles": 294
+          }
+        ],
+        "afterUia": {
+          "sampleCount": 16,
+          "elapsedMs": 15014.2844,
+          "cpuMs": 0,
+          "peakPrivateBytes": 75558912,
+          "peakWorkingSetBytes": 96092160,
+          "startGdi": 12,
+          "endGdi": 12,
+          "peakGdi": 12,
+          "startUser": 37,
+          "endUser": 37,
+          "peakUser": 37
+        },
+        "closeMs": 24.201500000000003,
+        "exitCode": 0,
+        "finishedAt": "2026-11-09T17:44:58.6674211Z",
+        "caseStartBoundary": {
+          "status": "confirmed",
+          "first": {
+            "observedAt": "2026-11-09T17:44:21.1640002Z",
+            "error": null,
+            "accountingActiveProcesses": 2,
+            "assignedProcesses": 2,
+            "accountingStructureBytes": 48,
+            "processes": [
+              {
+                "pid": 4556,
+                "imagePath": "D:\\a\\OpenHinoVoice\\OpenHinoVoice\\target\\qa\\perf\\settings\\perf-harness.exe",
+                "error": null,
+                "creationTime": 134387196729077644,
+                "ownedJob": true
+              },
+              {
+                "pid": 4628,
+                "imagePath": "C:\\Windows\\System32\\conhost.exe",
+                "error": null,
+                "creationTime": 134387196729117095,
+                "ownedJob": true
+              }
+            ]
+          },
+          "last": {
+            "observedAt": "2026-11-09T17:44:21.1640002Z",
+            "error": null,
+            "accountingActiveProcesses": 2,
+            "assignedProcesses": 2,
+            "accountingStructureBytes": 48,
+            "processes": [
+              {
+                "pid": 4556,
+                "imagePath": "D:\\a\\OpenHinoVoice\\OpenHinoVoice\\target\\qa\\perf\\settings\\perf-harness.exe",
+                "error": null,
+                "creationTime": 134387196729077644,
+                "ownedJob": true
+              },
+              {
+                "pid": 4628,
+                "imagePath": "C:\\Windows\\System32\\conhost.exe",
+                "error": null,
+                "creationTime": 134387196729117095,
+                "ownedJob": true
+              }
+            ]
+          },
+          "attempts": 1,
+          "deadlineMs": 5000,
+          "durationMs": 1.3050000000000002
+        },
+        "caseCleanup": {
+          "status": "confirmed",
+          "first": {
+            "observedAt": "2026-11-09T17:44:58.6674211Z",
+            "error": null,
+            "accountingActiveProcesses": 2,
+            "assignedProcesses": 2,
+            "accountingStructureBytes": 48,
+            "processes": [
+              {
+                "pid": 4556,
+                "imagePath": "D:\\a\\OpenHinoVoice\\OpenHinoVoice\\target\\qa\\perf\\settings\\perf-harness.exe",
+                "error": null,
+                "creationTime": 134387196729077644,
+                "ownedJob": true
+              },
+              {
+                "pid": 4628,
+                "imagePath": "C:\\Windows\\System32\\conhost.exe",
+                "error": null,
+                "creationTime": 134387196729117095,
+                "ownedJob": true
+              }
+            ]
+          },
+          "last": {
+            "observedAt": "2026-11-09T17:44:58.6674211Z",
+            "error": null,
+            "accountingActiveProcesses": 2,
+            "assignedProcesses": 2,
+            "accountingStructureBytes": 48,
+            "processes": [
+              {
+                "pid": 4556,
+                "imagePath": "D:\\a\\OpenHinoVoice\\OpenHinoVoice\\target\\qa\\perf\\settings\\perf-harness.exe",
+                "error": null,
+                "creationTime": 134387196729077644,
+                "ownedJob": true
+              },
+              {
+                "pid": 4628,
+                "imagePath": "C:\\Windows\\System32\\conhost.exe",
+                "error": null,
+                "creationTime": 134387196729117095,
+                "ownedJob": true
+              }
+            ]
+          },
+          "attempts": 1,
+          "deadlineMs": 5000,
+          "durationMs": 0.2503
+        }
+      }
+    ],
+    "notRun": [],
+    "audioRequested": false,
+    "microphoneRequested": false,
+    "globalInputSent": false,
+    "os": "Microsoft Windows NT 6.2.9200.0",
+    "processorCount": 4,
+    "sessionId": 2,
+    "scope": "owned app process on an inactive desktop; helper, speech and other processes excluded",
+    "limitations": [
+      "Inactive desktop idle is not interactive desktop or active HUD performance.",
+      "Startup ends at an observed responsive HWND, not first visible pixels or recognition readiness.",
+      "Warmup is a fixed excluded observation after responsiveness, not proof of asynchronous completion.",
+      "UIA activation includes provider initialization. Expected absence requires the full bounded observation window.",
+      "No keyboard, microphone, speech recognition, paste, screenshot or external API operation is invoked.",
+      "CPU load, caches and power settings are not controlled; repetitions and order are recorded."
+    ],
+    "phase": "complete",
+    "updatedAt": "2026-11-09T17:44:58.6701012Z",
+    "jobBaseline": {
+      "status": "confirmed",
+      "first": {
+        "observedAt": "2026-11-09T17:41:12.9922955Z",
+        "error": null,
+        "accountingActiveProcesses": 2,
+        "assignedProcesses": 2,
+        "accountingStructureBytes": 48,
+        "processes": [
+          {
+            "pid": 4556,
+            "imagePath": "D:\\a\\OpenHinoVoice\\OpenHinoVoice\\target\\qa\\perf\\settings\\perf-harness.exe",
+            "error": null,
+            "creationTime": 134387196729077644,
+            "ownedJob": true
+          },
+          {
+            "pid": 4628,
+            "imagePath": "C:\\Windows\\System32\\conhost.exe",
+            "error": null,
+            "creationTime": 134387196729117095,
+            "ownedJob": true
+          }
+        ]
+      },
+      "last": {
+        "observedAt": "2026-11-09T17:41:12.9922955Z",
+        "error": null,
+        "accountingActiveProcesses": 2,
+        "assignedProcesses": 2,
+        "accountingStructureBytes": 48,
+        "processes": [
+          {
+            "pid": 4556,
+            "imagePath": "D:\\a\\OpenHinoVoice\\OpenHinoVoice\\target\\qa\\perf\\settings\\perf-harness.exe",
+            "error": null,
+            "creationTime": 134387196729077644,
+            "ownedJob": true
+          },
+          {
+            "pid": 4628,
+            "imagePath": "C:\\Windows\\System32\\conhost.exe",
+            "error": null,
+            "creationTime": 134387196729117095,
+            "ownedJob": true
+          }
+        ]
+      },
+      "attempts": 1,
+      "workerConsoleWindowOwnerPid": 0,
+      "allowedConsoleImage": "C:\\Windows\\system32\\conhost.exe",
+      "rule": "Before any app launch: own worker and job-member System32 conhost created no earlier than the worker. Later boundaries allow only these exact PID/creation-time/image identities; console hosts may exit."
+    },
+    "lastCaseBoundary": {
+      "status": "confirmed",
+      "first": {
+        "observedAt": "2026-11-09T17:44:21.1640002Z",
+        "error": null,
+        "accountingActiveProcesses": 2,
+        "assignedProcesses": 2,
+        "accountingStructureBytes": 48,
+        "processes": [
+          {
+            "pid": 4556,
+            "imagePath": "D:\\a\\OpenHinoVoice\\OpenHinoVoice\\target\\qa\\perf\\settings\\perf-harness.exe",
+            "error": null,
+            "creationTime": 134387196729077644,
+            "ownedJob": true
+          },
+          {
+            "pid": 4628,
+            "imagePath": "C:\\Windows\\System32\\conhost.exe",
+            "error": null,
+            "creationTime": 134387196729117095,
+            "ownedJob": true
+          }
+        ]
+      },
+      "last": {
+        "observedAt": "2026-11-09T17:44:21.1640002Z",
+        "error": null,
+        "accountingActiveProcesses": 2,
+        "assignedProcesses": 2,
+        "accountingStructureBytes": 48,
+        "processes": [
+          {
+            "pid": 4556,
+            "imagePath": "D:\\a\\OpenHinoVoice\\OpenHinoVoice\\target\\qa\\perf\\settings\\perf-harness.exe",
+            "error": null,
+            "creationTime": 134387196729077644,
+            "ownedJob": true
+          },
+          {
+            "pid": 4628,
+            "imagePath": "C:\\Windows\\System32\\conhost.exe",
+            "error": null,
+            "creationTime": 134387196729117095,
+            "ownedJob": true
+          }
+        ]
+      },
+      "attempts": 1,
+      "deadlineMs": 5000,
+      "durationMs": 1.3050000000000002
+    },
+    "finishedAt": "2026-11-09T17:44:58.6701012Z"
+  },
+  "summary": {
+    "baseline": {
+      "startupToResponsiveWindowMs": {
+        "count": 3,
+        "median": 400.77500000000003,
+        "min": 378.6759,
+        "max": 558.7301
+      },
+      "beforeUiaPeakPrivateBytes": {
+        "count": 3,
+        "median": 74473472.0,
+        "min": 73072640.0,
+        "max": 75624448.0
+      },
+      "beforeUiaPeakWorkingSetBytes": {
+        "count": 3,
+        "median": 94359552.0,
+        "min": 94224384.0,
+        "max": 94707712.0
+      },
+      "beforeUiaCpuMs": {
+        "count": 3,
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0
+      },
+      "closeMs": {
+        "count": 3,
+        "median": 23.7251,
+        "min": 21.1036,
+        "max": 24.337
+      },
+      "afterUiaPeakPrivateBytes": {
+        "count": 3,
+        "median": 74473472.0,
+        "min": 73072640.0,
+        "max": 75624448.0
+      },
+      "afterUiaPeakWorkingSetBytes": {
+        "count": 3,
+        "median": 94359552.0,
+        "min": 94224384.0,
+        "max": 94707712.0
+      },
+      "afterUiaCpuMs": {
+        "count": 3,
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0
+      }
+    },
+    "candidate": {
+      "startupToResponsiveWindowMs": {
+        "count": 3,
+        "median": 415.79850000000005,
+        "min": 382.40160000000003,
+        "max": 772.5286
+      },
+      "beforeUiaPeakPrivateBytes": {
+        "count": 3,
+        "median": 74698752.0,
+        "min": 73621504.0,
+        "max": 75497472.0
+      },
+      "beforeUiaPeakWorkingSetBytes": {
+        "count": 3,
+        "median": 95920128.0,
+        "min": 94699520.0,
+        "max": 96342016.0
+      },
+      "beforeUiaCpuMs": {
+        "count": 3,
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0
+      },
+      "closeMs": {
+        "count": 3,
+        "median": 22.5123,
+        "min": 21.322100000000002,
+        "max": 24.201500000000003
+      },
+      "afterUiaPeakPrivateBytes": {
+        "count": 3,
+        "median": 74756096.0,
+        "min": 74059776.0,
+        "max": 75558912.0
+      },
+      "afterUiaPeakWorkingSetBytes": {
+        "count": 3,
+        "median": 97300480.0,
+        "min": 96092160.0,
+        "max": 97804288.0
+      },
+      "afterUiaCpuMs": {
+        "count": 3,
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0
+      }
+    }
+  },
+  "difference": {
+    "medianPeakPrivateBytes": 282624.0,
+    "executableBytes": 272896,
+    "startupToResponsiveWindowMs": 15.023500000000013,
+    "scope": "after the explicit UIA probe; expected feature-off absence is not accessibility success"
+  },
+  "proposedBudget": {
+    "privateIncreaseBytes": 4194304,
+    "privateExceeded": false,
+    "executableIncreaseBytes": 1048576,
+    "executableExceeded": false,
+    "requires": "same-source/profile builds differing only in official accessibility feature; supplied by caller"
+  }
+}

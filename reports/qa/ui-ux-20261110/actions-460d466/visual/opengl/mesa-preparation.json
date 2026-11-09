@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "status": "prepared",
+  "version": "26.2.6",
+  "architecture": "x64",
+  "startedAt": "2026-11-09T17:38:21.3012086Z",
+  "finishedAt": "2026-11-09T17:38:23.1609821Z",
+  "sourceRevision": "460d4667f4101966cd1161d2d872354d45fb8131",
+  "sourceUrl": "https://github.com/mmozeiko/build-mesa/releases/download/26.2.6/mesa-llvmpipe-x64-26.2.6.7z",
+  "digestSource": "https://github.com/mmozeiko/build-mesa/releases/expanded_assets/26.2.6",
+  "usageSource": "https://github.com/mmozeiko/build-mesa/blob/26.2.6/README.md",
+  "expectedArchiveSha256": "1910245962e3d854589ed11a9a488e84841a01559142fba8b81395271981700b",
+  "archiveSha256": "1910245962e3d854589ed11a9a488e84841a01559142fba8b81395271981700b",
+  "dllPath": "D:\\a\\OpenHinoVoice\\OpenHinoVoice\\target\\qa\\visual\\opengl\\opengl32.dll",
+  "dllSha256": "e833d30337077e5890bf6a7147b7f2d27526b6f4647b32d8c8151fc57860c7f2",
+  "extraction": "passed",
+  "environmentExport": "passed",
+  "runtimeValidation": "not_run",
+  "productFilesChanged": false,
+  "limitations": [
+    "The distributor documents DLL deployment next to the test executable. The caller must place a verified isolated executable copy in OutputDir before testing.",
+    "An absolute GLUTIN_WGL_OPENGL_DLL override alone does not prove that every WGL import uses Mesa.",
+    "Software-rendered results do not measure end-user GPU performance."
+  ]
+}

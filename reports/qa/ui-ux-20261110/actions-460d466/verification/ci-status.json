@@ -1,0 +1,10 @@
+{
+  "revision": "460d4667f4101966cd1161d2d872354d45fb8131",
+  "helperCompilation": "success",
+  "dependencies": "success",
+  "verify": "success",
+  "previewBuild": "success",
+  "package": "success",
+  "desktopUi": "not_run",
+  "liveAudioOrModelTests": "not_run"
+}

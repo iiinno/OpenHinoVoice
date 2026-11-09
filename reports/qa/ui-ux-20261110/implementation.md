@@ -63,3 +63,7 @@ https://github.com/iiinno/OpenHinoVoice/actions/runs/42657871038 の build-and-t
 Actions生成openhinovoice.exeは8,438,784 bytes、SHA256 2368dcf4df4d20365a36bfbdcd53801eb1ead3ceae555c01804cd255d63d1305。overlay_preview.exeは261,120 bytes。このPCでexeを起動・導入していない。
 
 同runのUI jobは720 fixture生成・renderer 24測定が成功し、設定windowのサイズ検証で失敗。renderer計測時はWindowsの動き設定が無効だったため、これは静止描画の結果で、リッチの稼働時予算の合格ではない。CPU描画を100切替×2周後、2周目Private増分0、GDI/USER非増加。ネイティブ表示・入力遅延は対象外。ui-result.json/visual-status.jsonに失敗も保持。
+
+### 最新のActions統合検証（460d466）
+
+[run 42665854698](https://github.com/iiinno/OpenHinoVoice/actions/runs/42665854698)はFull・UI・UIA追加コストの全ジョブが成功。294テスト成功、失敗0、ignore 11。設定の2サイズ×7操作、720 HUD画像、動き有効の24描画測定が成立した。UIAのexe増分266.5KiB、Privateの中央値差276KiBは今回の設定画面比較条件で予算内。条件・範囲・生ログとスクリーンショットは[actions-460d466/README.md](actions-460d466/README.md)へ保存した。実機入出力・常駐性能・ASR反復とU13は引き続き未確認または未実装であり、計画全体の完了とは区別する。

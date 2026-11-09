@@ -1,0 +1,23 @@
+{
+  "revision": "460d4667f4101966cd1161d2d872354d45fb8131",
+  "releaseArtifact": "windows-release-460d4667f4101966cd1161d2d872354d45fb8131",
+  "artifactDownload": "success",
+  "artifactValidation": "success",
+  "binarySource": "verified_same_run_artifact",
+  "dependencies": "skipped",
+  "build": "skipped",
+  "rendererTask": "success",
+  "offscreenFixtures": "passed",
+  "settingsUi": "success",
+  "softwareOpenGlPreparation": "success",
+  "settingsRenderer": "Mesa llvmpipe 26.2.6; isolated test copy",
+  "humanVisualReview": "not_run",
+  "rendererBenchmark": "passed",
+  "wholeApplicationPerformanceBenchmark": "not_run",
+  "liveMicrophoneAndModelTests": "not_run",
+  "limitations": [
+    "Hosted desktop/OpenGL availability is not guaranteed.",
+    "Rendered fixtures do not prove settings UI behavior.",
+    "Captured images still require visual review."
+  ]
+}

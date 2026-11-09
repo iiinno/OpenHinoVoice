@@ -1,0 +1,2 @@
+6edac60e342bdc2fafec853721ed0f8e6c7670687a69a17e5c13507e1cd97100 *openhinovoice.exe
+2fbde715fb267410bb945166b41349315d3f8f371314bd3dada3e1833aabbaea *overlay_preview.exe

@@ -1,0 +1,16 @@
+{
+  "status": "passed",
+  "artifact": "windows-release-460d4667f4101966cd1161d2d872354d45fb8131",
+  "expectedRevision": "460d4667f4101966cd1161d2d872354d45fb8131",
+  "files": [
+    {
+      "file": "openhinovoice.exe",
+      "sha256": "6edac60e342bdc2fafec853721ed0f8e6c7670687a69a17e5c13507e1cd97100"
+    },
+    {
+      "file": "overlay_preview.exe",
+      "sha256": "2fbde715fb267410bb945166b41349315d3f8f371314bd3dada3e1833aabbaea"
+    }
+  ],
+  "artifactRevision": "460d4667f4101966cd1161d2d872354d45fb8131"
+}

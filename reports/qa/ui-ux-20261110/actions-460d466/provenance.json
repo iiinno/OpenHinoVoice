@@ -1,0 +1,70 @@
+{
+  "revision": "460d4667f4101966cd1161d2d872354d45fb8131",
+  "runId": 42665854698,
+  "url": "https://github.com/iiinno/OpenHinoVoice/actions/runs/42665854698",
+  "artifacts": [
+    {
+      "name": "verification",
+      "archiveSha256": "cf07dca8c34a04b199cdd96db8bb8caaafd99a6e2238397b135ec504ac1c34e9",
+      "kept": [
+        "result.json",
+        "ci-status.json",
+        "format.log",
+        "clippy.log",
+        "tests.log",
+        "release.log",
+        "ui-harness/result.json",
+        "perf-harness/result.json"
+      ],
+      "artifactId": 13697021419
+    },
+    {
+      "name": "release",
+      "archiveSha256": "0431f0b070d5b7acab7abf6136e868254fba9d53790be43aad862818dda38177",
+      "kept": [
+        "build.json",
+        "SHA256SUMS.txt"
+      ],
+      "artifactId": 13696003139
+    },
+    {
+      "name": "visual",
+      "archiveSha256": "240e712f88551b7c4606a35a7b647e7946261b06df036a92af61a9044abe9e96",
+      "kept": [
+        "status.json",
+        "artifact-validation.json",
+        "opengl/mesa-preparation.json",
+        "renderer/result.json",
+        "renderer/renderer-benchmark/benchmark.json",
+        "settings-ui/result.json",
+        "settings-ui/600x420/uia.json",
+        "settings-ui/720x520/uia.json",
+        "settings-ui/600x420/client-framebuffer.png",
+        "settings-ui/720x520/client-framebuffer.png",
+        "settings-ui/720x520/action-preview-start.png"
+      ],
+      "artifactId": 13695918573
+    },
+    {
+      "name": "performance",
+      "archiveSha256": "ce6fab60612056e4996cbef72b3f6a000eca4df6a2e952a35c26ca0ea9c290a1",
+      "kept": [
+        "status.json",
+        "artifact-validation.json",
+        "budget-result.json",
+        "feature-off-build.json",
+        "opengl/mesa-preparation.json",
+        "settings/plan.json",
+        "settings/result.json",
+        "settings/r1-baseline/result.json",
+        "settings/r1-candidate/result.json",
+        "settings/r2-baseline/result.json",
+        "settings/r2-candidate/result.json",
+        "settings/r3-baseline/result.json",
+        "settings/r3-candidate/result.json"
+      ],
+      "artifactId": 13697681480
+    }
+  ],
+  "downloadedReleaseHashesVerified": true
+}

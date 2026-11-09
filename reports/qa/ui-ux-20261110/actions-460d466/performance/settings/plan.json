@@ -1,0 +1,32 @@
+{
+  "mode": "Settings",
+  "namespaceValue": "perf-20261109T174111-df359cba",
+  "output": "D:\\a\\OpenHinoVoice\\OpenHinoVoice\\target\\qa\\perf\\settings",
+  "repetitions": 3,
+  "durationSeconds": 30,
+  "intervalMs": 1000,
+  "warmupMs": 2000,
+  "timeoutMs": 492000,
+  "artifacts": [
+    {
+      "label": "baseline",
+      "path": "D:\\a\\OpenHinoVoice\\OpenHinoVoice\\target\\qa\\perf\\opengl\\baseline.exe",
+      "sha256": "18731FF71C8F6F4F5A8246A5D2DF2C484C3CE32424AFBA9349DEC6E566CF71DA",
+      "bytes": 8165888,
+      "revision": "460d4667f4101966cd1161d2d872354d45fb8131",
+      "features": "--no-default-features",
+      "uiaExpected": "Absent",
+      "hudStyle": "standard"
+    },
+    {
+      "label": "candidate",
+      "path": "D:\\a\\OpenHinoVoice\\OpenHinoVoice\\target\\qa\\perf\\opengl\\candidate.exe",
+      "sha256": "6EDAC60E342BDC2FAFEC853721ED0F8E6C7670687A69A17E5C13507E1CD97100",
+      "bytes": 8438784,
+      "revision": "460d4667f4101966cd1161d2d872354d45fb8131",
+      "features": "default (accessibility)",
+      "uiaExpected": "Present",
+      "hudStyle": "standard"
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "status": "passed",
+  "privateIncreaseBytes": 4194304,
+  "executableIncreaseBytes": 1048576,
+  "observedDifference": {
+    "medianPeakPrivateBytes": 282624.0,
+    "executableBytes": 272896,
+    "startupToResponsiveWindowMs": 15.023500000000013,
+    "scope": "after the explicit UIA probe; expected feature-off absence is not accessibility success"
+  }
+}

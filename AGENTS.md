@@ -79,7 +79,7 @@ Test-Path "$env:APPDATA\OpenHinoVoice\config.toml"
 
 ## うまくいかないとき
 
-- `Invoke-WebRequest` が失敗する: リリースがまだない可能性がある。Rust がある PC なら、リポジトリを取得して `cargo build --release` し、`target\release\openhinovoice.exe` を 2 の場所に置く
+- `Invoke-WebRequest` が失敗する: リリースの有無とGitHub ActionsのWindowsビルド結果を確認する。未公開の場合は検証済みartifactを確認し、利用者のPC上でのビルドへ切り替えない。
 - 録音しても何も貼られない: `speech.exe` が見つかっていない。`%APPDATA%\OpenHinoVoice\config.toml` の `speech_exe` に、speech.exe のフルパスを書く
 - 録音が始まらない: 録音開始キーがほかのアプリと重なっている。設定の画面で Ctrl+Alt+J のような組み合わせに変える
 - オフラインモードで「認識モデルが未取得です」と出る: インターネットにつながった状態で 1 回録音すると、speech.cpp がモデルを取得する。そのあとオフラインモードに戻す
