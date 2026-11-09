@@ -2,6 +2,7 @@
 
 mod preview;
 mod setup;
+mod test_capture;
 
 use crate::asr;
 use crate::audio;
@@ -60,6 +61,7 @@ pub fn run() {
             });
             let mut settings = Settings::load();
             settings.preview.observe_environment(cc);
+            settings._test_capture = test_capture::Capture::install(cc);
             Ok(Box::new(settings))
         }),
     ) {
@@ -345,6 +347,7 @@ struct Settings {
     mic_test: Option<MicrophoneTest>,
     mic_result: Option<(bool, String)>,
     preview: preview::Preview,
+    _test_capture: Option<test_capture::Capture>,
     brand_icon: Option<egui::TextureHandle>,
     validation_focus: Option<Page>,
 }
@@ -435,6 +438,7 @@ impl Settings {
             mic_test: None,
             mic_result: None,
             preview: preview::Preview::default(),
+            _test_capture: None,
             brand_icon: None,
             validation_focus: None,
         }

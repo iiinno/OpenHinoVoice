@@ -76,3 +76,16 @@ cargo run --release --example overlay_preview -- <output-directory> --benchmark
 ```
 
 これは時間間隔を空けないoffscreenの処理時間測定で、実HUDのUpdateLayeredWindow、eguiのtexture upload、実際の60fps間隔、入力遅延は含まない。Windowsが動きを無効にしている場合はその条件をJSONへ記録する。100切替もCPU描画側の資源確認であり、設定画面の「試す」100回や停止後の周期repaintを確認した証拠にはしない。
+
+## 同じ認識workerを再利用する測定
+
+Realtimeはマイク・AI・貼付を使わず、既存WAVを実時間で本番セッションへ供給する。新規processもOS/model cacheは消去しない。
+
+```powershell
+./scripts/verify.ps1 -Mode Live -LiveTest Realtime -Corpus short -RealtimeWorkerMode Fresh -RealtimeRepetitions 3 -SpeechExe <既存speech.exe絶対パス> -ModelPath <取得済みgguf絶対パス>
+./scripts/verify.ps1 -Mode Live -LiveTest Realtime -Corpus short -RealtimeWorkerMode Reuse -RealtimeRepetitions 4 -SpeechExe <同じspeech.exe> -ModelPath <同じgguf>
+```
+
+Reuseの先頭は初回起動。後続3sessionが同じPID・追加spawnなしの比較対象になる。各sessionにPID、spawn数、ready、仮認識、Enter後、backlog、CER、要求受付と終端の時刻を記録する。受付から終端まではqueue待ちと推論の両方を含む。取消終端欠損、未対応終端、未送信確定区間、未完了要求、trace上限超過を完了扱いしない。現プロトコルで同じIDを再使用した後の古い終端を厳密識別できない制約も結果へ記録する。UI/描画/通常buildとASRの測定は同時に実行しない。
+
+長いverifyの実行中は各checkの `*.stdout.log` / `*.stderr.log` を読める。終了後の集約 `*.log` とresult.jsonでexit code・成功数を判断し、途中ログだけで成功としない。Nodeから非表示で起動する際も子の完了までPromiseをawaitし、tool終了時にbackground childを失った検証は成功に含めない。

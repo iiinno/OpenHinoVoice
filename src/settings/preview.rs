@@ -144,7 +144,7 @@ impl Scene {
                 text: "入力しました".into(),
             },
             Self::Startup => Mode::Notice {
-                tone: Tone::Info,
+                tone: Tone::Startup,
                 text: "OpenHinoVoiceを起動しました".into(),
             },
             Self::Warning => Mode::Notice {

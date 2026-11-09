@@ -64,6 +64,7 @@ pub enum Tone {
     Error,
     Success,
     Info,
+    Startup,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -739,7 +740,7 @@ fn rich_settling(mode: Option<&Mode>, style: HudStyle, elapsed: Duration) -> boo
         && matches!(
             mode,
             Some(Mode::Notice {
-                tone: Tone::Success,
+                tone: Tone::Success | Tone::Startup,
                 ..
             })
         )
@@ -1194,6 +1195,7 @@ fn tone_color(palette: &Palette, tone: Tone) -> Rgb {
         Tone::Success if palette.bg.0 < 128 => Rgb(100, 218, 160),
         Tone::Success => Rgb(17, 118, 82),
         Tone::Info => palette.fg,
+        Tone::Startup => palette.red,
     }
 }
 
@@ -1201,6 +1203,27 @@ fn draw_status_icon(canvas: &mut Canvas, tone: Tone, x: f32, y: f32, scale: f32,
     let point = |dx: f32, dy: f32| (x + dx * scale, y + dy * scale);
     let stroke = 1.7 * scale;
     match tone {
+        Tone::Startup => {
+            canvas.line(point(-5.0, -5.5), point(-5.0, 5.5), stroke, color, 1.0);
+            canvas.line(point(5.0, -5.5), point(5.0, 5.5), stroke, color, 1.0);
+            let wave = [
+                (-5.0, 0.0),
+                (-2.0, 0.0),
+                (-1.0, -2.0),
+                (1.0, 2.0),
+                (2.0, 0.0),
+                (5.0, 0.0),
+            ];
+            for segment in wave.windows(2) {
+                canvas.line(
+                    point(segment[0].0, segment[0].1),
+                    point(segment[1].0, segment[1].1),
+                    stroke,
+                    color,
+                    1.0,
+                );
+            }
+        }
         Tone::Success => {
             canvas.line(point(-5.0, 0.0), point(-1.0, 4.0), stroke, color, 1.0);
             canvas.line(point(-1.0, 4.0), point(6.0, -4.0), stroke, color, 1.0);
@@ -1896,6 +1919,17 @@ unsafe fn render_frame(
             let color = dot.unwrap_or(pal.fg);
             let cx = x + px(8.0);
             draw_status_icon(&mut c, *tone, cx, cy, s, color);
+            if rich && *tone == Tone::Startup && visuals.animate && visuals.elapsed < RICH_SETTLE {
+                let p = (phase / RICH_SETTLE.as_secs_f32()).clamp(0.0, 1.0);
+                c.stroke_circle(
+                    cx,
+                    cy,
+                    px(7.0) + px(9.0) * ease_out(p),
+                    px(1.2),
+                    color,
+                    0.55 * (1.0 - p),
+                );
+            }
             if rich && *tone == Tone::Success && visuals.animate && visuals.elapsed < RICH_SETTLE {
                 let p = (phase / RICH_SETTLE.as_secs_f32()).clamp(0.0, 1.0);
                 for i in 0..6 {
@@ -2456,6 +2490,37 @@ mod tests {
             false,
             false
         ));
+        let startup = Mode::Notice {
+            tone: Tone::Startup,
+            text: "起動しました".into(),
+        };
+        assert!(rich_settling(
+            Some(&startup),
+            HudStyle::Rich,
+            Duration::from_millis(599)
+        ));
+        assert!(!rich_settling(Some(&startup), HudStyle::Rich, RICH_SETTLE));
+        assert!(!rich_settling(
+            Some(&startup),
+            HudStyle::Standard,
+            Duration::ZERO
+        ));
+        assert!(!redraw_needed(
+            Some(&startup),
+            true,
+            false,
+            false,
+            false,
+            true
+        ));
+        assert!(!redraw_needed(
+            Some(&startup),
+            true,
+            false,
+            false,
+            true,
+            false
+        ));
         assert!(FRAME >= Duration::from_secs_f64(1.0 / 60.0));
     }
 
@@ -2490,7 +2555,13 @@ mod tests {
     #[test]
     fn notice_shapes_are_distinct_without_relying_on_color() {
         let mut images = Vec::new();
-        for tone in [Tone::Success, Tone::Warn, Tone::Error, Tone::Info] {
+        for tone in [
+            Tone::Success,
+            Tone::Warn,
+            Tone::Error,
+            Tone::Info,
+            Tone::Startup,
+        ] {
             let mut canvas = Canvas::new(24, 24);
             draw_status_icon(&mut canvas, tone, 12.0, 12.0, 1.0, Rgb(255, 255, 255));
             let silhouette: Vec<u8> = canvas.px.iter().map(|p| (p[3] * 255.0) as u8).collect();
@@ -2551,6 +2622,60 @@ mod tests {
             )
         };
         assert_eq!(a.canvas.px, b.canvas.px);
+    }
+
+    #[test]
+    fn startup_ripple_is_once_and_static_when_motion_is_reduced_or_high_contrast() {
+        let mode = Mode::Notice {
+            tone: Tone::Startup,
+            text: "起動しました".into(),
+        };
+        let work = RECT {
+            left: 0,
+            top: 0,
+            right: 1280,
+            bottom: 720,
+        };
+        let render = |elapsed, animate, palette: &Palette| unsafe {
+            render_frame(
+                &mode,
+                palette,
+                work,
+                1.0,
+                0.0,
+                None,
+                Visuals {
+                    style: HudStyle::Rich,
+                    animate,
+                    elapsed,
+                    recording_elapsed: Duration::ZERO,
+                },
+            )
+            .canvas
+            .px
+        };
+        let early = Duration::from_millis(200);
+        let later = Duration::from_millis(400);
+        assert_ne!(
+            render(early, true, &HINOMARU),
+            render(later, true, &HINOMARU)
+        );
+        assert_eq!(
+            render(RICH_SETTLE, true, &HINOMARU),
+            render(Duration::from_secs(2), true, &HINOMARU)
+        );
+        assert_eq!(
+            render(early, false, &HINOMARU),
+            render(later, false, &HINOMARU)
+        );
+        let contrast = Palette {
+            high_contrast: true,
+            ..HINOMARU
+        };
+        assert_eq!(
+            render(early, true, &contrast),
+            render(later, true, &contrast)
+        );
     }
 
     #[test]

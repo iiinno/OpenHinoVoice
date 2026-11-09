@@ -374,6 +374,11 @@ impl Worker {
         }
     }
 
+    /// 診断用の子プロセス識別子。プロセスを操作しない。
+    pub fn process_id(&self) -> u32 {
+        self.child.id()
+    }
+
     pub fn is_ready(&self) -> bool {
         self.ready
     }

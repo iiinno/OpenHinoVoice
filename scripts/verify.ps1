@@ -52,7 +52,7 @@ function Save-Result {
     $result | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $resultPath -Encoding utf8
 }
 
-function Run-Command([string]$Executable, [string[]]$Arguments) {
+function Run-Command([string]$Executable, [string[]]$Arguments, [string]$LiveLogPrefix) {
     $info = [Diagnostics.ProcessStartInfo]::new()
     $info.FileName = $Executable
     $info.WorkingDirectory = $repo
@@ -66,13 +66,29 @@ function Run-Command([string]$Executable, [string[]]$Arguments) {
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $info
     $started = $false
+    $stdoutFile = $null
+    $stderrFile = $null
     try {
         $started = $process.Start()
         if (-not $started) { throw "プロセスを開始できません: $Executable" }
-        $stdout = $process.StandardOutput.ReadToEndAsync()
-        $stderr = $process.StandardError.ReadToEndAsync()
+        if ($LiveLogPrefix) {
+            $stdoutFile = [IO.File]::Open("$LiveLogPrefix.stdout.log", [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+            $stderrFile = [IO.File]::Open("$LiveLogPrefix.stderr.log", [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+            $stdout = $process.StandardOutput.BaseStream.CopyToAsync($stdoutFile)
+            $stderr = $process.StandardError.BaseStream.CopyToAsync($stderrFile)
+        } else {
+            $stdout = $process.StandardOutput.ReadToEndAsync()
+            $stderr = $process.StandardError.ReadToEndAsync()
+        }
         while (-not $process.WaitForExit(200)) { }
         $process.WaitForExit()
+        if ($LiveLogPrefix) {
+            $stdout.GetAwaiter().GetResult()
+            $stderr.GetAwaiter().GetResult()
+            $stdoutFile.Dispose(); $stdoutFile = $null
+            $stderrFile.Dispose(); $stderrFile = $null
+            return [pscustomobject]@{ exitCode = $process.ExitCode; stdout = [IO.File]::ReadAllText("$LiveLogPrefix.stdout.log"); stderr = [IO.File]::ReadAllText("$LiveLogPrefix.stderr.log") }
+        }
         return [pscustomobject]@{ exitCode = $process.ExitCode; stdout = $stdout.GetAwaiter().GetResult(); stderr = $stderr.GetAwaiter().GetResult() }
     } finally {
         if ($started -and -not $process.HasExited) {
@@ -80,6 +96,8 @@ function Run-Command([string]$Executable, [string[]]$Arguments) {
             $process.Kill($true)
             $process.WaitForExit()
         }
+        if ($stdoutFile) { $stdoutFile.Dispose() }
+        if ($stderrFile) { $stderrFile.Dispose() }
         $process.Dispose()
     }
 }
@@ -89,7 +107,7 @@ function Invoke-Check([object]$Check, [string]$Executable, [string[]]$Arguments)
     Save-Result
     $watch = [Diagnostics.Stopwatch]::StartNew()
     try {
-        $outcome = Run-Command $Executable $Arguments
+        $outcome = Run-Command $Executable $Arguments (Join-Path $OutputDir $Check.name)
         $Check.exitCode = $outcome.exitCode
         $text = $outcome.stdout + $outcome.stderr
         [IO.File]::WriteAllText((Join-Path $OutputDir $Check.log), $text)

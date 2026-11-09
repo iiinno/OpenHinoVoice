@@ -38,3 +38,11 @@
 Fast: 282成功・0失敗・11明示実機試験を除外。fmt成功。sourceSha256 D1E7BDA9FCA808C25B91A71AAE2141C1E08AB5E966661A889925EE24947E370D。統合コードと資産・検証scriptを含むhashで、assetsをhashに含まない以前の基準hashとは対象集合が異なる。生ログは integration/。初回はegui RawInputのAPI差分でcompile失敗し、修正後に上記を実行した。途中終了した最初のbackground検証は成功に含めない。
 
 独立レビューはsettings/preview/HUDとapp/sound/IPCを相互担当が確認し、3件のUI欠陥と古い出力通知を修正。subclass参照寿命、トレイ再試行、描画cacheは別担当も静的確認した。現時点のFast成功は実画面・実音・実入力先・性能予算の達成を示さない。Fullと実画面検証は続行中。
+
+## 追加検証と実行場所の変更
+
+U12の再利用診断、起動記号・波紋、隔離画面のframebuffer captureを追加。Fastは294成功・0失敗・11明示除外、sourceSha256 2BAA19CE5AB1CEA008E269586638955B35BCB467DE6CC7DE72D6BEB93FB45A27。完了時刻2026-11-09T16:22:16Zで、ローカル停止指示より前に終了した結果。以後の変更の合格を意味しない。
+
+Windows 125%DPIで600x420/720x520の実settingsを別desktopで起動し、UIA52要素、実GL framebuffer画像、正常終了を確認。入力desktopは前後ともDefault。PrintWindowは単色となったため失敗を記録し、egui公式screenshot callbackへ切り替えた。screenshots/はこの実描画。後続の視認性変更とUIA操作追加は別の未検証差分。
+
+利用者の指示によりローカルのRustビルド・テストを停止し、GitHub Actionsへ切替。停止確認時にcargo/rustc/clippy-driver/linkerは0件。以後のFull・release・描画計測はCIへ委譲する。UIA/描画・ASRのCI runner上の制約は別に記録し、個人PCの過去の数値と同条件扱いしない。

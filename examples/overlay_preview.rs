@@ -93,6 +93,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 text: "取り消しました".into(),
             },
         ),
+        (
+            "startup",
+            Mode::Notice {
+                tone: Tone::Startup,
+                text: "OpenHinoVoiceを起動しました".into(),
+            },
+        ),
     ];
     if measure {
         return benchmark(output, &states);

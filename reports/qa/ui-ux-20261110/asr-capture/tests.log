@@ -1,0 +1,385 @@
+
+running 285 tests
+test app::flow_tests::confirmed_caption_uses_interval_order_even_when_results_arrive_out_of_order ... ok
+test app::flow_tests::a_ready_worker_is_kept_when_the_setting_says_so ... ok
+test app::flow_tests::a_pending_paste_preserves_raw_and_reserves_only_one_next_start ... ok
+test app::flow_tests::an_exit_request_waits_for_unsaved_raw_without_discarding_it ... ok
+test app::flow_tests::engine_preparation_updates_only_on_transitions_and_preserves_transient_notices ... ok
+test app::flow_tests::both_format_success_and_failure_carry_their_origin_generation ... ok
+test app::flow_tests::idle_loop_slows_only_when_nothing_is_on_screen ... ok
+test app::flow_tests::a_new_partial_cancels_the_old_partial_request_first ... ok
+test app::flow_tests::an_exit_request_cancels_pending_input_before_output_advances ... ok
+test app::flow_tests::late_format_result_cannot_apply_to_a_new_request ... ok
+test app::flow_tests::intervals_are_joined_in_order_and_empty_results_are_skipped ... ok
+test app::flow_tests::confirmed_requests_wait_for_the_previous_result_before_starting_their_timeout ... ok
+test app::flow_tests::a_worker_that_dies_mid_recording_resends_undone_intervals ... ok
+test app::flow_tests::confirmed_work_cancels_the_partial_before_sending_audio ... ok
+test app::flow_tests::old_format_success_or_error_cannot_finish_new_formatting ... ok
+test app::flow_tests::output_feedback_selects_one_result_and_keeps_warnings_distinct ... ok
+test app::flow_tests::enter_cancels_a_partial_that_is_still_uploading ... ok
+test app::flow_tests::edit_flow_recognizes_an_instruction_and_formats_it ... ok
+test app::flow_tests::completed_recognition_releases_or_keeps_the_worker_immediately ... ok
+test app::flow_tests::intervals_are_recognized_by_id_and_a_failed_one_is_marked_for_resend ... ok
+test app::flow_tests::partial_recognition_is_held_back_while_a_confirmed_interval_is_in_flight ... ok
+test app::flow_tests::sending_shares_pcm_and_advances_without_allocating_chunks ... ok
+test app::flow_tests::replay_cancel_discards_pending_output_notice_before_the_next_result ... ok
+test app::replay::tests::cancel_diagnostics_wait_for_an_observed_terminal_and_keep_its_origin_session ... ok
+test app::replay::tests::diagnostic_trace_has_a_hard_bound_and_reports_dropped_events ... ok
+test app::flow_tests::replay_new_session_cannot_inherit_a_previous_output_warning ... ok
+test app::flow_tests::enter_cancels_the_partial_in_flight ... ok
+test app::flow_tests::session_keeps_model_dictionary_and_format_settings_from_start ... ok
+test app::flow_tests::recording_limits_keep_pending_pcm_bounded_and_use_existing_stop_transition ... ok
+test app::flow_tests::the_wait_ends_at_the_pending_output_deadline ... ok
+test asr::tests::a_model_limit_is_not_a_complete_transcript ... ok
+test app::flow_tests::session_start_failure_must_prevent_following_recording_overlay ... ok
+test app::replay::tests::completed_sessions_reuse_the_same_pid_without_another_spawn ... ok
+test asr::tests::cancel_message_names_the_request ... ok
+test asr::tests::chunk_message_shape ... ok
+test app::replay::tests::replay_enter_drains_through_the_production_completion_transition ... ok
+test asr::tests::model_catalog_check_finds_fetched_files ... ok
+test asr::tests::parse_synthetic_wav ... ok
+test asr::tests::frozen_worker_stdin_cannot_block_ui_or_shutdown ... ok
+test asr::tests::silent_file_intervals_are_empty ... ok
+test asr::tests::transcribe_message_shape ... ok
+test asr::tests::silent_worker_times_out_and_a_new_worker_gets_a_fresh_deadline ... ok
+test asr::tests::wav_extensible_pcm16_is_accepted ... ok
+test app::replay::tests::replay_observes_only_the_current_nonempty_partial_result ... ok
+test app::replay::tests::session_reuse_rejects_an_active_session_and_a_fresh_process_policy ... ok
+test asr::tests::file_intervals_match_batch_segmentation_and_keep_the_final_fraction ... ok
+test asr::tests::ready_checks_installed_and_current_protocols_and_startup_failure ... ok
+test asr::tests::recognition_terminal_carries_id_and_distinguishes_empty_text ... ok
+test app::flow_tests::recognizing_ends_with_joined_text_when_every_interval_is_done ... ok
+test app::flow_tests::startup_progress_does_not_let_terminal_poll_consume_ready ... ok
+test app::flow_tests::partial_recognition_sends_open_audio_and_waits_for_confirmed_work ... ok
+test asr::tests::a_stop_request_terminates_before_cleanup_is_scheduled ... ok
+test asr::tests::forget_ids_restart_sequence_numbers_per_request ... ok
+test audio::tests::an_overloaded_consumer_gets_a_bounded_buffer_and_an_error ... ok
+test asr::tests::wav_float32_stereo_is_converted_to_mono_pcm16 ... ok
+test asr::tests::wav_rejects_truncation_compression_and_broken_frames ... ok
+test asr::tests::worker_counts_chunk_sequence_per_request_id ... ok
+test asr::tests::writer_reports_acknowledgements_and_io_errors ... ok
+test audio::tests::conversion_clamps ... ok
+test audio::tests::pcm_encoding_is_little_endian ... ok
+test audio::tests::stereo_frames_keep_order_across_reused_buffers ... ok
+test asr::tests::file_interval_errors_are_not_successful_empty_results ... ok
+test chatgpt::tests::dpapi_round_trip ... ok
+test chatgpt::tests::pkce_matches_rfc7636_example ... ok
+test chatgpt::tests::query_round_trip ... ok
+test chatgpt::tests::stream_collects_deltas_until_completed ... ok
+test chatgpt::tests::uuid_is_version_4 ... ok
+test config::tests::a_local_model_does_not_need_credentials ... ok
+test config::tests::api_key_detection ... ok
+test asr::tests::shutdown_kills_a_child_that_never_reads_its_pipe ... ok
+test chatgpt::tests::edit_selection_and_instruction_remain_separate_in_the_responses_request ... ok
+test chatgpt::tests::id_token_claims_are_checked ... ok
+test config::tests::invalid_toml_fails_closed_before_settings_save_or_migration ... ok
+test config::tests::set_values_replaces_in_place_and_keeps_the_rest ... ok
+test config::tests::extra_body_edits_preserve_nested_comments_and_unchanged_values ... ok
+test config::tests::hotkey_parsing ... ok
+test config::tests::extra_body_refuses_values_that_toml_cannot_represent ... ok
+test config::tests::inline_section_comments_and_multiline_prompt_survive_settings_save ... ok
+test config::tests::parses_example ... ok
+test config::tests::parses_extra_body_table ... ok
+test config::tests::set_values_replaces_a_multiline_prompt_as_a_whole ... ok
+test config::tests::missing_format_table_is_created_and_legacy_keys_are_scrubbed ... ok
+test config::tests::newer_speech_versions_sort_higher ... ok
+test config::tests::set_values_inserts_missing_keys_in_the_right_place ... ok
+test config::tests::dictionary_rules_parse_and_survive_settings_saves ... ok
+test feedback::tests::feedback_mixed_sound_and_display_are_custom_and_survive_a_save ... ok
+test feedback::tests::feedback_mute_and_individual_events_gate_every_sound ... ok
+test config::tests::test_namespace_is_explicit_and_cannot_change_object_directory ... ok
+test context::tests::current_process_can_be_identified ... ok
+test context::tests::missing_process_returns_none ... ok
+test feedback::tests::feedback_legacy_values_keep_their_meaning ... ok
+test feedback::tests::feedback_event_edits_keep_table_comments_and_unknown_keys ... ok
+test feedback::tests::feedback_presets_round_trip_without_changing_independent_preferences ... ok
+test config::tests::upgrades_only_unchanged_legacy_prompt ... ok
+test feedback::tests::feedback_restore_only_restores_the_sound_and_hud_editing_scope ... ok
+test feedback::tests::feedback_unknown_tokens_warn_without_rewriting_or_claiming_a_preset ... ok
+test format::security_tests::rejects_remote_plaintext_http ... ok
+test config::tests::recording_minutes_defaults_for_older_configs_and_validates_saved_choices ... ok
+test format::security_tests::repeated_prewarm_is_skipped_until_the_first_request_finishes ... ok
+test format::tests::anthropic_messages_sends_key_headers_and_reads_sse ... ok
+test format::tests::answer_instead_of_cleanup_is_rejected ... ok
+test format::tests::anthropic_rejects_a_response_cut_off_by_the_token_limit ... ok
+test format::tests::blank_raw_fails_before_any_provider_request ... ok
+test format::tests::delimiter_like_transcription_is_sent_as_literal_user_content ... ok
+test format::tests::edit_refuses_an_extreme_shrink ... ok
+test format::tests::edit_instruction_in_selection_is_treated_as_data_by_the_message_shape ... ok
+test format::tests::edit_sends_selection_and_instruction_as_separate_messages ... ok
+test format::tests::local_formatting_works_without_an_api_key ... ok
+test format::tests::http_500_is_error ... ok
+test format::tests::edit_rejects_empty_or_extreme_answers_without_retry ... ok
+test format::tests::local_requests_do_not_follow_redirects ... ok
+test format::tests::empty_content_is_rejected ... ok
+test format::tests::extra_body_is_merged_and_max_tokens_set ... ok
+test format::tests::offline_model_listing_refuses_cloud_providers_before_authentication ... ok
+test format::tests::offline_openai_uses_the_actual_destination_for_the_gate ... ok
+test format::tests::http_401_is_error ... ok
+test format::tests::missing_key_is_rejected_before_http ... ok
+test format::tests::one_bad_long_format_piece_keeps_its_raw_text_and_formats_the_rest ... ok
+test format::tests::offline_mode_refuses_everything_but_localhost ... ok
+test format::tests::prewarm_loads_local_models_with_a_tiny_request ... ok
+test format::tests::long_formatting_keeps_paragraph_breaks_between_pieces ... ok
+test format::tests::substantial_cleanup_is_allowed_to_be_much_shorter ... ok
+test format::tests::success_returns_trimmed_content_and_sends_raw_as_user_message ... ok
+test history::tests::home_snapshot_counts_all_rows_before_limiting_recent_items ... ok
+test format::tests::whitespace_refusal_wrapper_and_truncation_are_fail_closed ... ok
+test history::tests::opted_out_recovery_writes_nothing ... ok
+test history::tests::history_is_disabled_by_default ... ok
+test history::tests::writer_keeps_revision_order_and_rejects_a_revoked_permission ... ok
+test history::usage_tests::daylight_transition_uses_the_offset_at_midnight ... ok
+test history::usage_tests::days_from_epoch_matches_known_dates ... ok
+test history::usage_tests::local_midnight_has_the_correct_sign_in_east_and_west_timezones ... ok
+test hook::tests::enter_pressed_in_idle_does_not_become_capture_on_repeat ... ok
+test hook::tests::enter_repeat_never_issues_second_event_after_state_transition ... ok
+test format::tests::prewarm_connection_is_reused_by_format ... ok
+test lexicon::tests::asr_dictionary_deduplicates_written_form_and_appends_as_lines ... ok
+test lexicon::tests::asr_keywords_are_separate_lines_and_readings_keep_commas ... ok
+test lexicon::tests::asr_hint_keeps_original_words_and_bounds_added_terms ... ok
+test lexicon::tests::exact_alias_only_and_longest_match_wins ... ok
+test lexicon::tests::formatter_hints_preserve_custom_prompt ... ok
+test lexicon::tests::replacement_is_simultaneous_and_not_recursive ... ok
+test lexicon::tests::validation_rejects_conflicting_or_empty_aliases ... ok
+test overlay::tests::caption_keeps_the_latest_text_until_cleared ... ok
+test overlay::tests::caret_overlay_stays_inside_offset_work_area ... ok
+test format::tests::wrong_key_is_not_retried ... ok
+test format::tests::streamed_deltas_reach_the_callback_before_the_final_text ... ok
+test format::tests::busy_provider_is_retried_until_it_formats ... ok
+test format::tests::slow_server_times_out ... ok
+test format::tests::cancelled_formatting_stops_retrying ... ok
+test format::tests::stalled_stream_times_out_and_is_retryable ... ok
+test overlay::tests::close_request_preserves_the_hidden_clipboard_owner_until_shutdown ... ok
+test overlay::tests::level_maps_voice_range_into_meter ... ok
+test overlay::tests::motion_preferences_and_finite_success_do_not_schedule_idle_frames ... ok
+test overlay::tests::clearing_the_caption_releases_its_cached_text_and_image ... ok
+test overlay::tests::embedded_tray_icons_cover_all_states_and_dpi_sizes ... ok
+test overlay::tests::caption_draws_a_partial_before_the_first_confirmed_interval ... ok
+test overlay::tests::preview_environment_changes_with_os_palette_and_motion ... ok
+test overlay::tests::preparation_copy_distinguishes_live_recording_from_recorded_audio ... ok
+test overlay::tests::preparation_updates_preserve_recording_details_and_do_not_replace_notices ... ok
+test overlay::tests::round_rect_edges_are_antialiased ... ok
+test overlay::tests::static_notice_stops_rendering_only_after_the_final_fade_frame ... ok
+test overlay::tests::taskbar_created_message_registration_is_stable ... ok
+test overlay::tests::tray_failures_have_finite_backoff_and_restart_on_a_new_state ... ok
+test overlay::tests::tray_readd_intent_survives_failure_and_stops_after_success ... ok
+test overlay::tests::repeated_labels_share_a_bounded_text_mask_cache ... ok
+test overlay::tests::tray_semantics_follow_processing_and_error_without_hud_visibility ... ok
+test paste::tests::a_second_transaction_is_rejected_even_on_the_same_thread ... ok
+test overlay::tests::premultiplied_blend_over_transparent ... ok
+test overlay::tests::notice_shapes_are_distinct_without_relying_on_color ... ok
+test paste::tests::empty_and_nul_are_handled_without_input ... ok
+test overlay::tests::rich_particles_settle_and_reduced_motion_is_static ... ok
+test paste::tests::explicit_recovery_copy_prepares_exact_utf16_without_touching_clipboard ... ok
+test paste::tests::restore_never_replaces_a_newer_clipboard_change ... ok
+test paste::tests::sendinput_partial_or_zero_is_not_mistaken_for_success ... ok
+test history::tests::appends_valid_json_lines_and_rotates_at_limit ... ok
+test paste::tests::focus_and_window_changes_are_rejected ... ok
+test paste::tests::paste_sends_shortcut_not_text_events ... ok
+test preview_ipc::tests::native_transport_child ... ok
+test preview_ipc::tests::parser_rejects_invalid_namespace_sender_ids_volume_and_deadline ... ok
+test preview_ipc::tests::timeout_before_main_loop_processing_discards_the_sound ... ok
+test preview_ipc::tests::recording_invalidates_queued_and_later_cues_from_the_same_preview ... ok
+test preview_ipc::tests::queue_is_bounded_and_expiry_only_returns_the_preview_token ... ok
+test preview_ipc::tests::stale_stop_cannot_cancel_new_generation_and_stopped_play_cannot_restart ... ok
+test provider::tests::local_urls_are_recognized_and_remote_ones_are_not ... ok
+test provider::tests::presets_cover_known_providers_and_keep_old_ids ... ok
+test recovery::tests::a_save_failure_retains_the_original_after_successful_input ... ok
+test recovery::tests::failed_input_keeps_the_final_text_and_full_queue_rejects_new_recording ... ok
+test recovery::tests::opt_out_does_not_need_disk_and_success_clears_the_memory_copy ... ok
+test recovery::tests::old_ack_never_releases_a_newer_transcript ... ok
+test segment::tests::joined_intervals_keep_order_and_skip_empty_results ... ok
+test segment::tests::equally_quiet_frames_choose_the_latest_cut ... ok
+test segment::tests::finish_returns_the_open_interval_and_resets ... ok
+test overlay::tests::shared_preview_is_deterministic_and_minimal_is_smaller ... ok
+test segment::tests::background_noise_is_learned_and_does_not_open_intervals ... ok
+test segment::tests::sine_rms_matches_amplitude_over_root_two ... ok
+test segment::tests::loud_calibration_frames_do_not_raise_the_noise_floor ... ok
+test segment::tests::open_samples_tracks_the_audio_pushed_so_far ... ok
+test segment::tests::single_frame_click_does_not_open_an_interval ... ok
+test segment::tests::speech_from_the_start_and_the_last_incomplete_frame_are_preserved ... ok
+test segment::tests::speech_during_calibration_is_retained_until_finish ... ok
+test segment::tests::silence_alone_produces_no_interval ... ok
+test settings::clipboard_tests::display_restore_covers_theme_and_captions_without_other_page_edits ... ok
+test segment::tests::long_speech_is_cut_at_the_quietest_frame_of_the_recent_window ... ok
+test settings::clipboard_tests::home_preparation_explains_offline_recovery_without_claiming_a_download ... ok
+test settings::clipboard_tests::home_preparation_never_reports_ready_without_an_engine_or_verified_model ... ok
+test settings::clipboard_tests::sandbox_page_names_only_select_known_pages ... ok
+test settings::clipboard_tests::home_preparation_preserves_progress_errors_and_cancellation ... ok
+test segment::tests::very_quiet_speech_still_opens_when_the_room_is_silent ... ok
+test segment::tests::two_utterances_separated_by_silence_close_into_two_intervals ... ok
+test settings::preview::tests::preview_late_frame_does_not_replay_stale_cues ... ok
+test settings::preview::tests::preview_mute_and_disabled_events_never_emit_sound ... ok
+test settings::preview::tests::preview_sequence_is_synthetic_bounded_and_plays_each_cue_once ... ok
+test settings::preview::tests::preview_single_event_uses_the_requested_state_and_expires ... ok
+test settings::preview::tests::preview_stop_invalidates_all_future_cues_and_returns_only_its_token ... ok
+test settings::clipboard_tests::save_shortcut_consumes_ctrl_s_without_matching_plain_s ... ok
+test settings::clipboard_tests::clipboard_owner_requires_a_live_window_in_this_process ... ok
+test overlay::tests::startup_ripple_is_once_and_static_when_motion_is_reduced_or_high_contrast ... ok
+test settings::setup::tests::catalog_requires_the_selected_variant_to_be_fetched ... ok
+test settings::setup::tests::completion_requires_verified_model_and_honors_cancellation ... ok
+test settings::setup::tests::dropping_a_model_job_does_not_join_a_busy_worker_on_the_ui_thread ... ok
+test settings::setup::tests::pipe_capture_is_bounded_but_drains_all_input ... ok
+test settings::setup::tests::pipe_holder_parent_fixture ... ignored, subprocess fixture with an inherited-pipe descendant
+test settings::setup::tests::progress_only_uses_a_valid_reported_percentage ... ok
+test settings::setup::tests::waiting_child_fixture ... ignored, subprocess fixture for cancellation; invoked by its owning test
+test history::tests::missing_or_corrupted_entry_does_not_recreate_content ... ok
+test config::tests::invalid_settings_save_preserves_existing_file_and_valid_save_keeps_comments ... ok
+test settings::clipboard_tests::setup_detects_a_missing_configured_executable ... ok
+test sound::tests::all_embedded_sets_are_bounded_16bit_mono_pcm ... ok
+test sound::tests::failed_start_playback_has_no_capture_exclusion_or_owned_pcm ... ok
+test sound::tests::failed_stop_keeps_the_original_pcm_alive_and_rejects_replacement ... ok
+test sound::tests::disabled_start_event_stops_preview_without_excluding_capture ... ok
+test sound::tests::oversized_audio_is_not_allocated_or_started ... ok
+test settings::clipboard_tests::validation_errors_route_to_the_field_without_discarding_the_draft ... ok
+test sound::tests::mute_recording_stops_previous_sound_without_capture_exclusion ... ok
+test sound::tests::only_the_current_preview_token_can_stop_and_release_its_pcm ... ok
+test sound::tests::recording_stops_preview_before_start_and_ignores_delayed_preview_stop ... ok
+test sound::tests::volume_scales_samples ... ok
+test settings::clipboard_tests::closing_settings_keeps_a_starting_worker_until_it_finishes ... ok
+test settings::clipboard_tests::closing_also_waits_for_a_worker_cancelled_by_a_model_change ... ok
+test state::tests::asr_done_with_key_goes_formatting ... ok
+test state::tests::asr_done_without_key_pastes_raw_with_notice ... ok
+test state::tests::asr_done_with_raw_flag_pastes_raw ... ok
+test state::tests::asr_error_goes_idle_with_error_overlay ... ok
+test state::tests::edit_format_done_replaces_the_selection ... ok
+test state::tests::edit_format_failure_does_not_paste_anything ... ok
+test state::tests::edit_formatting_enter_and_second_enter_do_not_paste_the_instruction ... ok
+test preview_ipc::tests::hidden_window_transport_accepts_a_bounded_request_from_the_same_executable ... ok
+test state::tests::edit_mode_starts_from_recording_and_shows_the_head ... ok
+test state::tests::edit_notice_keeps_recording_and_shows_the_reason ... ok
+test settings::test_capture::tests::capture_path_requires_exact_sandbox_subdirectory ... ok
+test format::tests::long_steady_stream_is_not_cut_by_the_wait_limit ... ok
+test state::tests::edit_recognizing_asr_error_discards ... ok
+test state::tests::edit_recognizing_done_goes_to_edit_formatting ... ok
+test state::tests::editing_ignores_late_edit_mode_started_and_f8 ... ok
+test state::tests::edit_recording_enter_goes_to_edit_recognizing ... ok
+test state::tests::edit_states_escape_to_idle_and_discard ... ok
+test state::tests::edit_recognizing_ignores_the_second_enter ... ok
+test state::tests::failed_paste_stops_following_success_notices_and_hides ... ok
+test state::tests::format_done_pastes_formatted ... ok
+test state::tests::format_failed_pastes_raw_with_skip_notice ... ok
+test state::tests::formatting_enter_pastes_raw ... ok
+test state::tests::formatting_esc_discards ... ok
+test state::tests::formatting_f8_ignored ... ok
+test state::tests::idle_enter_esc_pass_through ... ok
+test state::tests::idle_f8_starts_recording ... ok
+test state::tests::recording_esc_discards ... ok
+test state::tests::idle_late_events_ignored ... ok
+test state::tests::recording_enter_goes_recognizing ... ok
+test state::tests::recognizing_enter_sets_raw_flag ... ok
+test state::tests::recording_f8_ignored ... ok
+test state::tests::recognizing_esc_discards ... ok
+test state::tests::successful_paste_retains_normal_notice_and_hide_behavior ... ok
+test uia::tests::an_unsupported_text_pattern_is_reported_as_unavailable ... ok
+test state::tests::recording_asr_error_goes_idle ... ok
+test state::tests::recognizing_f8_ignored_keeps_flag ... ok
+test uia::tests::a_timed_out_probe_does_not_start_more_threads ... ok
+test config::tests::atomic_replace_keeps_old_file_when_new_write_fails ... ok
+test sound::tests::repeated_sound_and_volume_changes_keep_only_one_bounded_pcm ... ok
+test history::tests::clear_rejects_an_initial_checkpoint_that_was_already_queued ... ok
+test history::tests::encrypted_recovery_round_trip_and_explicit_clear ... ok
+test usage::tests::logged_lines_carry_timestamp_event_and_fields ... ok
+test settings::setup::tests::cancelling_a_running_command_reaps_the_child_promptly ... ok
+test usage::tests::the_log_rotates_when_it_grows_over_the_cap ... ok
+test settings::setup::tests::a_descendant_holding_output_pipes_cannot_delay_command_completion ... ok
+test settings::setup::tests::a_child_cannot_run_or_launch_descendants_before_job_assignment ... ok
+test history::tests::recent_is_newest_first_and_prunes_excess_entries ... ok
+
+test result: ok. 283 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 10.22s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 1 test
+test wav_is_transcribed ... ignored, needs the speech.cpp worker, a Haas model and a test WAV; run explicitly
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 1 test
+test records_two_seconds ... ignored, needs a microphone; run explicitly
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 2 tests
+test real_api_formats_long_dictation ... ignored, calls the real formatting API with a long transcript from JV_RAW_FILE; run explicitly
+test real_api_formats_with_prewarm ... ignored, calls the real formatting API with the key in the user config; run explicitly
+
+test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 1 test
+test cycle_overlay_states ... ignored, shows the overlay on screen; run explicitly
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 1 test
+test pastes_into_focused_app ... ignored, needs a focused text field in the interactive session; run explicitly
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 5 tests
+test live_segmented_latency_and_accuracy_on_corpus ... ignored, 取得済みspeech.cppモデルとcorpusが必要。verify.ps1 -Mode Liveで明示実行
+test live_worker_latency_and_accuracy_on_corpus ... ignored, 取得済みspeech.cppモデルとcorpusが必要。verify.ps1 -Mode Liveで明示実行
+test character_error_rate_counts_substitution_insertion_and_deletion ... ok
+test missing_or_empty_corpus_selection_is_an_error ... ok
+test each_requested_corpus_requires_audio_and_reference ... ok
+
+test result: ok. 3 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+
+running 9 tests
+test live_realtime_session_on_corpus ... ignored, 本番セッションと既存モデル・音声を実時間で検証。verify.ps1 -Mode Live -LiveTest Realtimeで明示実行
+test cancelled_upload_may_finish_without_transcribe_but_duplicate_terminals_are_incomplete ... ok
+test final_session_with_an_unobserved_cancel_terminal_is_diagnostically_incomplete ... ok
+test incomplete_diagnostics_preserve_an_existing_recognition_failure ... ok
+test realtime_audio_frames_keep_fractional_samples_without_drift ... ok
+test realtime_worker_conditions_and_repetition_counts_are_explicit ... ok
+test request_timings_preserve_unfinished_requests_and_ignore_old_session_cancel_results ... ok
+test terminal_before_transcribe_and_untranscribed_intervals_cannot_pass_diagnostics ... ok
+test realtime_requires_each_requested_corpus ... ok
+
+test result: ok. 8 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Compiling openhinovoice v0.5.0 (C:\Users\inoue\Project\OpenHinoVoice)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 10s
+     Running unittests src\lib.rs (target\debug\deps\openhinovoice-877135d7193e6239.exe)
+     Running unittests src\main.rs (target\debug\deps\openhinovoice-21f8cb7321f6939d.exe)
+     Running tests\asr_integration.rs (target\debug\deps\asr_integration-fc63e477a6a080fd.exe)
+     Running tests\audio_integration.rs (target\debug\deps\audio_integration-5d06b453401a6d5e.exe)
+     Running tests\format_live.rs (target\debug\deps\format_live-101374990cf38daa.exe)
+     Running tests\overlay_preview.rs (target\debug\deps\overlay_preview-9c4f4a45de683a0c.exe)
+     Running tests\paste_integration.rs (target\debug\deps\paste_integration-4111b46d817e9881.exe)
+     Running tests\perf_live.rs (target\debug\deps\perf_live-322381750d67eb51.exe)
+     Running tests\realtime_live.rs (target\debug\deps\realtime_live-7eff4405858175b3.exe)
+     Running unittests examples\gen_corpus.rs (target\debug\examples\gen_corpus-a849fcb8313deb54.exe)
+     Running unittests examples\overlay_preview.rs (target\debug\examples\overlay_preview-2110daff57c506d4.exe)
+     Running unittests examples\uia_probe.rs (target\debug\examples\uia_probe-5dfccfec05bfa33f.exe)
+     Running unittests examples\usage_report.rs (target\debug\examples\usage_report-f1b3e035ff5dee44.exe)

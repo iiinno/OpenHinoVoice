@@ -710,7 +710,11 @@ impl App {
                     }
                 }
                 self.session.engine_preparing = !self.session.worker.as_ref().unwrap().is_ready();
-                if let Some(replay) = &self.replay {
+                if let Some(replay) = &mut self.replay {
+                    replay.worker_started(
+                        self.session.worker.as_ref().unwrap().process_id(),
+                        reused_worker,
+                    );
                     self.session.sample_rate = replay.sample_rate;
                     self.session.segmenter = segment::Segmenter::new(replay.sample_rate);
                 } else {
@@ -1298,7 +1302,10 @@ impl App {
         }
         if ready && !restart {
             if let Some(replay) = &mut self.replay {
-                replay.worker_ready_at.get_or_insert_with(Instant::now);
+                if replay.worker_ready_at.is_none() {
+                    replay.worker_ready_at = Some(Instant::now());
+                    replay.record(replay.worker_pid, None, replay::TraceKind::WorkerReady);
+                }
             }
         }
 
@@ -1335,6 +1342,9 @@ impl App {
             loop {
                 let polled = self.session.worker.as_mut().unwrap().poll_terminal();
                 let Some(result) = polled else { break };
+                if let (Some(replay), Ok(terminal)) = (&mut self.replay, &result) {
+                    replay.terminal(self.session.worker.as_ref().unwrap().process_id(), terminal);
+                }
                 match result {
                     Ok(terminal) if terminal.id.starts_with('p') => {
                         // 今の仮の結果だけを映す。止めた古い仮の終端は無視する
@@ -1431,6 +1441,16 @@ impl App {
                     match worker.transcribe(&id, self.session.sample_rate, &self.session.asr_hints)
                     {
                         Ok(true) => {
+                            if let Some(replay) = &mut self.replay {
+                                replay.record(
+                                    Some(worker.process_id()),
+                                    Some(&id),
+                                    replay::TraceKind::TranscribeQueued {
+                                        partial: sending.is_partial,
+                                        pcm_bytes: sending.pcm.len(),
+                                    },
+                                );
+                            }
                             if sending.is_partial {
                                 self.session.partial = Some(Partial { id: id.clone() });
                                 self.session.log(
@@ -1599,6 +1619,9 @@ impl App {
         if !worker.cancel(&partial.id)? {
             return Ok(false);
         }
+        if let Some(replay) = &mut self.replay {
+            replay.cancel_queued(worker.process_id(), &partial.id);
+        }
         self.session.partial = None;
         Ok(true)
     }
@@ -1624,6 +1647,9 @@ impl App {
         )?;
         match Worker::spawn(&self.session.cfg.speech_exe, &self.session.cfg.model) {
             Ok(worker) => {
+                if let Some(replay) = &mut self.replay {
+                    replay.worker_started(worker.process_id(), false);
+                }
                 self.session.worker = Some(worker);
                 self.session.worker_spawned_at = Instant::now();
                 Ok(true)
@@ -1690,6 +1716,103 @@ struct ReplayCapture {
     completed_at: Option<Instant>,
     outcome: Option<Result<String, String>>,
     retired: Vec<std::thread::JoinHandle<()>>,
+    run_started_at: Option<Instant>,
+    session_index: u32,
+    worker_pid: Option<u32>,
+    spawn_count: u32,
+    reused_worker: bool,
+    trace: Vec<replay::TraceEvent>,
+    dropped_trace_events: usize,
+    pending_cancels: Vec<(u32, String, Instant, u32)>,
+}
+
+impl ReplayCapture {
+    const TRACE_LIMIT: usize = 32_768;
+
+    fn record(&mut self, pid: Option<u32>, id: Option<&str>, kind: replay::TraceKind) {
+        let now = Instant::now();
+        let epoch = *self.run_started_at.get_or_insert(now);
+        if self.trace.len() >= Self::TRACE_LIMIT {
+            self.dropped_trace_events += 1;
+            return;
+        }
+        self.trace.push(replay::TraceEvent {
+            run_elapsed_us: now.saturating_duration_since(epoch).as_micros(),
+            session: self.session_index,
+            pid,
+            request_id: id.map(str::to_owned),
+            kind,
+        });
+    }
+
+    fn worker_started(&mut self, pid: u32, reused: bool) {
+        self.worker_pid = Some(pid);
+        self.reused_worker |= reused;
+        if !reused {
+            self.spawn_count += 1;
+            self.worker_ready_at = None;
+        }
+        self.record(
+            Some(pid),
+            None,
+            if reused {
+                replay::TraceKind::WorkerReused
+            } else {
+                replay::TraceKind::WorkerSpawned
+            },
+        );
+        if reused {
+            self.worker_ready_at = Some(Instant::now());
+            self.record(Some(pid), None, replay::TraceKind::WorkerReady);
+        }
+    }
+
+    fn cancel_queued(&mut self, pid: u32, id: &str) {
+        if self.pending_cancels.len() < Self::TRACE_LIMIT {
+            self.pending_cancels
+                .push((pid, id.to_owned(), Instant::now(), self.session_index));
+        } else {
+            self.dropped_trace_events += 1;
+        }
+        self.record(Some(pid), Some(id), replay::TraceKind::CancelQueued);
+    }
+
+    fn terminal(&mut self, pid: u32, terminal: &asr::Terminal) {
+        let cancelled_in = self
+            .pending_cancels
+            .iter()
+            .find(|(owner, id, _, _)| *owner == pid && *id == terminal.id)
+            .map(|(_, _, _, session)| *session);
+        self.record(
+            Some(pid),
+            Some(&terminal.id),
+            replay::TraceKind::Terminal {
+                cancel_requested_session: cancelled_in,
+                stop: terminal.stop.clone(),
+                outcome: match &terminal.outcome {
+                    asr::TerminalOutcome::Text(_) => "text",
+                    asr::TerminalOutcome::Error(_) => "error",
+                    asr::TerminalOutcome::Cancelled => "cancelled",
+                }
+                .into(),
+            },
+        );
+        if let Some(index) = self
+            .pending_cancels
+            .iter()
+            .position(|(owner, id, _, _)| *owner == pid && *id == terminal.id)
+        {
+            let (_, id, at, session) = self.pending_cancels.remove(index);
+            self.record(
+                Some(pid),
+                Some(&id),
+                replay::TraceKind::CancelTerminalObserved {
+                    requested_session: session,
+                    wait_us: at.elapsed().as_micros(),
+                },
+            );
+        }
+    }
 }
 
 /// 検証専用。本番の状態遷移と認識処理を共有し、音声源と出力先だけを置き換える。
@@ -1698,11 +1821,68 @@ pub mod replay {
     use super::*;
     use std::path::Path;
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum WorkerPolicy {
+        FreshProcess,
+        ReuseReady,
+    }
+
+    #[derive(Debug, Clone, serde::Serialize)]
+    #[serde(tag = "event", rename_all = "snake_case")]
+    pub enum TraceKind {
+        SessionStarted {
+            sample_rate: u32,
+        },
+        WorkerSpawned,
+        WorkerReused,
+        WorkerReady,
+        IntervalClosed {
+            pcm_bytes: usize,
+        },
+        TranscribeQueued {
+            partial: bool,
+            pcm_bytes: usize,
+        },
+        Terminal {
+            cancel_requested_session: Option<u32>,
+            stop: String,
+            outcome: String,
+        },
+        CancelQueued,
+        CancelTerminalObserved {
+            requested_session: u32,
+            wait_us: u128,
+        },
+        Enter,
+    }
+
+    #[derive(Debug, Clone, serde::Serialize)]
+    pub struct TraceEvent {
+        pub run_elapsed_us: u128,
+        pub session: u32,
+        pub pid: Option<u32>,
+        pub request_id: Option<String>,
+        #[serde(flatten)]
+        pub kind: TraceKind,
+    }
+
+    #[derive(Debug, serde::Serialize)]
+    pub struct Diagnostics {
+        pub events: Vec<TraceEvent>,
+        pub dropped_events: usize,
+        pub unresolved_cancel_requests: usize,
+    }
+
     pub struct Replay {
         app: App,
+        policy: WorkerPolicy,
     }
 
     pub struct Snapshot {
+        pub session_index: u32,
+        pub worker_pid: Option<u32>,
+        pub worker_spawn_count: u32,
+        pub reused_worker: bool,
         pub worker_ready_at: Option<Instant>,
         pub first_partial_at: Option<Instant>,
         pub enter_at: Option<Instant>,
@@ -1713,6 +1893,15 @@ pub mod replay {
 
     impl Replay {
         pub fn new(speech: &Path, model: &Path, sample_rate: u32) -> Result<Self, String> {
+            Self::new_with_policy(speech, model, sample_rate, WorkerPolicy::FreshProcess)
+        }
+
+        pub fn new_with_policy(
+            speech: &Path,
+            model: &Path,
+            sample_rate: u32,
+            policy: WorkerPolicy,
+        ) -> Result<Self, String> {
             if !config::is_test_sandbox() {
                 return Err("verify.ps1の隔離環境で実行してください".into());
             }
@@ -1736,7 +1925,11 @@ pub mod replay {
             cfg.live_caption = true;
             cfg.partial_caption = true;
             cfg.edit_mode = false;
-            cfg.keep_worker_minutes = 0;
+            cfg.keep_worker_minutes = if policy == WorkerPolicy::ReuseReady {
+                60
+            } else {
+                0
+            };
             cfg.max_recording_minutes = 60;
             cfg.format.offline = true;
             cfg.format.save_history = false;
@@ -1746,9 +1939,16 @@ pub mod replay {
             let mut app = App::new(cfg);
             app.replay = Some(Box::new(ReplayCapture {
                 sample_rate,
+                session_index: 1,
+                run_started_at: Some(Instant::now()),
                 ..ReplayCapture::default()
             }));
-            let mut replay = Self { app };
+            app.replay.as_mut().unwrap().record(
+                None,
+                None,
+                TraceKind::SessionStarted { sample_rate },
+            );
+            let mut replay = Self { app, policy };
             replay.app.dispatch(Event::F8);
             if let Some(Err(error)) = replay.outcome() {
                 return Err(error.to_string());
@@ -1756,16 +1956,102 @@ pub mod replay {
             Ok(replay)
         }
 
+        /// 成功した直前のsessionが保持した同一workerだけを再利用する。
+        pub fn next_session(&mut self, sample_rate: u32) -> Result<(), String> {
+            if self.policy != WorkerPolicy::ReuseReady {
+                return Err("FreshProcessでは新しいReplayを作成してください".into());
+            }
+            if !(8_000..=192_000).contains(&sample_rate)
+                || !matches!(self.app.state, State::Idle)
+                || !matches!(self.outcome(), Some(Ok(_)))
+            {
+                return Err("成功したsessionの完了後に有効なsample_rateで再開してください".into());
+            }
+            let capture = self.app.replay.as_ref().unwrap();
+            let expected_pid = capture.worker_pid;
+            let spawns = capture.spawn_count;
+            if capture
+                .pending_cancels
+                .iter()
+                .any(|(pid, _, _, _)| Some(*pid) == expected_pid)
+            {
+                return Err(
+                    "前sessionの取消終端が未観測のため、同一IDを再使用する測定を続行できません"
+                        .into(),
+                );
+            }
+            let reusable = self.app.kept_worker.as_ref().is_some_and(|kept| {
+                kept.worker.is_ready()
+                    && Some(kept.worker.process_id()) == expected_pid
+                    && kept.expires > Instant::now()
+                    && kept.key == WorkerKey::for_config(&self.app.cfg)
+            });
+            if !reusable {
+                return Err(
+                    "同一PIDのready workerが保持されていないため再利用測定を続行できません".into(),
+                );
+            }
+            let capture = self.app.replay.as_mut().unwrap();
+            capture.sample_rate = sample_rate;
+            capture.session_index += 1;
+            capture.worker_ready_at = None;
+            capture.first_partial_at = None;
+            capture.completed_at = None;
+            capture.outcome = None;
+            capture.reused_worker = false;
+            capture.record(
+                expected_pid,
+                None,
+                TraceKind::SessionStarted { sample_rate },
+            );
+            self.app.dispatch(Event::F8);
+            if let Some(Err(error)) = self.outcome() {
+                return Err(error.into());
+            }
+            let capture = self.app.replay.as_ref().unwrap();
+            if capture.worker_pid != expected_pid
+                || capture.spawn_count != spawns
+                || !capture.reused_worker
+            {
+                return Err("再利用条件が崩れました。PIDとspawn履歴を確認してください".into());
+            }
+            Ok(())
+        }
+
+        fn record_intervals_since(&mut self, index: usize) {
+            let capture = self.app.replay.as_mut().unwrap();
+            for interval in &self.app.session.intervals[index..] {
+                capture.record(
+                    capture.worker_pid,
+                    Some(&interval.id),
+                    TraceKind::IntervalClosed {
+                        pcm_bytes: interval.pcm.len(),
+                    },
+                );
+            }
+        }
+
+        pub fn take_diagnostics(&mut self) -> Diagnostics {
+            let capture = self.app.replay.as_mut().unwrap();
+            Diagnostics {
+                events: std::mem::take(&mut capture.trace),
+                dropped_events: std::mem::take(&mut capture.dropped_trace_events),
+                unresolved_cancel_requests: capture.pending_cancels.len(),
+            }
+        }
+
         pub fn push_samples(&mut self, samples: &[f32]) -> Result<(), String> {
             if !matches!(self.app.state, State::Recording) || self.outcome().is_some() {
                 return Err("録音状態のセッションだけに音声を供給できます".into());
             }
+            let intervals_before = self.app.session.intervals.len();
             if !self.app.session.push_samples(samples, Instant::now()) {
                 self.app.dispatch(Event::AsrError {
                     message: PCM_LIMIT_MESSAGE.into(),
                 });
                 return Err(PCM_LIMIT_MESSAGE.into());
             }
+            self.record_intervals_since(intervals_before);
             Ok(())
         }
 
@@ -1774,7 +2060,13 @@ pub mod replay {
         }
 
         pub fn enter(&mut self) {
+            let intervals_before = self.app.session.intervals.len();
+            let capture = self.app.replay.as_mut().unwrap();
+            capture.record(capture.worker_pid, None, TraceKind::Enter);
             self.app.dispatch(Event::Enter);
+            if self.app.session.intervals.len() >= intervals_before {
+                self.record_intervals_since(intervals_before);
+            }
         }
 
         pub fn wait_duration(&self) -> Duration {
@@ -1784,6 +2076,10 @@ pub mod replay {
         pub fn snapshot(&self) -> Snapshot {
             let replay = self.app.replay.as_ref().unwrap();
             Snapshot {
+                session_index: replay.session_index,
+                worker_pid: replay.worker_pid,
+                worker_spawn_count: replay.spawn_count,
+                reused_worker: replay.reused_worker,
                 worker_ready_at: replay.worker_ready_at,
                 first_partial_at: replay.first_partial_at,
                 enter_at: self.app.session.enter_at,
@@ -1842,19 +2138,58 @@ pub mod replay {
                 ..ReplayCapture::default()
             }));
             app.session.quiet = true;
+            app.replay.as_mut().unwrap().session_index = 1;
+            app.replay
+                .as_mut()
+                .unwrap()
+                .worker_started(worker.process_id(), false);
             app.session.worker = Some(worker);
             app.state = State::Recording;
-            Replay { app }
+            Replay {
+                app,
+                policy: WorkerPolicy::FreshProcess,
+            }
+        }
+
+        fn wait_for_transcribe(
+            replay: &mut Replay,
+            sent: &Arc<Mutex<String>>,
+            id: &str,
+            expected: usize,
+        ) {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                replay.tick();
+                let count = sent
+                    .lock()
+                    .unwrap()
+                    .lines()
+                    .filter(|line| {
+                        serde_json::from_str::<serde_json::Value>(line)
+                            .is_ok_and(|value| value["type"] == "transcribe" && value["id"] == id)
+                    })
+                    .count();
+                if count >= expected {
+                    return;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "transcribe must be written before its terminal is supplied"
+                );
+                std::thread::yield_now();
+            }
         }
 
         #[test]
         fn replay_enter_drains_through_the_production_completion_transition() {
             let (tx, rx) = channel();
-            let mut replay = driver(asr::test_worker(rx, false));
+            let (worker, sent) = asr::test_worker_with_recorder(rx);
+            let mut replay = driver(worker);
             assert!(replay.app.session.open_interval(vec![0.3; 1600]));
             replay.enter();
             assert!(matches!(replay.app.state, State::Recognizing { .. }));
             assert!(replay.app.session.stop_requested);
+            wait_for_transcribe(&mut replay, &sent, "s0", 1);
             tx.send(r#"{"type":"end","id":"s0","text":"検証の文章","stop":"complete"}"#.into())
                 .unwrap();
             replay.tick();
@@ -1864,6 +2199,112 @@ pub mod replay {
             assert!(replay.app.paste_transaction.is_none());
             assert!(replay.snapshot().completed_at.is_some());
             assert_eq!(replay.snapshot().pending_pcm_bytes, 0);
+        }
+
+        #[test]
+        fn completed_sessions_reuse_the_same_pid_without_another_spawn() {
+            let (tx, rx) = channel();
+            let (worker, sent) = asr::test_worker_with_recorder(rx);
+            let mut replay = driver(worker);
+            replay.policy = WorkerPolicy::ReuseReady;
+            replay.app.cfg.keep_worker_minutes = 60;
+            replay.app.cfg.format.offline = false;
+            let pid = replay.snapshot().worker_pid;
+            for session in 1..=2 {
+                if session > 1 {
+                    replay.next_session(16_000).unwrap();
+                    assert!(replay.snapshot().worker_ready_at.is_some());
+                    assert!(replay.outcome().is_none());
+                }
+                replay.app.session.open_interval(vec![0.3; 1600]);
+                replay.enter();
+                wait_for_transcribe(&mut replay, &sent, "s0", session as usize);
+                tx.send(format!(
+                    r#"{{"type":"end","id":"s0","text":"session {session}","stop":"complete"}}"#
+                ))
+                .unwrap();
+                replay.tick();
+                assert!(replay.outcome().unwrap().is_ok());
+                assert_eq!(replay.snapshot().worker_pid, pid);
+                assert_eq!(replay.snapshot().worker_spawn_count, 1);
+                assert_eq!(replay.snapshot().session_index, session);
+                assert_eq!(replay.snapshot().reused_worker, session > 1);
+                assert!(replay.snapshot().worker_ready_at.is_some());
+                assert!(replay.app.session.recorder.is_none());
+                assert!(replay.app.pending_paste.is_none());
+            }
+            replay
+                .app
+                .replay
+                .as_mut()
+                .unwrap()
+                .cancel_queued(pid.unwrap(), "p99");
+            assert!(replay
+                .next_session(16_000)
+                .unwrap_err()
+                .contains("取消終端"));
+            assert_eq!(replay.snapshot().worker_spawn_count, 1);
+            let diagnostics = replay.take_diagnostics();
+            assert_eq!(
+                diagnostics
+                    .events
+                    .iter()
+                    .filter(|e| matches!(e.kind, TraceKind::WorkerReused))
+                    .count(),
+                1
+            );
+        }
+
+        #[test]
+        fn session_reuse_rejects_an_active_session_and_a_fresh_process_policy() {
+            let (_tx, rx) = channel();
+            let mut replay = driver(asr::test_worker(rx, false));
+            assert!(replay.next_session(16_000).is_err());
+            replay.policy = WorkerPolicy::ReuseReady;
+            assert!(replay.next_session(16_000).is_err());
+            assert_eq!(replay.app.state, State::Recording);
+            assert_eq!(replay.snapshot().worker_spawn_count, 1);
+        }
+
+        #[test]
+        fn cancel_diagnostics_wait_for_an_observed_terminal_and_keep_its_origin_session() {
+            let mut capture = ReplayCapture {
+                session_index: 1,
+                ..ReplayCapture::default()
+            };
+            capture.cancel_queued(99, "p0");
+            assert_eq!(capture.pending_cancels.len(), 1);
+            assert!(!capture
+                .trace
+                .iter()
+                .any(|event| matches!(event.kind, TraceKind::CancelTerminalObserved { .. })));
+            capture.session_index = 2;
+            capture.terminal(
+                99,
+                &asr::Terminal {
+                    id: "p0".into(),
+                    stop: "cancelled".into(),
+                    outcome: asr::TerminalOutcome::Cancelled,
+                },
+            );
+            assert!(capture.pending_cancels.is_empty());
+            assert!(capture.trace.iter().any(|event| matches!(
+                event.kind,
+                TraceKind::CancelTerminalObserved {
+                    requested_session: 1,
+                    ..
+                }
+            ) && event.session == 2));
+        }
+
+        #[test]
+        fn diagnostic_trace_has_a_hard_bound_and_reports_dropped_events() {
+            let mut capture = ReplayCapture::default();
+            for _ in 0..=ReplayCapture::TRACE_LIMIT {
+                capture.record(Some(1), None, TraceKind::WorkerReady);
+            }
+            assert_eq!(capture.trace.len(), ReplayCapture::TRACE_LIMIT);
+            assert_eq!(capture.dropped_trace_events, 1);
         }
 
         #[test]
@@ -1956,7 +2397,7 @@ pub fn run() {
     if app.cfg.startup_sound {
         app.sfx(Sound::Startup);
         app.show_notice(
-            Tone::Info,
+            Tone::Startup,
             "OpenHinoVoice を起動しました".into(),
             Duration::from_millis(600),
         );

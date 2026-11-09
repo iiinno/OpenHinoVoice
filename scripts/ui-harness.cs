@@ -84,6 +84,7 @@ internal static class HiddenUiProbe
     [DllImport("user32.dll", EntryPoint = "GetWindowLongW")] static extern int GetWindowLong(IntPtr window, int index);
     [DllImport("user32.dll", SetLastError = true)] static extern bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int width, int height, uint flags);
     [DllImport("user32.dll", SetLastError = true)] static extern bool PrintWindow(IntPtr window, IntPtr dc, uint flags);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern uint RegisterWindowMessageW(string name);
     [DllImport("user32.dll", SetLastError = true)] static extern bool PostMessageW(IntPtr window, uint message, IntPtr wparam, IntPtr lparam);
     [DllImport("user32.dll")] static extern uint GetGuiResources(IntPtr process, uint flags);
     [DllImport("user32.dll")] static extern bool SetProcessDpiAwarenessContext(IntPtr context);
@@ -286,6 +287,34 @@ internal static class HiddenUiProbe
         }
     }
 
+
+    static bool CaptureFramebuffer(IntPtr window, string directory, string path, int token, out int colors)
+    {
+        uint message = RegisterWindowMessageW("OpenHinoVoice.Test.SettingsCapture.v1");
+        Require(message != 0, "RegisterWindowMessage capture");
+        Require(PostMessageW(window, message, new IntPtr(token), IntPtr.Zero), "PostMessage capture");
+        string metadata = Path.Combine(directory, "capture-" + token + ".json");
+        if (!Until(delegate { return File.Exists(metadata); }, 10000))
+            throw new TimeoutException("Egui framebuffer callback did not complete before its deadline.");
+        var report = Json.Deserialize<Dictionary<string, object>>(File.ReadAllText(metadata));
+        if ((string)report["status"] != "captured")
+            throw new InvalidOperationException("Framebuffer capture failed: " + Convert.ToString(report["error"]));
+        string bitmapPath = Path.Combine(directory, "capture-" + token + ".bmp");
+        using (var bitmap = new Bitmap(bitmapPath))
+        {
+            Rect client;
+            Require(GetClientRect(window, out client), "GetClientRect framebuffer");
+            if (bitmap.Width != client.right - client.left || bitmap.Height != client.bottom - client.top)
+                throw new InvalidOperationException("Framebuffer dimensions do not match the resized client.");
+            var distinct = new HashSet<int>();
+            for (int y = 8; y < bitmap.Height - 8; y += 4)
+                for (int x = 8; x < bitmap.Width - 8; x += 4) distinct.Add(bitmap.GetPixel(x, y).ToArgb());
+            colors = distinct.Count;
+            bitmap.Save(path, ImageFormat.Png);
+            return colors >= 12;
+        }
+    }
+
     static int Worker(string app, string namespaceValue)
     {
         SetProcessDpiAwarenessContext(new IntPtr(-4));
@@ -314,6 +343,8 @@ internal static class HiddenUiProbe
                 string local = Path.Combine(directory, "localappdata");
                 Directory.CreateDirectory(Path.Combine(appdata, "OpenHinoVoice"));
                 Directory.CreateDirectory(local);
+                string captureDirectory = Path.Combine(local, "OpenHinoVoice", "ui-captures", namespaceValue + "-" + label);
+                Directory.CreateDirectory(captureDirectory);
                 File.WriteAllText(Path.Combine(appdata, "OpenHinoVoice", "config.toml"),
                     "speech_exe = \"missing-ui-fixture-speech.exe\"\nsounds = false\nvolume = 0\nstartup_sound = false\nhud_style = \"rich\"\n[format]\noffline = true\n", new UTF8Encoding(false));
                 var start = new ProcessStartInfo(app, "--settings") { UseShellExecute = false, CreateNoWindow = true,
@@ -322,6 +353,8 @@ internal static class HiddenUiProbe
                 start.EnvironmentVariables["LOCALAPPDATA"] = local;
                 start.EnvironmentVariables["OHV_TEST_NAMESPACE"] = namespaceValue + "-" + label;
                 start.EnvironmentVariables["OHV_TEST_SETTINGS_PAGE"] = "display";
+                start.EnvironmentVariables["OHV_TEST_SETTINGS_SIZE"] = label;
+                start.EnvironmentVariables["OHV_TEST_SETTINGS_CAPTURE_DIR"] = captureDirectory;
                 process = Process.Start(start);
                 if (process == null) throw new InvalidOperationException("Settings did not start.");
                 result["pid"] = process.Id;
@@ -367,11 +400,15 @@ internal static class HiddenUiProbe
                 }
                 Phase(label + ":capture");
                 int uniqueColors = 0;
-                string capture = Path.Combine(directory, "client.png");
-                bool captured = Until(delegate { return Capture(window, capture, out uniqueColors); }, 5000);
+                string printWindowPath = Path.Combine(directory, "client-printwindow.png");
+                bool printWindow = Capture(window, printWindowPath, out uniqueColors);
+                result["printWindow"] = Map("status", printWindow ? "passed" : "failed", "colors", uniqueColors, "path", label + "/client-printwindow.png");
+                string capture = Path.Combine(directory, "client-framebuffer.png");
+                bool captured = CaptureFramebuffer(window, captureDirectory, capture, 1, out uniqueColors);
                 result["captureColors"] = uniqueColors;
-                result["capturePath"] = label + "/client.png";
-                if (!captured) throw new InvalidOperationException("PrintWindow failed or produced a blank client image.");
+                result["capturePath"] = label + "/client-framebuffer.png";
+                result["captureRenderer"] = "eframe glow framebuffer";
+                if (!captured) throw new InvalidOperationException("Egui framebuffer capture produced a blank client image.");
                 result["metricsAfter"] = Metrics(process);
                 if (uiaReady) result["status"] = "passed";
             }
