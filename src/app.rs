@@ -623,6 +623,7 @@ impl App {
                     self.session.sample_rate = replay.sample_rate;
                     self.session.segmenter = segment::Segmenter::new(replay.sample_rate);
                 } else {
+                    sound::stop();
                     match Recorder::start_with_device(Some(self.cfg.microphone.as_str())) {
                         Ok(recorder) => {
                             if let Some(notice) = recorder.fallback_notice() {
@@ -631,12 +632,9 @@ impl App {
                             self.session.sample_rate = recorder.sample_rate;
                             self.session.segmenter = segment::Segmenter::new(recorder.sample_rate);
                             self.session.recorder = Some(recorder);
-                            if self.cfg.sounds {
-                                self.sfx(Sound::Start);
-                                self.session.skip_until = Instant::now()
-                                    + sound::duration(Sound::Start)
-                                    + Duration::from_millis(40);
-                            }
+                            let exclusion =
+                                sound::start_recording(self.cfg.sounds, self.cfg.volume);
+                            self.session.skip_until = Instant::now() + exclusion;
                         }
                         Err(e) => {
                             self.fail_session(e);
