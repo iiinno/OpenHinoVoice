@@ -59,6 +59,7 @@ internal static class HiddenUiProbe
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     static extern IntPtr CreateDesktopW(string name, IntPtr device, IntPtr mode, uint flags, uint access, IntPtr security);
     [DllImport("user32.dll", SetLastError = true)] static extern bool CloseDesktop(IntPtr desktop);
+    [DllImport("user32.dll", SetLastError = true)] static extern IntPtr GetProcessWindowStation();
     [DllImport("user32.dll", SetLastError = true)] static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     static extern bool GetUserObjectInformationW(IntPtr value, int index, StringBuilder output, int length, out int needed);
@@ -159,6 +160,12 @@ internal static class HiddenUiProbe
         try
         {
             string name = "OHV_" + namespaceValue;
+            IntPtr station = GetProcessWindowStation();
+            Require(station != IntPtr.Zero, "GetProcessWindowStation");
+            int required;
+            var stationName = new StringBuilder(256);
+            Require(GetUserObjectInformationW(station, 2, stationName, stationName.Capacity * 2, out required), "GetUserObjectInformationW station");
+            result["windowStation"] = stationName.ToString();
             result["desktopName"] = name;
             Save("controller-result.json", result);
             // Access excludes DESKTOP_SWITCHDESKTOP; there is no switching API in this harness.
@@ -170,7 +177,7 @@ internal static class HiddenUiProbe
             limits.basic.flags = 0x00002000; // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
             Require(SetInformationJobObject(job, 9, ref limits, (uint)Marshal.SizeOf(typeof(ExtendedLimit))), "SetInformationJobObject");
             string executable = Process.GetCurrentProcess().MainModule.FileName;
-            var startup = new StartupInfo { cb = Marshal.SizeOf(typeof(StartupInfo)), desktop = @"WinSta0\" + name };
+            var startup = new StartupInfo { cb = Marshal.SizeOf(typeof(StartupInfo)), desktop = stationName.ToString() + @"\" + name };
             var command = new StringBuilder(Quote(executable) + " --worker " + Quote(app) + " " + Quote(Output) + " " + Quote(namespaceValue));
             Require(CreateProcessW(executable, command, IntPtr.Zero, IntPtr.Zero, false,
                 CreateSuspended | CreateNoWindow, IntPtr.Zero, Output, ref startup, out child), "CreateProcessW worker");
@@ -353,13 +360,13 @@ internal static class HiddenUiProbe
             try
             {
                 action();
+                if (!Until(expected, 3000)) throw new InvalidOperationException("Expected UI state was not observed before its deadline.");
                 int colors;
                 string path = Path.Combine(directory, "action-" + name + ".png");
                 if (!CaptureFramebuffer(window, captureDirectory, path, ++token, out colors))
                     throw new InvalidOperationException("Action framebuffer is blank.");
                 check["capturePath"] = label + "/action-" + name + ".png";
                 check["captureColors"] = colors;
-                if (!Until(expected, 3000)) throw new InvalidOperationException("Expected UI state was not observed before its deadline.");
                 Save(Path.Combine(label, "uia-" + name + ".json"), Uia(window));
                 check["status"] = "passed";
             }

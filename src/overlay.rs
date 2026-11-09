@@ -2550,8 +2550,18 @@ mod tests {
         assert_eq!(standard.rgba.len(), standard.width * standard.height * 4);
         assert!(minimal.width < standard.width);
         assert!(minimal.height < standard.height);
-        assert!(standard.rgba.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0));
-        assert!(standard.rgba.as_chunks::<4>().0.iter().any(|pixel| pixel[3] == 0));
+        assert!(standard
+            .rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel[3] > 0));
+        assert!(standard
+            .rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel[3] == 0));
     }
 
     #[test]

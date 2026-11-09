@@ -6,6 +6,9 @@ param(
     [switch]$CompileOnly
 )
 $ErrorActionPreference = 'Stop'
+if ($env:GITHUB_ACTIONS -ne 'true') {
+    throw 'UIハーネスのコンパイルと実行はGitHub Actionsで行ってください。'
+}
 $repo = Split-Path -Parent $PSScriptRoot
 $runId = 'ui-{0}-{1}' -f [DateTime]::UtcNow.ToString('yyyyMMddTHHmmss'), [Guid]::NewGuid().ToString('N').Substring(0, 8)
 if (-not $OutputDir) { $OutputDir = Join-Path $repo "target/qa/$runId" }
