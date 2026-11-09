@@ -5,6 +5,8 @@ param(
     [string]$Filter,
     [ValidateSet('Segmented', 'Worker', 'Realtime')][string]$LiveTest = 'Segmented',
     [string[]]$Corpus = @('short'),
+    [ValidateSet('Fresh', 'Reuse')][string]$RealtimeWorkerMode = 'Fresh',
+    [ValidateRange(1, 10)][int]$RealtimeRepetitions = 1,
     [string]$CorpusDir,
     [string]$SpeechExe,
     [string]$ModelPath,
@@ -118,7 +120,7 @@ function Invoke-Check([object]$Check, [string]$Executable, [string[]]$Arguments)
 }
 
 $savedEnvironment = @{}
-$environmentNames = @('APPDATA', 'LOCALAPPDATA', 'CARGO_TARGET_DIR', 'OHV_TEST_NAMESPACE', 'OHV_REVISION', 'JV_CORPUS_DIR', 'JV_PERF_OUTPUT_DIR', 'JV_PERF_CASES', 'JV_SPEECH_EXE', 'JV_MODEL')
+$environmentNames = @('APPDATA', 'LOCALAPPDATA', 'CARGO_TARGET_DIR', 'OHV_TEST_NAMESPACE', 'OHV_REVISION', 'JV_CORPUS_DIR', 'JV_PERF_OUTPUT_DIR', 'JV_PERF_CASES', 'JV_SPEECH_EXE', 'JV_MODEL', 'JV_REALTIME_WORKER_MODE', 'JV_REALTIME_REPETITIONS')
 foreach ($name in $environmentNames) { $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
 $exitCode = 1
 try {
@@ -127,7 +129,7 @@ try {
     if ($revision.exitCode -eq 0) { $result.revision = $revision.stdout.Trim() }
     $status = Run-Command 'git' @('status', '--porcelain')
     if ($status.exitCode -eq 0) { $result.dirty = -not [string]::IsNullOrWhiteSpace($status.stdout) }
-    $sources = Run-Command 'git' @('ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', 'src', 'tests', 'examples', 'scripts', 'Cargo.toml', 'Cargo.lock', 'build.rs')
+    $sources = Run-Command 'git' @('ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', 'src', 'tests', 'examples', 'scripts', 'assets', 'Cargo.toml', 'Cargo.lock', 'build.rs')
     if ($sources.exitCode -eq 0) {
         $sourceDigests = @($sources.stdout.Split([char]0, [StringSplitOptions]::RemoveEmptyEntries) | Sort-Object -Unique | ForEach-Object {
             $sourcePath = Join-Path $repo $_
@@ -170,6 +172,9 @@ try {
         $env:JV_CORPUS_DIR = $CorpusDir
         $env:JV_PERF_CASES = $Corpus -join ','
         $env:JV_PERF_OUTPUT_DIR = Join-Path $OutputDir 'perf'
+        $env:JV_REALTIME_WORKER_MODE = $RealtimeWorkerMode.ToLowerInvariant()
+        $env:JV_REALTIME_REPETITIONS = $RealtimeRepetitions.ToString()
+        $result.realtime = [ordered]@{ workerMode = $env:JV_REALTIME_WORKER_MODE; repetitions = $RealtimeRepetitions }
         $testName = switch ($LiveTest) {
             'Segmented' { 'live_segmented_latency_and_accuracy_on_corpus' }
             'Worker' { 'live_worker_latency_and_accuracy_on_corpus' }
