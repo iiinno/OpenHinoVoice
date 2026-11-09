@@ -167,6 +167,69 @@ struct TranscribedFile {
     history_warning: Option<String>,
 }
 
+struct PreparationNotice<'a> {
+    heading: &'static str,
+    detail: &'a str,
+    ready: bool,
+}
+
+fn preparation_notice(
+    exe_ready: bool,
+    status: Option<&setup::ModelStatus>,
+    offline: bool,
+) -> PreparationNotice<'_> {
+    if !exe_ready {
+        return PreparationNotice {
+            heading: "speech.cpp が見つかりません",
+            detail: "セットアップを開き、導入方法や speech.exe の場所を確認してください。",
+            ready: false,
+        };
+    }
+    let (heading, detail, ready) = match status {
+        Some(setup::ModelStatus::Ready) => (
+            "認識モデルは取得済みです",
+            "マイクと録音キーはセットアップで確認できます。",
+            true,
+        ),
+        Some(setup::ModelStatus::Missing) if offline => (
+            "認識モデルが未取得です",
+            "オフラインモードでは取得できません。セットアップで準備方法を確認してください。",
+            false,
+        ),
+        Some(setup::ModelStatus::Missing) => (
+            "認識モデルが未取得です",
+            "セットアップでモデルを取得すると、音声を認識できるようになります。",
+            false,
+        ),
+        Some(setup::ModelStatus::Running { message, .. }) => {
+            ("認識モデルを準備しています", message.as_str(), false)
+        }
+        Some(setup::ModelStatus::Failed(error)) => {
+            ("認識モデルを確認できません", error.as_str(), false)
+        }
+        Some(setup::ModelStatus::Cancelled) => (
+            "モデルの処理を中断しました",
+            "セットアップで状態を確認し、必要ならもう一度取得してください。",
+            false,
+        ),
+        None if offline => (
+            "認識モデルは未確認です",
+            "オフラインでも取得済みか確認できます。セットアップを開いて確認してください。",
+            false,
+        ),
+        None => (
+            "認識モデルは未確認です",
+            "初回はセットアップで、選択中のモデルが取得済みか確認してください。",
+            false,
+        ),
+    };
+    PreparationNotice {
+        heading,
+        detail,
+        ready,
+    }
+}
+
 #[derive(Clone)]
 struct Draft {
     config: Config,
@@ -1034,6 +1097,25 @@ impl Settings {
     /// 今日と今週の入力文字数、最近の履歴、状態
     fn home(&mut self, ui: &mut egui::Ui) {
         section(ui, "ホーム");
+        let exe_ready = !Self::needs_setup(&self.cfg);
+        let preparation = preparation_notice(
+            exe_ready,
+            self.model_status.as_ref(),
+            self.cfg.format.offline,
+        );
+        if preparation.ready {
+            ui.colored_label(OK_GREEN, preparation.heading);
+        } else {
+            ui.strong(preparation.heading);
+        }
+        ui.label(preparation.detail);
+        hint(ui, &format!("選択中のモデル: {}", self.cfg.model));
+        if ui.button("セットアップを開く").clicked() {
+            self.select_page(Page::Start);
+        }
+        ui.add_space(10.0);
+        ui.separator();
+        ui.add_space(10.0);
         if self.home_snapshot.is_none() {
             self.refresh_home(ui.ctx());
         }
@@ -1068,7 +1150,7 @@ impl Settings {
             );
             ui.end_row();
             ui.label("認識エンジン");
-            ui.label(if Self::needs_setup(&self.cfg) {
+            ui.label(if !exe_ready {
                 "speech.exe が見つかりません".to_string()
             } else if self.cfg.speech_exe.is_empty() {
                 "speech.cpp を自動検出済み".to_string()
@@ -1139,6 +1221,7 @@ impl Settings {
                     "時間になると自動で録音を終了します。発話の切れ目ごとに認識を進め、Enter の後は残っている区間の処理を待ちます",
                 );
             });
+            ui.end_row();
 
             ui.label("認識エンジンを残す時間");
             ui.vertical(|ui| {
@@ -1163,6 +1246,7 @@ impl Settings {
                     });
                 hint(ui, "続けて話すとき、認識エンジンの起動とモデル読み込みの待ち時間を減らせます。残している間もエンジンのメモリを使います。使用量はモデルと PC によって変わります");
             });
+            ui.end_row();
 
             ui.label("自動起動");
             ui.checkbox(&mut self.startup, "Windows にサインインしたときに起動する");
@@ -2165,6 +2249,55 @@ mod clipboard_tests {
         wait_for_retirement(&mut settings, &ctx);
         let finished = ctx.run_pass(Default::default(), |ctx| settings.update_model_jobs(ctx));
         assert!(has_close(finished));
+    }
+
+    #[test]
+    fn home_preparation_never_reports_ready_without_an_engine_or_verified_model() {
+        let ready = setup::ModelStatus::Ready;
+        let no_engine = preparation_notice(false, Some(&ready), false);
+        assert!(!no_engine.ready);
+        assert!(no_engine.heading.contains("speech.cpp"));
+        let unchecked = preparation_notice(true, None, false);
+        assert!(!unchecked.ready);
+        assert!(unchecked.heading.contains("未確認"));
+        assert!(unchecked.detail.contains("セットアップ"));
+        let missing_state = setup::ModelStatus::Missing;
+        let missing = preparation_notice(true, Some(&missing_state), false);
+        assert!(!missing.ready);
+        assert!(missing.heading.contains("未取得"));
+        let checked = preparation_notice(true, Some(&ready), true);
+        assert!(checked.ready, "a fetched model stays usable offline");
+    }
+
+    #[test]
+    fn home_preparation_explains_offline_recovery_without_claiming_a_download() {
+        let missing_state = setup::ModelStatus::Missing;
+        let missing = preparation_notice(true, Some(&missing_state), true);
+        assert!(missing.detail.contains("オフライン"));
+        assert!(missing.detail.contains("取得できません"));
+        let unchecked = preparation_notice(true, None, true);
+        assert!(unchecked.detail.contains("取得済みか確認"));
+        assert!(!unchecked.ready);
+    }
+
+    #[test]
+    fn home_preparation_preserves_progress_errors_and_cancellation() {
+        let running = setup::ModelStatus::Running {
+            message: "モデルを取得しています 42%".into(),
+            fraction: Some(0.42),
+        };
+        let progress = preparation_notice(true, Some(&running), false);
+        assert!(!progress.ready);
+        assert_eq!(progress.detail, "モデルを取得しています 42%");
+        let failed = setup::ModelStatus::Failed("モデル一覧を読めません".into());
+        let failure = preparation_notice(true, Some(&failed), false);
+        assert!(!failure.ready);
+        assert_eq!(failure.detail, "モデル一覧を読めません");
+        let cancelled_state = setup::ModelStatus::Cancelled;
+        let cancelled = preparation_notice(true, Some(&cancelled_state), false);
+        assert!(!cancelled.ready);
+        assert!(cancelled.heading.contains("中断"));
+        assert!(cancelled.detail.contains("もう一度"));
     }
 
     #[test]

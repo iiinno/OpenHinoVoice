@@ -1,0 +1,77 @@
+
+running 3 tests
+test settings::clipboard_tests::home_preparation_never_reports_ready_without_an_engine_or_verified_model ... ok
+test settings::clipboard_tests::home_preparation_preserves_progress_errors_and_cancellation ... ok
+test settings::clipboard_tests::home_preparation_explains_offline_recovery_without_claiming_a_download ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 233 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Compiling openhinovoice v0.5.0 (C:\Users\inoue\Project\OpenHinoVoice)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 01s
+     Running unittests src\lib.rs (target\debug\deps\openhinovoice-66f53a4e26739a79.exe)
+     Running unittests src\main.rs (target\debug\deps\openhinovoice-00a6af3dbb76f2a4.exe)
+     Running tests\asr_integration.rs (target\debug\deps\asr_integration-ff75ef978364f3c4.exe)
+     Running tests\audio_integration.rs (target\debug\deps\audio_integration-37c11632d715e857.exe)
+     Running tests\format_live.rs (target\debug\deps\format_live-a4f29c821b708ea4.exe)
+     Running tests\overlay_preview.rs (target\debug\deps\overlay_preview-3ae4819769e29f09.exe)
+     Running tests\paste_integration.rs (target\debug\deps\paste_integration-d20c29cfaf3dd201.exe)
+     Running tests\perf_live.rs (target\debug\deps\perf_live-c8101d170bdad30c.exe)
+     Running tests\realtime_live.rs (target\debug\deps\realtime_live-8a2adf9af44d7f49.exe)
+     Running unittests examples\gen_corpus.rs (target\debug\examples\gen_corpus-9195bb1805baa0d9.exe)
+     Running unittests examples\uia_probe.rs (target\debug\examples\uia_probe-02db7548d62029e5.exe)
+     Running unittests examples\usage_report.rs (target\debug\examples\usage_report-e1b14c65e4b358d1.exe)
