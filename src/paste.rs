@@ -2,12 +2,17 @@
 //! Retain the previous clipboard data object and restore it after Ctrl+V.
 
 use std::ffi::c_void;
+use std::marker::PhantomData;
+use std::rc::Rc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::{CloseHandle, HANDLE};
+use windows::Win32::System::Com::IDataObject;
 use windows::Win32::System::Ole::{
     OleGetClipboard, OleInitialize, OleSetClipboard, OleUninitialize,
 };
+use windows::Win32::System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
     VIRTUAL_KEY, VK_CONTROL, VK_V,
@@ -65,6 +70,15 @@ fn clipboard_utf16(text: &str) -> Vec<u16> {
 /// Called ONLY after the user explicitly selects the recovery action from the tray.
 /// Allocate all memory before EmptyClipboard so allocation failures preserve existing content.
 pub fn copy_text_to_clipboard(text: &str, owner: HWND) -> Result<(), String> {
+    copy_text_to_clipboard_checked(text, owner, None, &mut 0)
+}
+
+fn copy_text_to_clipboard_checked(
+    text: &str,
+    owner: HWND,
+    expected_sequence: Option<u32>,
+    owned_sequence: &mut u32,
+) -> Result<(), String> {
     if owner.0.is_null() {
         return Err("クリップボードの所有者ウィンドウがありません".into());
     }
@@ -97,13 +111,20 @@ pub fn copy_text_to_clipboard(text: &str, owner: HWND) -> Result<(), String> {
             return Err("クリップボードが使用中のためコピーできません".into());
         }
         let _clipboard = OpenedClipboard;
+        if expected_sequence.is_some_and(|sequence| sequence != GetClipboardSequenceNumber()) {
+            return Err("クリップボードが他のアプリで更新されました".into());
+        }
         if EmptyClipboard() == 0 {
             return Err("クリップボードを空にできません".into());
         }
+        // Record only changes made while we own the clipboard lock. An error
+        // before EmptyClipboard must never authorize restoring somebody else's update.
+        *owned_sequence = GetClipboardSequenceNumber();
         if SetClipboardData(CF_UNICODETEXT, mem.0).is_null() {
             // Even when SetClipboardData fails, retain the failed text in App for another attempt.
             return Err("クリップボードへテキストを書き込めません".into());
         }
+        *owned_sequence = GetClipboardSequenceNumber();
         // Windows now owns the moveable memory handle; never free it in this process.
         mem.0 = std::ptr::null_mut();
     }
@@ -213,46 +234,121 @@ fn validate_injected_count(expected: usize, inserted: u32) -> Result<(), String>
     }
 }
 
-/// A small, one-time clipboard transaction. Ctrl+V is a shortcut, not character injection.
-/// Preserve all formats through IDataObject, and never overwrite a newer external clipboard.
-pub fn paste_text(text: &str, target: PasteTarget, owner: HWND) -> Result<(), String> {
-    if text.is_empty() {
-        return Ok(());
+struct OleScope;
+impl Drop for OleScope {
+    fn drop(&mut self) {
+        unsafe { OleUninitialize() }
     }
-    if text.contains('\0') {
-        return Err("入力文字列に NUL が含まれています".into());
-    }
-    check_target(target)?;
-    if !no_modifiers_pressed() {
-        return Err("修飾キーが押されているため、文字入力を中止しました".into());
-    }
+}
 
-    // This function runs on the window's UI thread (STA). OleInitialize may
-    // fail if the thread was initialized as MTA; in that case do not touch the clipboard.
-    unsafe { OleInitialize(None) }
-        .map_err(|e| format!("クリップボードの初期化に失敗しました: {e}"))?;
-    struct OleScope;
-    impl Drop for OleScope {
-        fn drop(&mut self) {
-            unsafe { OleUninitialize() }
+static PASTE_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+struct ProcessLease;
+impl ProcessLease {
+    fn acquire() -> Result<Self, String> {
+        if PASTE_ACTIVE.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            Err("別の貼り付けが進行中です".into())
+        } else {
+            Ok(Self)
         }
     }
-    let _ole = OleScope;
-    let previous = unsafe { OleGetClipboard() }
-        .map_err(|e| format!("既存のクリップボードを保持できません: {e}"))?;
+}
+impl Drop for ProcessLease {
+    fn drop(&mut self) {
+        PASTE_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+struct PasteLease {
+    handle: HANDLE,
+    _process: ProcessLease,
+}
+impl PasteLease {
+    fn acquire() -> Result<Self, String> {
+        let process = ProcessLease::acquire()?;
+        let name =
+            windows::core::HSTRING::from(crate::config::mutex_name("Local\\OpenHinoVoice.Paste"));
+        let handle = unsafe { CreateMutexW(None, false, &name) }
+            .map_err(|e| format!("貼り付けの排他を作れません: {e}"))?;
+        let result = unsafe { WaitForSingleObject(handle, 0) };
+        if result.0 == 0 || result.0 == 0x80 {
+            return Ok(Self {
+                handle,
+                _process: process,
+            });
+        }
+        let _ = unsafe { CloseHandle(handle) };
+        Err("別の貼り付けが進行中です。少し待ってから再入力してください".into())
+    }
+}
+impl Drop for PasteLease {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = ReleaseMutex(self.handle);
+            let _ = CloseHandle(self.handle);
+        }
+    }
+}
 
-    // Bail out rather than racing with another copy operation.
-    let before = unsafe { GetClipboardSequenceNumber() };
-    check_target(target)?;
-    if !no_modifiers_pressed() {
-        return Err("修飾キーが押されているため、貼り付けを中止しました".into());
-    }
-    if before != unsafe { GetClipboardSequenceNumber() } {
-        return Err("クリップボードが他のアプリで更新されました".into());
-    }
-    let set_result = copy_text_to_clipboard(text, owner);
-    let our_sequence = unsafe { GetClipboardSequenceNumber() };
-    let result = set_result.and_then(|_| {
+fn should_restore(before: u32, ours: u32, current: u32) -> bool {
+    ours != 0 && ours != before && ours == current
+}
+
+/// 同じ STA が旧データを保持し、期限後に復元する。別スレッドへは移せない。
+pub struct PasteTransaction {
+    previous: Option<IDataObject>,
+    before: u32,
+    our_sequence: u32,
+    deadline: Instant,
+    _ole: OleScope,
+    _lease: PasteLease,
+    _same_thread: PhantomData<Rc<()>>,
+}
+
+impl PasteTransaction {
+    pub fn begin(
+        text: &str,
+        target: PasteTarget,
+        owner: HWND,
+        now: Instant,
+    ) -> Result<Self, String> {
+        if text.is_empty() {
+            return Err("入力テキストが空です".into());
+        }
+        if text.contains('\0') {
+            return Err("入力文字列に NUL が含まれています".into());
+        }
+        check_target(target)?;
+        if !no_modifiers_pressed() {
+            return Err("修飾キーが押されているため、文字入力を中止しました".into());
+        }
+        let lease = PasteLease::acquire()?;
+        unsafe { OleInitialize(None) }
+            .map_err(|e| format!("クリップボードの初期化に失敗しました: {e}"))?;
+        let ole = OleScope;
+        let before = unsafe { GetClipboardSequenceNumber() };
+        let previous = unsafe { OleGetClipboard() }
+            .map_err(|e| format!("既存のクリップボードを保持できません: {e}"))?;
+        if before != unsafe { GetClipboardSequenceNumber() } {
+            return Err("既存のクリップボードの取得中に内容が更新されました".into());
+        }
+        check_target(target)?;
+        if !no_modifiers_pressed() {
+            return Err("修飾キーが押されているため、貼り付けを中止しました".into());
+        }
+        if before != unsafe { GetClipboardSequenceNumber() } {
+            return Err("クリップボードが他のアプリで更新されました".into());
+        }
+        let mut our_sequence = 0;
+        let result = copy_text_to_clipboard_checked(text, owner, Some(before), &mut our_sequence);
+        let mut transaction = Self {
+            previous: Some(previous),
+            before,
+            our_sequence,
+            deadline: now,
+            _ole: ole,
+            _lease: lease,
+            _same_thread: PhantomData,
+        };
+        result?;
         check_target(target)?;
         if !no_modifiers_pressed() {
             return Err("修飾キーが押されているため、貼り付けを中止しました".into());
@@ -262,28 +358,61 @@ pub fn paste_text(text: &str, target: PasteTarget, owner: HWND) -> Result<(), St
         }
         let keys = paste_shortcut();
         let inserted = unsafe { SendInput(&keys, std::mem::size_of::<INPUT>() as i32) };
-        // Release Ctrl even after a partially accepted shortcut.
         if inserted != keys.len() as u32 {
             let _ = unsafe { SendInput(&keys[3..], std::mem::size_of::<INPUT>() as i32) };
         }
         validate_injected_count(keys.len(), inserted)?;
-        // The destination processes the shortcut asynchronously. Don't restore
-        // the clipboard until it has had an opportunity to read the text.
-        thread::sleep(Duration::from_millis(250));
+        // 転送前の COM 待ちが長くても、送信後の猶予は必ず確保する。
+        transaction.deadline = Instant::now() + Duration::from_millis(250);
+        Ok(transaction)
+    }
+
+    pub fn deadline(&self) -> Instant {
+        self.deadline
+    }
+
+    pub fn restore(mut self) -> Result<(), String> {
+        self.restore_inner()
+    }
+
+    fn restore_inner(&mut self) -> Result<(), String> {
+        let Some(previous) = self.previous.take() else {
+            return Ok(());
+        };
+        if should_restore(self.before, self.our_sequence, unsafe {
+            GetClipboardSequenceNumber()
+        }) {
+            unsafe { OleSetClipboard(&previous) }.map_err(|e| {
+                format!("入力は送信済みですが、元のクリップボードを復元できませんでした: {e}")
+            })?;
+        }
         Ok(())
-    });
-    // External copy during paste takes precedence; never overwrite it.
-    if our_sequence != 0
-        && our_sequence != before
-        && our_sequence == unsafe { GetClipboardSequenceNumber() }
-    {
-        if let Err(e) = unsafe { OleSetClipboard(&previous) } {
-            // Pasting might already have succeeded. Do not report it as a paste
-            // failure and invite a duplicate manual recovery.
-            eprintln!("元のクリップボードを復元できませんでした: {e}");
+    }
+}
+
+impl Drop for PasteTransaction {
+    fn drop(&mut self) {
+        if let Err(error) = self.restore_inner() {
+            eprintln!("{error}");
         }
     }
-    result
+}
+
+/// 実機試験など、同期で呼ぶ既存の入口。本番 UI は期限を待たずにループへ戻る。
+pub fn paste_text(text: &str, target: PasteTarget, owner: HWND) -> Result<(), String> {
+    if text.is_empty() {
+        return Ok(());
+    }
+    let transaction = PasteTransaction::begin(text, target, owner, Instant::now())?;
+    thread::sleep(
+        transaction
+            .deadline()
+            .saturating_duration_since(Instant::now()),
+    );
+    if let Err(error) = transaction.restore() {
+        eprintln!("{error}");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -297,6 +426,26 @@ mod tests {
             thread_id: 102,
             process_id: 103,
         }
+    }
+
+    #[test]
+    fn a_second_transaction_is_rejected_even_on_the_same_thread() {
+        let first = ProcessLease::acquire().unwrap();
+        assert!(ProcessLease::acquire().is_err());
+        drop(first);
+        assert!(ProcessLease::acquire().is_ok());
+    }
+
+    #[test]
+    fn restore_never_replaces_a_newer_clipboard_change() {
+        assert!(should_restore(10, 11, 11));
+        assert!(!should_restore(10, 11, 12));
+        assert!(!should_restore(10, 10, 10));
+        assert!(!should_restore(0, 0, 0));
+        assert!(
+            !should_restore(10, 0, 11),
+            "書込み前の拒否では他アプリの内容を戻さない"
+        );
     }
 
     #[test]

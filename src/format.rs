@@ -1,5 +1,5 @@
 use crate::config::FormatConfig;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io::{BufRead, BufReader, Read};
 use std::sync::{Mutex, OnceLock};
@@ -100,7 +100,7 @@ pub(crate) fn streaming_agent(wait: Duration, pooled: bool, base_url: &str) -> u
         .clone()
 }
 
-fn wait_of(cfg: &FormatConfig) -> Duration {
+pub fn response_wait(cfg: &FormatConfig) -> Duration {
     // ローカルのエンジンは最初の要求でモデルをメモリに読み込む。待ち時間が
     // 初期値のままなら、読み込みに間に合うよう長めにしておく。利用者が
     // 手で変えた値はそのまま使う
@@ -253,7 +253,7 @@ fn format_edit_once(
     };
     let (base_url, model) = resolve_target(cfg);
     offline_gate(cfg, &base_url)?;
-    let timeout = wait_of(cfg);
+    let timeout = response_wait(cfg);
     let messages = vec![
         format!("元の文章:\n{selection}"),
         format!("指示:\n{instruction}"),
@@ -400,18 +400,34 @@ pub fn split_for_formatting(raw: &str, limit_chars: usize) -> Vec<String> {
 /// 分割した部分を順に整形してつなぐ。1 つが失敗したら、その部分だけ
 /// 整形前の文を使う。長い文章でも、整形の 1 回の依頼が小さく済む。
 /// 届いた分は on_delta に、そこまでの全文を渡す
+#[derive(Debug, PartialEq, Eq)]
+pub struct FormattedText {
+    pub text: String,
+    pub fallback_chunks: usize,
+    pub chunk_count: usize,
+}
+
 pub fn format_long(
     cfg: &FormatConfig,
     raw: &str,
     cancelled: &dyn Fn() -> bool,
     mut on_retry: impl FnMut(u32),
     on_delta: &dyn Fn(&str),
-) -> Result<String, FormatError> {
+) -> Result<FormattedText, FormatError> {
     if raw.chars().count() <= FORMAT_CHUNK_CHARS {
-        return format_with_retry_and_deltas(cfg, raw, cancelled, on_retry, on_delta);
+        return format_with_retry_and_deltas(cfg, raw, cancelled, on_retry, on_delta).map(|text| {
+            FormattedText {
+                text,
+                fallback_chunks: 0,
+                chunk_count: 1,
+            }
+        });
     }
     let mut joined = String::new();
-    for piece in split_for_formatting(raw, FORMAT_CHUNK_CHARS) {
+    let pieces = split_for_formatting(raw, FORMAT_CHUNK_CHARS);
+    let chunk_count = pieces.len();
+    let mut fallback_chunks = 0;
+    for piece in pieces {
         let leading = &piece[..piece.len() - piece.trim_start().len()];
         let trailing = &piece[piece.trim_end().len()..];
         let result =
@@ -431,12 +447,17 @@ pub fn format_long(
             }
             // 送り直しでも通らなかった部分は、整形前の文をそのまま使う
             Err(_) => {
+                fallback_chunks += 1;
                 joined.push_str(&piece);
                 on_delta(&joined);
             }
         }
     }
-    Ok(joined)
+    Ok(FormattedText {
+        text: joined,
+        fallback_chunks,
+        chunk_count,
+    })
 }
 
 /// 通信の失敗を、時間切れとそれ以外に分ける。Windows の時間切れ(os error 10060)は文面が日本語になるので、種類で見る
@@ -479,7 +500,7 @@ pub fn format_with_deltas(
     offline_gate(cfg, &base_url)?;
     // 旧設定の既定プロンプトに残った <text> の説明も実際のメッセージ構造へ合わせる。
     let prompt = crate::config::current_prompt(&cfg.prompt);
-    let timeout = wait_of(cfg);
+    let timeout = response_wait(cfg);
     let text = match cfg.provider.as_str() {
         "chatgpt" => {
             if cfg.chatgpt_model.trim().is_empty() {
@@ -580,6 +601,13 @@ pub fn prewarm(cfg: &FormatConfig) {
     if offline_gate(cfg, &base_url).is_err() {
         return;
     }
+    let Some(_permit) = PrewarmPermit::acquire(format!(
+        "{}|{}",
+        cfg.provider,
+        base_url.trim_end_matches('/')
+    )) else {
+        return;
+    };
     match cfg.provider.as_str() {
         // 接続は使い回せないので、ChatGPT はトークンの更新だけを録音中に済ませる
         "chatgpt" => {
@@ -593,7 +621,7 @@ pub fn prewarm(cfg: &FormatConfig) {
     if validate_base_url(base).is_err() {
         return;
     }
-    let resp = streaming_agent(wait_of(cfg), true, base)
+    let resp = streaming_agent(response_wait(cfg), true, base)
         .get(&format!("{base}/models"))
         .timeout(Duration::from_secs(5))
         .set("Authorization", &format!("Bearer {key}"))
@@ -623,6 +651,31 @@ pub fn prewarm(cfg: &FormatConfig) {
         if let Ok(resp) = loaded {
             let _ = resp.into_string();
         }
+    }
+}
+
+static PREWARMING: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+/// 連続した録音開始でも、同じ接続先のモデル準備を重ねない。
+struct PrewarmPermit(String);
+
+impl PrewarmPermit {
+    fn acquire(key: String) -> Option<Self> {
+        let mut active = PREWARMING
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        active.insert(key.clone()).then(|| Self(key))
+    }
+}
+
+impl Drop for PrewarmPermit {
+    fn drop(&mut self) {
+        PREWARMING
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&self.0);
     }
 }
 
@@ -903,6 +956,18 @@ mod security_tests {
     use super::*;
 
     #[test]
+    fn repeated_prewarm_is_skipped_until_the_first_request_finishes() {
+        let key = "test-prewarm-single-flight".to_owned();
+        let first = PrewarmPermit::acquire(key.clone()).unwrap();
+        assert!(PrewarmPermit::acquire(key.clone()).is_none());
+        assert!(PrewarmPermit::acquire(key.clone()).is_none());
+        let other = PrewarmPermit::acquire("test-prewarm-another-endpoint".into()).unwrap();
+        drop(first);
+        assert!(PrewarmPermit::acquire(key).is_some());
+        drop(other);
+    }
+
+    #[test]
     fn rejects_remote_plaintext_http() {
         assert!(validate_base_url("http://example.com/v1").is_err());
         assert!(validate_base_url("http://127.0.0.1.evil.org/v1").is_err());
@@ -1134,7 +1199,9 @@ mod tests {
             let (url, _) = serve_sequence(vec![sse_ok(&first), sse_ok("い")]);
             let cfg = cfg_for(url);
             assert_eq!(
-                format_long(&cfg, &raw, &|| false, |_| {}, &|_| {}).unwrap(),
+                format_long(&cfg, &raw, &|| false, |_| {}, &|_| {})
+                    .unwrap()
+                    .text,
                 raw
             );
         }
@@ -1146,7 +1213,9 @@ mod tests {
         let (url, _) = serve_sequence(vec![sse_ok("```不正な応答```"), sse_ok("い")]);
         let cfg = cfg_for(url);
         let text = format_long(&cfg, &raw, &|| false, |_| {}, &|_| {}).unwrap();
-        assert_eq!(text, format!("{}い", "あ".repeat(2000)));
+        assert_eq!(text.text, format!("{}い", "あ".repeat(2000)));
+        assert_eq!(text.fallback_chunks, 1);
+        assert_eq!(text.chunk_count, 2);
     }
 
     #[test]

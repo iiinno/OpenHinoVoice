@@ -1,5 +1,4 @@
-// Integration crates compile full production modules but use only a subset of their APIs.
-#![allow(dead_code)]
+use openhinovoice::overlay;
 
 use std::time::{Duration, Instant};
 use windows::Win32::UI::HiDpi::{
@@ -8,11 +7,6 @@ use windows::Win32::UI::HiDpi::{
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
 };
-
-#[path = "../src/audio.rs"]
-mod audio;
-#[path = "../src/overlay.rs"]
-mod overlay;
 
 use overlay::{Mode, Tone};
 
@@ -33,11 +27,14 @@ fn cycle_overlay_states() {
     let modes = [
         Mode::Recording {
             started: Instant::now() - Duration::from_secs(5),
+            preparing: true,
         },
-        Mode::Busy {
-            label: "認識中".into(),
-            hint: None,
+        Mode::Recording {
+            started: Instant::now() - Duration::from_secs(5),
+            preparing: false,
         },
+        Mode::Recognizing { preparing: true },
+        Mode::Recognizing { preparing: false },
         Mode::Busy {
             label: "整形中".into(),
             hint: Some("Enter で生テキスト".into()),

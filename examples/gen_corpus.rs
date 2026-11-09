@@ -227,7 +227,7 @@ impl TtsWorker {
     }
 
     fn shutdown(mut self) {
-        drop(self.child.stdin.take());
+        drop(self.stdin);
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while std::time::Instant::now() < deadline {
             match self.child.try_wait() {
@@ -236,6 +236,7 @@ impl TtsWorker {
             }
         }
         let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 

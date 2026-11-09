@@ -10,7 +10,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use windows::core::w;
 use windows::Win32::Foundation::CloseHandle;
 use windows::Win32::System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject};
 
@@ -120,9 +119,128 @@ pub struct RecoveryEntry {
 }
 
 impl RecoveryEntry {
+    pub fn recognized(raw: String) -> Self {
+        let id = new_id();
+        Self {
+            id,
+            timestamp_unix_ms: id / 1_000_000,
+            raw,
+            formatted: None,
+            paste_status: PasteStatus::Pending,
+        }
+    }
+
     /// Re-paste the result selected by the user; the original transcript is always retained.
     pub fn final_text(&self) -> &str {
         self.formatted.as_deref().unwrap_or(&self.raw)
+    }
+}
+
+pub struct Checkpoint {
+    pub entry: RecoveryEntry,
+    pub revision: u64,
+    pub create: bool,
+    pub permission: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+pub struct CheckpointResult {
+    pub id: u64,
+    pub revision: u64,
+    /// 保存後の整理だけが失敗しても、次回は既存項目の更新として扱う。
+    pub created: bool,
+    pub result: Result<(), String>,
+}
+
+/// 保存する内容の所有権だけを渡す。UI 側ではロック待ちやディスク I/O をしない。
+pub struct RecoveryWriter {
+    sender: std::sync::mpsc::SyncSender<Checkpoint>,
+    receiver: std::sync::mpsc::Receiver<CheckpointResult>,
+    enabled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl RecoveryWriter {
+    pub fn start(notify: fn()) -> io::Result<Self> {
+        let path = recovery_path();
+        Self::with_sink(notify, move |checkpoint| {
+            let id = checkpoint.entry.id;
+            let revision = checkpoint.revision;
+            let mut created = !checkpoint.create;
+            let result = (|| {
+                check_text_size(&checkpoint.entry.raw)?;
+                if let Some(text) = &checkpoint.entry.formatted {
+                    check_text_size(text)?;
+                }
+                let _guard = RecoveryLock::acquire()?;
+                if !checkpoint.permission.load(Ordering::Acquire) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "履歴の保存を無効にしました",
+                    ));
+                }
+                write_checkpoint_at(&path, &checkpoint, &mut created)
+            })()
+            .map_err(|error: io::Error| error.to_string());
+            CheckpointResult {
+                id,
+                revision,
+                created,
+                result,
+            }
+        })
+    }
+
+    fn with_sink(
+        notify: fn(),
+        mut save: impl FnMut(Checkpoint) -> CheckpointResult + Send + 'static,
+    ) -> io::Result<Self> {
+        let (sender, incoming) = std::sync::mpsc::sync_channel::<Checkpoint>(4);
+        let (results, receiver) = std::sync::mpsc::channel();
+        let enabled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let allowed = enabled.clone();
+        std::thread::Builder::new()
+            .name("recovery-history".into())
+            .spawn(move || {
+                while let Ok(checkpoint) = incoming.recv() {
+                    let result = if allowed.load(Ordering::Acquire)
+                        && checkpoint.permission.load(Ordering::Acquire)
+                    {
+                        save(checkpoint)
+                    } else {
+                        CheckpointResult {
+                            id: checkpoint.entry.id,
+                            revision: checkpoint.revision,
+                            created: !checkpoint.create,
+                            result: Err("履歴の保存を無効にしました".into()),
+                        }
+                    };
+                    if results.send(result).is_err() {
+                        break;
+                    }
+                    notify();
+                }
+            })?;
+        Ok(Self {
+            sender,
+            receiver,
+            enabled,
+        })
+    }
+
+    pub fn try_submit(&self, checkpoint: Checkpoint) -> Result<(), Checkpoint> {
+        self.sender
+            .try_send(checkpoint)
+            .map_err(|error| match error {
+                std::sync::mpsc::TrySendError::Full(checkpoint)
+                | std::sync::mpsc::TrySendError::Disconnected(checkpoint) => checkpoint,
+            })
+    }
+
+    pub fn set_enabled(&self, enabled: bool) {
+        self.enabled.store(enabled, Ordering::Release);
+    }
+
+    pub fn poll(&self) -> Option<CheckpointResult> {
+        self.receiver.try_recv().ok()
     }
 }
 
@@ -146,15 +264,6 @@ pub fn save_recognized(raw: &str) -> io::Result<u64> {
     save_recognized_at(&recovery_path(), raw)
 }
 
-/// 区間認識の途中経過を書き足す。認識が終わる区間ごとに呼ばれる
-pub fn update_raw(id: u64, raw: &str) -> io::Result<()> {
-    check_text_size(raw)?;
-    let _lock = RecoveryLock::acquire()?;
-    update_at(&recovery_path(), id, |entry| {
-        entry.raw = raw.to_owned();
-    })
-}
-
 pub fn update_formatted(id: u64, formatted: &str) -> io::Result<()> {
     check_text_size(formatted)?;
     let _lock = RecoveryLock::acquire()?;
@@ -176,22 +285,38 @@ pub fn recent(limit: usize) -> io::Result<Vec<RecoveryEntry>> {
 }
 
 /// ホームに出す入力の統計。復旧履歴から、今日と今週(7 日)の入力文字数を数える
-pub fn usage_stats() -> io::Result<(usize, usize)> {
+pub struct HomeSnapshot {
+    pub today_chars: usize,
+    pub week_chars: usize,
+    pub recent: Vec<RecoveryEntry>,
+}
+
+/// 一度だけ読み出した履歴から統計と直近の一覧を作る。
+pub fn home_snapshot() -> io::Result<HomeSnapshot> {
     let entries = recent(MAX_RECOVERY_ENTRIES)?;
     let today_start = start_of_local_day_ms()?;
+    Ok(snapshot_from_entries(entries, today_start))
+}
+
+fn snapshot_from_entries(mut entries: Vec<RecoveryEntry>, today_start: u64) -> HomeSnapshot {
     let week_start = today_start.saturating_sub(6 * 24 * 60 * 60 * 1000);
-    let mut today = 0usize;
-    let mut week = 0usize;
-    for entry in entries {
+    let mut today_chars = 0;
+    let mut week_chars = 0;
+    for entry in &entries {
         let chars = entry.raw.chars().count();
         if entry.timestamp_unix_ms >= today_start {
-            today += chars;
+            today_chars += chars;
         }
         if entry.timestamp_unix_ms >= week_start {
-            week += chars;
+            week_chars += chars;
         }
     }
-    Ok((today, week))
+    entries.truncate(5);
+    HomeSnapshot {
+        today_chars,
+        week_chars,
+        recent: entries,
+    }
 }
 
 fn start_of_local_day_ms() -> io::Result<u64> {
@@ -339,9 +464,9 @@ struct RecoveryLock(windows::Win32::Foundation::HANDLE);
 
 impl RecoveryLock {
     fn acquire() -> io::Result<Self> {
-        let handle =
-            unsafe { CreateMutexW(None, false, w!("Local\\OpenHinoVoiceRecoveryHistory")) }
-                .map_err(io::Error::other)?;
+        let name =
+            windows::core::HSTRING::from(config::mutex_name("Local\\OpenHinoVoiceRecoveryHistory"));
+        let handle = unsafe { CreateMutexW(None, false, &name) }.map_err(io::Error::other)?;
         let result = unsafe { WaitForSingleObject(handle, 5000) };
         // WAIT_OBJECT_0, WAIT_ABANDONED (the previous process exited).
         if result.0 != 0 && result.0 != 0x80 {
@@ -585,8 +710,77 @@ fn recent_at(dir: &Path, limit: usize) -> io::Result<Vec<RecoveryEntry>> {
     Ok(result)
 }
 
+const CLEAR_MARKER: &str = "cleared-through";
+
+// The reservation id is made before any queueing. Persist its deletion boundary
+// before removing files, so even a delayed first checkpoint cannot revive them.
+fn reject_cleared_reservation(dir: &Path, id: u64) -> io::Result<()> {
+    let bytes = match fs::read(dir.join(CLEAR_MARKER)) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let cutoff = u64::from_le_bytes(bytes.try_into().map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidData, "履歴削除の境界を読み取れません")
+    })?);
+    if id <= cutoff {
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "この録音の履歴は削除されました",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn write_checkpoint_at(dir: &Path, checkpoint: &Checkpoint, created: &mut bool) -> io::Result<()> {
+    let id = checkpoint.entry.id;
+    reject_cleared_reservation(dir, id)?;
+    let destination = entry_path(dir, id);
+    if checkpoint.create {
+        if destination.exists() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "復旧履歴の識別子が重複しています",
+            ));
+        }
+    } else {
+        let saved = read_entry(&destination)?;
+        if saved.id != id {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "復旧履歴の識別子が一致しません",
+            ));
+        }
+    }
+    write_entry(&destination, &checkpoint.entry)?;
+    *created = true;
+    prune_at(dir)
+}
+
 fn clear_at(dir: &Path) -> io::Result<()> {
-    for path in entry_files(dir)? {
+    fs::create_dir_all(dir)?;
+    let files = entry_files(dir)?;
+    let cutoff = files
+        .iter()
+        .filter_map(|path| path.file_stem()?.to_str()?.parse::<u64>().ok())
+        .fold(new_id(), u64::max);
+    let temporary = dir.join(format!(".recovery-clear-{}.tmp", new_id()));
+    let write_marker = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        file.write_all(&cutoff.to_le_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        atomic_replace(&temporary, &dir.join(CLEAR_MARKER))
+    })();
+    if write_marker.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    write_marker?;
+    for path in files {
         fs::remove_file(path)?;
     }
     if dir.exists() {
@@ -608,6 +802,116 @@ fn clear_at(dir: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clear_rejects_an_initial_checkpoint_that_was_already_queued() {
+        let dir = test_dir();
+        let permission = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let queued = Checkpoint {
+            entry: RecoveryEntry::recognized("削除前の原文".into()),
+            revision: 1,
+            create: true,
+            permission: permission.clone(),
+        };
+        clear_at(&dir).unwrap();
+        let mut created = false;
+        assert!(write_checkpoint_at(&dir, &queued, &mut created).is_err());
+        assert!(!created);
+        assert!(recent_at(&dir, 10).unwrap().is_empty());
+        let next = Checkpoint {
+            entry: RecoveryEntry::recognized("削除後の新しい録音".into()),
+            revision: 1,
+            create: true,
+            permission,
+        };
+        write_checkpoint_at(&dir, &next, &mut created).unwrap();
+        assert!(created);
+        assert_eq!(recent_at(&dir, 10).unwrap().len(), 1);
+        clear_at(&dir).unwrap();
+        let delayed_update = Checkpoint {
+            create: false,
+            revision: 2,
+            ..next
+        };
+        assert!(write_checkpoint_at(&dir, &delayed_update, &mut created).is_err());
+        assert!(recent_at(&dir, 10).unwrap().is_empty());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn home_snapshot_counts_all_rows_before_limiting_recent_items() {
+        let day = 24 * 60 * 60 * 1000;
+        let today = day * 10;
+        let entries = (0..8)
+            .map(|index| RecoveryEntry {
+                id: index + 1,
+                timestamp_unix_ms: today - index * day,
+                raw: "あ😀".into(),
+                formatted: None,
+                paste_status: PasteStatus::Pending,
+            })
+            .collect();
+        let snapshot = snapshot_from_entries(entries, today);
+        assert_eq!(snapshot.today_chars, 2);
+        assert_eq!(snapshot.week_chars, 14);
+        assert_eq!(snapshot.recent.len(), 5);
+    }
+
+    #[test]
+    fn writer_keeps_revision_order_and_rejects_a_revoked_permission() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::{mpsc::channel, Arc};
+        let (entered, started) = channel();
+        let (release, resume) = channel();
+        let writer = RecoveryWriter::with_sink(
+            || {},
+            move |checkpoint| {
+                entered.send(checkpoint.revision).unwrap();
+                resume.recv_timeout(Duration::from_secs(2)).unwrap();
+                CheckpointResult {
+                    id: checkpoint.entry.id,
+                    revision: checkpoint.revision,
+                    created: true,
+                    result: Ok(()),
+                }
+            },
+        )
+        .unwrap();
+        let permission = Arc::new(AtomicBool::new(true));
+        let entry = RecoveryEntry::recognized("原文".into());
+        assert!(writer
+            .try_submit(Checkpoint {
+                entry: entry.clone(),
+                revision: 1,
+                create: true,
+                permission: permission.clone()
+            })
+            .is_ok());
+        assert_eq!(started.recv_timeout(Duration::from_secs(2)).unwrap(), 1);
+        assert!(writer
+            .try_submit(Checkpoint {
+                entry,
+                revision: 2,
+                create: false,
+                permission: permission.clone()
+            })
+            .is_ok());
+        permission.store(false, Ordering::Release);
+        release.send(()).unwrap();
+        let first = writer
+            .receiver
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+        let second = writer
+            .receiver
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(first.revision, 1);
+        assert!(first.result.is_ok());
+        assert_eq!(second.revision, 2);
+        assert!(second.result.is_err());
+        assert!(started.try_recv().is_err(), "禁止後の保存はsinkに届かない");
+    }
 
     #[test]
     fn appends_valid_json_lines_and_rotates_at_limit() {

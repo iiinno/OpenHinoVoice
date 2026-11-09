@@ -1,245 +1,173 @@
-// 本物の speech.exe と評価用 corpus を使った性能測定。名前を指定したときだけ動く。
-// 実行: cargo test --release --test perf_live -- --ignored --nocapture
-// 前提: cargo run --release --example gen_corpus が tests/corpus/ に WAV と正解を作っていること。
-// 結果は reports/perf/perf-live-<日時>.md に書かれる。
-#![allow(dead_code)]
-
-#[path = "../src/asr.rs"]
-mod asr;
-#[path = "../src/audio.rs"]
-mod audio;
-#[path = "../src/chatgpt.rs"]
-mod chatgpt;
-#[path = "../src/config.rs"]
-mod config;
-#[path = "../src/format.rs"]
-mod format;
-#[path = "../src/lexicon.rs"]
-mod lexicon;
-#[path = "../src/provider.rs"]
-mod provider;
-#[path = "../src/segment.rs"]
-mod segment;
-
+//! 実workerの診断測定。録音・仮字幕・AI・貼り付けを含む操作全体とは分ける。
+//! scripts/verify.ps1 -Mode Live が入力、モデル、保存先を明示して実行する。
+use openhinovoice::{asr, audio, config, segment};
+use serde::Serialize;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 const READY_TIMEOUT: Duration = Duration::from_secs(300);
-/// 30 分の音声を 1 リクエストで認識させたとき、guardrail が止めるまで待つ上限
 const END_TIMEOUT: Duration = Duration::from_secs(900);
-
-/// 句読点などの区切り記号。Haas がこれらを出すかを P1 の判断のために数える
+const CASES: &[&str] = &["short", "1min", "5min", "30min"];
 const PUNCTUATION: &[char] = &['、', '。', '！', '？', '，', '．', ',', '.', '!', '?', '・'];
 
-fn corpus_path(name: &str, ext: &str) -> Option<std::path::PathBuf> {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/corpus")
-        .join(format!("{name}.{ext}"));
-    path.exists().then_some(path)
+struct CorpusCase {
+    name: String,
+    wav: PathBuf,
+    reference: PathBuf,
 }
-
+fn required_cases(directory: &Path, requested: &[&str]) -> Result<Vec<CorpusCase>, String> {
+    if requested.is_empty() {
+        return Err("測定するcorpusを指定してください".into());
+    }
+    requested
+        .iter()
+        .map(|name| {
+            if !CASES.contains(name) {
+                return Err(format!("不明なcorpusです: {name}"));
+            }
+            let wav = directory.join(format!("{name}.wav"));
+            let reference = directory.join(format!("{name}.ref.txt"));
+            if !wav.is_file() || !reference.is_file() {
+                return Err(format!("{name}.wav と {name}.ref.txt の両方が必要です"));
+            }
+            Ok(CorpusCase {
+                name: (*name).to_owned(),
+                wav,
+                reference,
+            })
+        })
+        .collect()
+}
+fn corpus_cases() -> Vec<CorpusCase> {
+    let directory = std::env::var_os("JV_CORPUS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus"));
+    let requested = std::env::var("JV_PERF_CASES").unwrap_or_else(|_| CASES.join(","));
+    let requested: Vec<_> = requested.split(',').map(str::trim).collect();
+    required_cases(&directory, &requested).expect("corpusの事前確認に失敗しました")
+}
+struct Run {
+    speech_exe: String,
+    model: String,
+    words: String,
+}
+impl Run {
+    fn from_environment() -> Self {
+        // 実アカウントや設定の移行を起こさず、既定値と明示した引数だけを使う。
+        let cfg = config::parse(config::EXAMPLE_TOML).expect("既定設定を読めません");
+        let run = Self {
+            speech_exe: std::env::var("JV_SPEECH_EXE").unwrap_or(cfg.speech_exe),
+            model: std::env::var("JV_MODEL").unwrap_or(cfg.model),
+            words: std::env::var("JV_ASR_WORDS").unwrap_or_default(),
+        };
+        asr::check_offline_model(&run.speech_exe, &run.model, true)
+            .expect("取得済みのモデルが必要です。測定中のダウンロードは行いません");
+        run
+    }
+    fn start_worker(&self) -> (asr::Worker, u128) {
+        let started = Instant::now();
+        let mut worker =
+            asr::Worker::spawn(&self.speech_exe, &self.model).expect("workerを起動できません");
+        worker
+            .wait_ready(READY_TIMEOUT)
+            .expect("workerが準備完了になりません");
+        (worker, started.elapsed().as_millis())
+    }
+}
 fn feed_wav(worker: &mut asr::Worker, id: &str, sample_rate: u32, pcm: &[u8]) {
     let chunk_bytes = (sample_rate as usize / 10) * 2;
     for chunk in pcm.chunks(chunk_bytes.max(2)) {
-        while !worker
-            .send_chunk(id, chunk)
-            .expect("chunk を送れませんでした")
-        {
-            worker.poll_writer().expect("worker への送信が進みません");
+        while !worker.send_chunk(id, chunk).expect("chunkを送れません") {
+            worker.poll_writer().expect("workerへの送信が進みません");
             std::thread::sleep(Duration::from_millis(1));
         }
     }
 }
-
-/// end か error まで読む。時間切れは結果の stop に入れる(測定を続けるため失敗にしない)
-fn drain_until_end(worker: &mut asr::Worker) -> (String, String) {
+fn transcribe(worker: &mut asr::Worker, id: &str, rate: u32, words: &str) {
+    while !worker
+        .transcribe(id, rate, words)
+        .expect("認識を要求できません")
+    {
+        worker.poll_writer().expect("workerへの送信が進みません");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+fn drain_until_end(worker: &mut asr::Worker, id: &str) -> (String, String) {
     let started = Instant::now();
     loop {
-        worker.poll_writer().expect("worker への送信が進みません");
+        worker.poll_writer().expect("workerへの送信が進みません");
         match worker.poll_terminal() {
-            Some(Ok(asr::Terminal {
-                outcome: asr::TerminalOutcome::Text(text),
-                stop,
-                ..
-            })) => return (text.unwrap_or_default(), stop),
-            Some(Ok(asr::Terminal {
-                outcome: asr::TerminalOutcome::Error(message),
-                ..
-            })) => return (String::new(), message),
-            Some(Ok(asr::Terminal {
-                outcome: asr::TerminalOutcome::Cancelled,
-                ..
-            })) => return (String::new(), "cancelled".into()),
-            Some(Err(other)) => return (String::new(), other.to_string()),
-            None => {
-                if started.elapsed() > END_TIMEOUT {
-                    return (String::new(), "timeout".into());
+            Some(Ok(terminal)) if terminal.id == id => {
+                return match terminal.outcome {
+                    asr::TerminalOutcome::Text(text) => (text.unwrap_or_default(), terminal.stop),
+                    asr::TerminalOutcome::Error(message) => (String::new(), message),
+                    asr::TerminalOutcome::Cancelled => (String::new(), "cancelled".into()),
                 }
-                std::thread::sleep(Duration::from_millis(20));
             }
+            Some(Err(error)) => return (String::new(), error.to_string()),
+            _ if started.elapsed() >= END_TIMEOUT => return (String::new(), "timeout".into()),
+            _ => std::thread::sleep(Duration::from_millis(10)),
         }
     }
 }
-
-/// 空白だけを取り除いた文字列で比べる厳しめの CER と、さらに句読点も無視する緩めの CER
 fn normalize(text: &str, strip_punctuation: bool) -> Vec<char> {
     text.chars()
         .filter(|c| !c.is_whitespace())
         .filter(|c| !(strip_punctuation && PUNCTUATION.contains(c)))
         .collect()
 }
-
 fn cer(reference: &[char], hypothesis: &[char]) -> f64 {
     if reference.is_empty() {
         return if hypothesis.is_empty() { 0.0 } else { 1.0 };
     }
     let mut prev: Vec<u32> = (0..=hypothesis.len() as u32).collect();
     let mut current = vec![0u32; hypothesis.len() + 1];
-    for (i, ref_char) in reference.iter().enumerate() {
+    for (i, reference_char) in reference.iter().enumerate() {
         current[0] = i as u32 + 1;
-        for (j, hyp_char) in hypothesis.iter().enumerate() {
-            let cost = u32::from(ref_char != hyp_char);
-            current[j + 1] = (prev[j + 1] + 1).min(current[j] + 1).min(prev[j] + cost);
+        for (j, hypothesis_char) in hypothesis.iter().enumerate() {
+            current[j + 1] = (prev[j + 1] + 1)
+                .min(current[j] + 1)
+                .min(prev[j] + u32::from(reference_char != hypothesis_char));
         }
         std::mem::swap(&mut prev, &mut current);
     }
     prev[hypothesis.len()] as f64 / reference.len() as f64
 }
-
+// 再現条件の比較用。改ざん検知用ではなく、verify.ps1ではSHA-256も記録する。
+fn fingerprint(bytes: &[u8]) -> String {
+    let hash = bytes.iter().fold(0xcbf29ce484222325u64, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+    });
+    format!("{hash:016x}")
+}
+#[derive(Serialize)]
 struct Measurement {
     name: String,
-    cold_ready_ms: u128,
-    warm_ready_ms: u128,
-    transcribe_ms: u128,
     audio_seconds: f64,
+    wav_fingerprint_fnv1a64: String,
+    reference_fingerprint_fnv1a64: String,
+    first_ready_ms: u128,
+    restarted_ready_ms: Option<u128>,
+    recognition_ms: u128,
+    last_interval_ms: Option<u128>,
+    intervals: usize,
     cer_strict: f64,
     cer_loose: f64,
     stop: String,
-    comma_count: usize,
-    period_count: usize,
-    ref_chars: usize,
+    reference_chars: usize,
     output_chars: usize,
 }
-
-fn measure(name: &str, speech_exe: &str, model: &str, words: &str) -> Option<Measurement> {
-    let wav_path = corpus_path(name, "wav")?;
-    let ref_path = corpus_path(name, "ref.txt")?;
-    let bytes = std::fs::read(&wav_path).expect("WAV を読めません");
-    let wav = asr::parse_wav(&bytes).expect("WAV が不正です");
-    let reference = std::fs::read_to_string(&ref_path).expect("正解を読めません");
-
-    // 1 回めはモデルをディスクから読む。常駐させない今の方式では、録音のたびにこれがかかる
-    let spawn_started = Instant::now();
-    let mut worker = asr::Worker::spawn(speech_exe, model).expect("worker を起動できません");
-    worker
-        .wait_ready(READY_TIMEOUT)
-        .expect("worker が準備完了になりません");
-    let cold_ready_ms = spawn_started.elapsed().as_millis();
-
-    feed_wav(&mut worker, "r", wav.sample_rate, &wav.pcm_le);
-    let transcribe_started = Instant::now();
-    while !worker
-        .transcribe("r", wav.sample_rate, words)
-        .expect("transcribe を送れませんでした")
-    {
-        worker.poll_writer().expect("worker への送信が進みません");
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    let (text, stop) = drain_until_end(&mut worker);
-    let transcribe_ms = transcribe_started.elapsed().as_millis();
-    worker.shutdown();
-
-    // 2 回めはモデルのページキャッシュが残った状態。続けて話すときの待ち時間に近い
-    let warm_ready_ms = worker_startup_ms(speech_exe, model);
-
-    let ref_strict = normalize(&reference, false);
-    let hyp_strict = normalize(&text, false);
-    let ref_loose = normalize(&reference, true);
-    let hyp_loose = normalize(&text, true);
-    Some(Measurement {
-        name: name.to_string(),
-        cold_ready_ms,
-        warm_ready_ms,
-        transcribe_ms,
-        audio_seconds: wav.pcm_le.len() as f64 / 2.0 / wav.sample_rate as f64,
-        cer_strict: cer(&ref_strict, &hyp_strict),
-        cer_loose: cer(&ref_loose, &hyp_loose),
-        stop,
-        comma_count: text.matches('、').count(),
-        period_count: text.matches('。').count(),
-        ref_chars: ref_strict.len(),
-        output_chars: hyp_strict.len(),
-    })
-}
-
-/// worker を起動して ready までの時間を測る
-fn worker_startup_ms(speech_exe: &str, model: &str) -> u128 {
-    let started = Instant::now();
-    let mut worker = asr::Worker::spawn(speech_exe, model).expect("worker を起動できません");
-    worker
-        .wait_ready(READY_TIMEOUT)
-        .expect("worker が準備完了になりません");
-    worker.shutdown();
-    started.elapsed().as_millis()
-}
-
-fn write_report(results: &[Measurement], words: &str) {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("reports/perf");
-    std::fs::create_dir_all(&dir).expect("reports/perf を作れません");
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let path = dir.join(format!("perf-live-{stamp}.md"));
-    let mut report = String::new();
-    report.push_str(&format!(
-        "# perf_live の測定(エポック秒 {stamp})\n\nモデル: 設定の既定、キーワード: {words:?}\n\n"
-    ));
-    report.push_str("| 音声 | 長さ(秒) | 準備 1 回目(ms) | 準備 2 回目(ms) | 認識(ms) | CER 厳密 | CER 緩和 | stop | 、の数 | 。の数 | 正解文字数 | 出力文字数 |\n");
-    report.push_str("|---|---|---|---|---|---|---|---|---|---|---|---|\n");
-    for m in results {
-        report.push_str(&format!(
-            "| {} | {:.0} | {} | {} | {} | {:.1}% | {:.1}% | {} | {} | {} | {} | {} |\n",
-            m.name,
-            m.audio_seconds,
-            m.cold_ready_ms,
-            m.warm_ready_ms,
-            m.transcribe_ms,
-            m.cer_strict * 100.0,
-            m.cer_loose * 100.0,
-            m.stop,
-            m.comma_count,
-            m.period_count,
-            m.ref_chars,
-            m.output_chars
-        ));
-    }
-    report.push_str("\n- 「準備 1 回目」は同じ実行内で初めて worker を起動したときの ready までの時間。「準備 2 回目」はその直後の再起動。\n");
-    report.push_str("- 「認識」は transcribe を送ってから end までの時間。Enter 押下から結果までの待ち時間に相当する。\n");
-    report.push_str(
-        "- 「CER 厳密」は空白を除いた文字で比べ、「CER 緩和」はさらに句読点を除いて比べた値。\n",
-    );
-    std::fs::write(&path, report).expect("測定報告を書けません");
-    println!("報告を書きました: {}", path.display());
-}
-
-#[test]
-#[ignore = "本物の speech.exe と tests/corpus/ の音声が必要。--ignored 付きで実行する"]
-fn live_segmented_latency_and_accuracy_on_corpus() {
-    let cfg = config::load().expect("設定を読めません");
-    let speech_exe = std::env::var("JV_SPEECH_EXE").unwrap_or(cfg.speech_exe.clone());
-    let model = std::env::var("JV_MODEL").unwrap_or(cfg.model.clone());
-    let words = std::env::var("JV_ASR_WORDS").unwrap_or_default();
-
-    let mut rows = Vec::new();
-    for name in ["short", "1min", "5min", "30min"] {
-        let Some((wav_path, ref_path)) = corpus_path(name, "wav").zip(corpus_path(name, "ref.txt"))
-        else {
-            println!("{name}.wav がないため飛ばします(gen_corpus を実行してください)");
-            continue;
-        };
-        let bytes = std::fs::read(&wav_path).expect("WAV を読めません");
-        let wav = asr::parse_wav(&bytes).expect("WAV が不正です");
-        let reference = std::fs::read_to_string(&ref_path).expect("正解を読めません");
+fn measure(case: &CorpusCase, run: &Run, segmented: bool) -> Measurement {
+    let bytes = std::fs::read(&case.wav).expect("WAVを読めません");
+    let wav_hash = fingerprint(&bytes);
+    let wav = asr::parse_wav(&bytes).expect("WAVが不正です");
+    drop(bytes);
+    let reference = std::fs::read_to_string(&case.reference).expect("正解を読めません");
+    assert!(!reference.trim().is_empty(), "正解の文章が空です");
+    let (mut worker, first_ready_ms) = run.start_worker();
+    let audio_seconds = wav.pcm_le.len() as f64 / 2.0 / wav.sample_rate as f64;
+    let (text, stop, recognition_ms, last_interval_ms, intervals) = if segmented {
+        // 全音声を先に区切る診断。録音時の到着速度や未処理量は再現しない。
         let samples: Vec<f32> = wav
             .pcm_le
             .as_chunks::<2>()
@@ -247,180 +175,192 @@ fn live_segmented_latency_and_accuracy_on_corpus() {
             .iter()
             .map(|b| i16::from_le_bytes(*b) as f32 / 32768.0)
             .collect();
-
-        // アプリと同じ区間認識。区間が閉じるたびに録音中に認識を送り、
-        // Enter(= 最後の区間の transcribe)から end までを測る
         let mut segmenter = segment::Segmenter::new(wav.sample_rate);
         let mut intervals = segmenter.push(&samples);
-        if let Some(rest) = segmenter.finish() {
-            if !rest.is_empty() {
-                intervals.push(rest);
-            }
+        if let Some(rest) = segmenter.finish().filter(|rest| !rest.is_empty()) {
+            intervals.push(rest);
         }
-
-        let mut worker = asr::Worker::spawn(&speech_exe, &model).expect("worker を起動できません");
-        worker
-            .wait_ready(READY_TIMEOUT)
-            .expect("worker が準備完了になりません");
-        let started = Instant::now();
+        assert!(!intervals.is_empty(), "発話区間が見つかりません");
         let mut texts = Vec::with_capacity(intervals.len());
-        let mut stops = Vec::new();
-        let mut enter_ms = 0u128;
-        let mut failure = String::new();
+        let mut last_interval_ms = None;
+        let mut outcome = String::from("complete");
+        let started = Instant::now();
         for (index, interval) in intervals.iter().enumerate() {
             let id = format!("s{index}");
             feed_wav(
                 &mut worker,
                 &id,
                 wav.sample_rate,
-                &crate_audio_pcm(interval),
+                &audio::samples_to_pcm_le(interval),
             );
-            while !worker
-                .transcribe(&id, wav.sample_rate, &words)
-                .expect("transcribe を送れませんでした")
-            {
-                worker.poll_writer().expect("worker への送信が進みません");
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            let last_transcribe = index == intervals.len() - 1;
-            let transcribe_started = Instant::now();
-            loop {
-                worker.poll_writer().expect("worker への送信が進みません");
-                match worker.poll_terminal() {
-                    Some(Ok(asr::Terminal {
-                        id: done,
-                        outcome: asr::TerminalOutcome::Text(text),
-                        stop,
-                        ..
-                    })) if done == id => {
-                        texts.push(text.unwrap_or_default());
-                        stops.push(stop);
-                        if last_transcribe {
-                            enter_ms = transcribe_started.elapsed().as_millis();
-                        }
-                        break;
-                    }
-                    Some(Ok(asr::Terminal {
-                        outcome: asr::TerminalOutcome::Error(message),
-                        ..
-                    })) => {
-                        failure = message;
-                        break;
-                    }
-                    Some(Ok(_)) => {}
-                    Some(Err(other)) => {
-                        failure = other.to_string();
-                        break;
-                    }
-                    None => {
-                        if transcribe_started.elapsed() > END_TIMEOUT {
-                            failure = "timeout".into();
-                            break;
-                        }
-                        std::thread::sleep(Duration::from_millis(10));
-                    }
-                }
-            }
-            if !failure.is_empty() {
+            let requested_at = Instant::now();
+            transcribe(&mut worker, &id, wav.sample_rate, &run.words);
+            let (text, stop) = drain_until_end(&mut worker, &id);
+            if stop != "complete" {
+                outcome = stop;
                 break;
             }
+            texts.push(text);
+            if index + 1 == intervals.len() {
+                last_interval_ms = Some(requested_at.elapsed().as_millis());
+            }
         }
+        (
+            segment::join_intervals(&texts),
+            outcome,
+            started.elapsed().as_millis(),
+            last_interval_ms,
+            intervals.len(),
+        )
+    } else {
+        feed_wav(&mut worker, "r", wav.sample_rate, &wav.pcm_le);
+        let started = Instant::now();
+        transcribe(&mut worker, "r", wav.sample_rate, &run.words);
+        let (text, stop) = drain_until_end(&mut worker, "r");
+        (text, stop, started.elapsed().as_millis(), None, 1)
+    };
+    worker.shutdown();
+    let restarted_ready_ms = if segmented {
+        None
+    } else {
+        let (worker, ready_ms) = run.start_worker();
         worker.shutdown();
-        let text = segment::join_intervals(&texts);
-        let audio_seconds = wav.pcm_le.len() as f64 / 2.0 / wav.sample_rate as f64;
-        let ref_strict = normalize(&reference, false);
-        let hyp_strict = normalize(&text, false);
-        let ref_loose = normalize(&reference, true);
-        let hyp_loose = normalize(&text, true);
-        let row = format!(
-            "| {} | {:.0} | {} | {} | {} | {:.1}% | {:.1}% | {} | {} | {} | {} | {} |\n",
-            name,
-            audio_seconds,
-            intervals.len(),
-            started.elapsed().as_millis(),
-            enter_ms,
-            cer(&ref_strict, &hyp_strict) * 100.0,
-            cer(&ref_loose, &hyp_loose) * 100.0,
-            if failure.is_empty() {
-                "complete"
-            } else {
-                &failure
-            },
-            text.matches('、').count(),
-            text.matches('。').count(),
-            ref_strict.len(),
-            hyp_strict.len()
-        );
-        println!(
-            "{}: 区間 {} 個 区間認識全体 {}ms Enter から {}ms CER 厳密 {:.1}% 緩和 {:.1}% {}",
-            name,
-            intervals.len(),
-            started.elapsed().as_millis(),
-            enter_ms,
-            cer(&ref_strict, &hyp_strict) * 100.0,
-            cer(&ref_loose, &hyp_loose) * 100.0,
-            if failure.is_empty() { "" } else { &failure }
-        );
-        rows.push(row);
+        Some(ready_ms)
+    };
+    let reference_strict = normalize(&reference, false);
+    let hypothesis_strict = normalize(&text, false);
+    Measurement {
+        name: case.name.clone(),
+        audio_seconds,
+        wav_fingerprint_fnv1a64: wav_hash,
+        reference_fingerprint_fnv1a64: fingerprint(reference.as_bytes()),
+        first_ready_ms,
+        restarted_ready_ms,
+        recognition_ms,
+        last_interval_ms,
+        intervals,
+        cer_strict: cer(&reference_strict, &hypothesis_strict),
+        cer_loose: cer(&normalize(&reference, true), &normalize(&text, true)),
+        stop,
+        reference_chars: reference_strict.len(),
+        output_chars: hypothesis_strict.len(),
     }
-
-    // 報告を書く
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("reports/perf");
-    std::fs::create_dir_all(&dir).expect("reports/perf を作れません");
+}
+fn write_report(run: &Run, results: &[Measurement], segmented: bool) {
+    let directory = std::env::var_os("JV_PERF_OUTPUT_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("target/qa/perf"));
+    std::fs::create_dir_all(&directory).expect("測定報告の保存先を作れません");
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs();
-    let mut report = format!(
-        "# perf_live の区間測定(エポック秒 {stamp})\n\nモデル: 設定の既定、キーワード: {words:?}\n\n"
+        .as_millis();
+    let kind = if segmented {
+        "segmented-diagnostic"
+    } else {
+        "worker-diagnostic"
+    };
+    let base = directory.join(format!("{kind}-{stamp}-{}", std::process::id()));
+    let all_complete = results.iter().all(|row| row.stop == "complete");
+    let model_label = Path::new(&run.model)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let metadata = serde_json::json!({
+        "schemaVersion": 1, "measurement": kind,
+        "status": if all_complete { "passed" } else { "failed" },
+        "version": env!("CARGO_PKG_VERSION"), "revision": std::env::var("OHV_REVISION").ok(),
+        "target": { "os": std::env::consts::OS, "arch": std::env::consts::ARCH },
+        "logicalCpuCount": std::thread::available_parallelism().map(usize::from).ok(),
+        "processor": std::env::var("PROCESSOR_IDENTIFIER").ok(), "model": model_label,
+        "keywordsChars": run.words.chars().count(), "cacheFlushed": false,
+        "includes": if segmented { "serial interval recognition including PCM feed" } else { "transcribe request to terminal response" },
+        "excludes": ["real-time microphone arrival", "ASR backlog at Enter", "partial captions", "AI formatting", "paste", "worker shutdown"],
+        "results": results,
+    });
+    std::fs::write(
+        base.with_extension("json"),
+        serde_json::to_vec_pretty(&metadata).unwrap(),
+    )
+    .expect("測定JSONを書けません");
+    let mut report = format!("# {kind}\n\nモデル: {model_label}\n\n");
+    report.push_str("| 音声 | 長さ(秒) | 区間 | 準備1回目(ms) | 再起動準備(ms) | 認識(ms) | 最後の区間(ms) | CER厳密 | CER緩和 | stop |\n|---|---|---|---|---|---|---|---|---|---|\n");
+    for row in results {
+        report.push_str(&format!(
+            "| {} | {:.1} | {} | {} | {} | {} | {} | {:.2}% | {:.2}% | {} |\n",
+            row.name,
+            row.audio_seconds,
+            row.intervals,
+            row.first_ready_ms,
+            row.restarted_ready_ms
+                .map_or_else(|| "対象外".into(), |n| n.to_string()),
+            row.recognition_ms,
+            row.last_interval_ms
+                .map_or_else(|| "対象外".into(), |n| n.to_string()),
+            row.cer_strict * 100.0,
+            row.cer_loose * 100.0,
+            row.stop.replace(['\n', '\r', '|'], " ")
+        ));
+    }
+    report.push_str("\n準備時間は起動要求からreadyまで。終了処理は含まない。OSのキャッシュは消しておらず、再起動は保持workerの再利用とは異なる。\n\n区間版は全音声を事前に分割して逐次認識する診断。最後の区間の時間はEnterから入力完了までの時間ではない。実時間の音声到着、未処理区間、仮字幕、AI、貼り付けを含まない。\n");
+    std::fs::write(base.with_extension("md"), report).expect("測定報告を書けません");
+    println!("測定結果: {}", base.with_extension("json").display());
+    assert!(
+        all_complete,
+        "完了しなかった認識があります。測定JSONを確認してください"
     );
-    report.push_str("| 音声 | 長さ(秒) | 区間数 | 区間認識全体(ms) | Enter から(ms) | CER 厳密 | CER 緩和 | stop | 、の数 | 。の数 | 正解文字数 | 出力文字数 |\n");
-    report.push_str("|---|---|---|---|---|---|---|---|---|---|---|---|\n");
-    for row in rows {
-        report.push_str(&row);
-    }
-    report.push_str("\n- 「区間認識全体」は録音の間に進めた区間の認識全部の時間。「Enter から」は最後の区間の transcribe から end まで。\n");
-    let path = dir.join(format!("perf-live-segmented-{stamp}.md"));
-    std::fs::write(&path, report).expect("測定報告を書けません");
-    println!("報告を書きました: {}", path.display());
 }
-
-/// 区間の f32 を PCM16 のバイトに戻す
-fn crate_audio_pcm(samples: &[f32]) -> Vec<u8> {
-    audio::samples_to_pcm_le(samples)
-}
-
 #[test]
-#[ignore = "本物の speech.exe と tests/corpus/ の音声が必要。--ignored 付きで実行する"]
+#[ignore = "取得済みspeech.cppモデルとcorpusが必要。verify.ps1 -Mode Liveで明示実行"]
+fn live_segmented_latency_and_accuracy_on_corpus() {
+    let cases = corpus_cases();
+    let run = Run::from_environment();
+    let measurements: Vec<_> = cases.iter().map(|case| measure(case, &run, true)).collect();
+    write_report(&run, &measurements, true);
+}
+#[test]
+#[ignore = "取得済みspeech.cppモデルとcorpusが必要。verify.ps1 -Mode Liveで明示実行"]
 fn live_worker_latency_and_accuracy_on_corpus() {
-    let cfg = config::load().expect("設定を読めません");
-    let speech_exe = std::env::var("JV_SPEECH_EXE").unwrap_or(cfg.speech_exe.clone());
-    let model = std::env::var("JV_MODEL").unwrap_or(cfg.model.clone());
-    let words = std::env::var("JV_ASR_WORDS").unwrap_or_default();
-
-    let mut results = Vec::new();
-    for name in ["short", "1min", "5min", "30min"] {
-        if corpus_path(name, "wav").is_none() {
-            println!("{name}.wav がないため飛ばします(gen_corpus を実行してください)");
-            continue;
-        }
-        let started = Instant::now();
-        let Some(measurement) = measure(name, &speech_exe, &model, &words) else {
-            continue;
-        };
-        println!(
-            "{}: 準備 {}ms(2 回目 {}ms) 認識 {}ms CER 厳密 {:.1}% 緩和 {:.1}% stop={} (測定全体 {:.0}s)",
-            measurement.name,
-            measurement.cold_ready_ms,
-            measurement.warm_ready_ms,
-            measurement.transcribe_ms,
-            measurement.cer_strict * 100.0,
-            measurement.cer_loose * 100.0,
-            measurement.stop,
-            started.elapsed().as_secs_f64()
-        );
-        results.push(measurement);
-    }
-    assert!(!results.is_empty(), "測定できる corpus がありません");
-    write_report(&results, &words);
+    let cases = corpus_cases();
+    let run = Run::from_environment();
+    let measurements: Vec<_> = cases
+        .iter()
+        .map(|case| measure(case, &run, false))
+        .collect();
+    write_report(&run, &measurements, false);
+}
+#[test]
+fn missing_or_empty_corpus_selection_is_an_error() {
+    let missing = std::env::temp_dir().join(format!("ohv-missing-corpus-{}", std::process::id()));
+    assert!(required_cases(&missing, &[]).is_err());
+    assert!(required_cases(&missing, &["short"]).is_err());
+    assert!(required_cases(&missing, &["../other"]).is_err());
+}
+#[test]
+fn each_requested_corpus_requires_audio_and_reference() {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let directory = std::env::temp_dir().join(format!(
+        "ohv-corpus-contract-{}-{nonce}",
+        std::process::id()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::write(directory.join("short.wav"), b"fixture").unwrap();
+    assert!(required_cases(&directory, &["short"]).is_err());
+    std::fs::write(directory.join("short.ref.txt"), "正解").unwrap();
+    assert_eq!(required_cases(&directory, &["short"]).unwrap().len(), 1);
+    assert!(required_cases(&directory, &["short", "1min"]).is_err());
+    std::fs::remove_dir_all(directory).unwrap();
+}
+#[test]
+fn character_error_rate_counts_substitution_insertion_and_deletion() {
+    assert_eq!(
+        cer(&normalize("あいう", false), &normalize("あいう", false)),
+        0.0
+    );
+    assert!((cer(&normalize("あいう", false), &normalize("あえ", false)) - 2.0 / 3.0).abs() < 1e-9);
+    assert_eq!(cer(&[], &normalize("あ", false)), 1.0);
+    assert_eq!(normalize("あ、 い。", true), vec!['あ', 'い']);
 }

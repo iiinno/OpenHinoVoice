@@ -1,24 +1,6 @@
-// Integration crates compile full production modules but use only a subset of their APIs.
-#![allow(dead_code)]
+use openhinovoice::{asr, config};
 
 use std::time::Duration;
-
-#[path = "../src/asr.rs"]
-mod asr;
-#[path = "../src/audio.rs"]
-mod audio;
-#[path = "../src/chatgpt.rs"]
-mod chatgpt;
-#[path = "../src/config.rs"]
-mod config;
-#[path = "../src/format.rs"]
-mod format;
-#[path = "../src/lexicon.rs"]
-mod lexicon;
-#[path = "../src/provider.rs"]
-mod provider;
-#[path = "../src/segment.rs"]
-mod segment;
 
 #[test]
 #[ignore = "needs the speech.cpp worker, a Haas model and a test WAV; run explicitly"]

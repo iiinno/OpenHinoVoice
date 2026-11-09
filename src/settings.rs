@@ -1,5 +1,7 @@
 //! トレイの「設定」から別プロセスで開く管理画面。保存すると常駐側が設定ファイルの変化に気づいて読み直す
 
+mod setup;
+
 use crate::asr;
 use crate::audio;
 use crate::chatgpt;
@@ -17,6 +19,7 @@ use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThre
 const HINOMARU_RED: Color32 = Color32::from_rgb(188, 0, 45);
 const OK_GREEN: Color32 = Color32::from_rgb(40, 140, 70);
 const SAMPLE: &str = "えーと、明日の会議は午後3時からに変更になりました。資料は、あのー、共有フォルダにおいてあります。";
+const MIC_TEST_DURATION: Duration = Duration::from_secs(10);
 const ASR_MODELS: [(&str, &str); 4] = [
     ("haas-ja-v1.0:q4_k", "Q4_K(0.35GB、既定)"),
     ("haas-ja-v1.0:q5_k", "Q5_K(0.43GB)"),
@@ -28,6 +31,7 @@ pub fn run() {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("OpenHinoVoice")
+            .with_active(!config::is_test_sandbox())
             .with_inner_size([720.0, 520.0])
             .with_min_inner_size([600.0, 420.0]),
         ..Default::default()
@@ -41,6 +45,8 @@ pub fn run() {
             cc.egui_ctx.all_styles_mut(|style| {
                 style.visuals.selection.bg_fill = Color32::from_rgb(150, 0, 36);
                 style.visuals.selection.stroke.color = Color32::WHITE;
+                style.spacing.item_spacing = egui::vec2(10.0, 8.0);
+                style.spacing.button_padding = egui::vec2(10.0, 6.0);
             });
             Ok(Box::new(Settings::load()))
         }),
@@ -136,18 +142,38 @@ fn check_settings_clipboard_owner(window: HWND) -> Result<(), String> {
 
 /// 3秒の待機は別スレッド、実際の貼り付けは設定画面のUIスレッド(STA)で行う。
 /// OLEクリップボードの参照を一時ワーカースレッドに残さないため。
-fn repaste_after_switch(text: &str, owner: HWND) -> Result<String, String> {
+fn repaste_after_switch(text: &str, owner: HWND) -> Result<paste::PasteTransaction, String> {
     // 待機中に設定ウィンドウが閉じられていたら、安全に中断する。
     check_settings_clipboard_owner(owner)?;
     let target = paste::capture_target()?;
     if target.process_id() == std::process::id() {
         return Err("貼り付け先のアプリに切り替えてください".into());
     }
-    paste::paste_text(text, target, owner)?;
-    Ok("履歴のテキストを貼り付けました".into())
+    paste::PasteTransaction::begin(text, target, owner, Instant::now())
 }
 
 type ModelList = Vec<(String, String)>;
+
+struct MicrophoneTest {
+    recorder: audio::Recorder,
+    started: Instant,
+    samples: Vec<f32>,
+    peak: f32,
+    level: f32,
+}
+
+struct TranscribedFile {
+    text: String,
+    history_warning: Option<String>,
+}
+
+#[derive(Clone)]
+struct Draft {
+    config: Config,
+    startup: bool,
+    timeout_secs: f32,
+    extra_body: String,
+}
 
 struct Settings {
     cfg: Config,
@@ -163,7 +189,7 @@ struct Settings {
     chatgpt_status: chatgpt::Status,
     chatgpt_job: Option<Job<Result<chatgpt::Status, String>>>,
     file_path: String,
-    file_job: Option<Job<Result<String, String>>>,
+    file_job: Option<Job<Result<TranscribedFile, String>>>,
     file_result: Option<Result<String, String>>,
     history_message: Option<String>,
     history_paste_job: Option<Job<(String, isize)>>,
@@ -173,6 +199,21 @@ struct Settings {
     history_clear_confirm: bool,
     /// リクエストの追加項目(extra_body)の編集用。JSON の形で書いてもらう
     extra_body_text: String,
+    saved: Draft,
+    close_confirm: bool,
+    allow_close: bool,
+    closing: bool,
+    paste_transaction: Option<paste::PasteTransaction>,
+    home_job: Option<Job<Result<history::HomeSnapshot, String>>>,
+    home_snapshot: Option<Result<history::HomeSnapshot, String>>,
+    history_job: Option<Job<Result<Vec<history::RecoveryEntry>, String>>>,
+    history_clear_job: Option<Job<Result<(), String>>>,
+    model_job: Option<setup::ModelJob>,
+    retiring_jobs: Vec<setup::ModelJob>,
+    model_status: Option<setup::ModelStatus>,
+    model_selection: (String, String),
+    mic_test: Option<MicrophoneTest>,
+    mic_result: Option<(bool, String)>,
 }
 
 impl Settings {
@@ -184,6 +225,22 @@ impl Settings {
                 Some((false, e)),
             ),
         };
+        Self::from_loaded(
+            cfg,
+            message,
+            startup::is_enabled(),
+            chatgpt::status(),
+            audio::input_devices(),
+        )
+    }
+
+    fn from_loaded(
+        cfg: Config,
+        message: Option<(bool, String)>,
+        startup: bool,
+        chatgpt_status: chatgpt::Status,
+        microphones: Vec<String>,
+    ) -> Settings {
         let extra_body_text =
             serde_json::to_string_pretty(&cfg.format.extra_body).unwrap_or_else(|_| "{}".into());
         let page = if Self::needs_setup(&cfg) {
@@ -191,35 +248,63 @@ impl Settings {
         } else {
             Page::Home
         };
+        let saved = Draft {
+            config: cfg.clone(),
+            startup,
+            timeout_secs: cfg.format.timeout_ms as f32 / 1000.0,
+            extra_body: extra_body_text.clone(),
+        };
+        let model_selection = (cfg.speech_exe.clone(), cfg.model.clone());
         Settings {
             timeout_secs: cfg.format.timeout_ms as f32 / 1000.0,
             cfg,
             page,
             show_key: false,
-            startup: startup::is_enabled(),
+            startup,
             message,
             models: Vec::new(),
             models_job: None,
             test_job: None,
             test_result: None,
-            chatgpt_status: chatgpt::status(),
+            chatgpt_status,
             chatgpt_job: None,
             file_path: String::new(),
             file_job: None,
             file_result: None,
             history_message: None,
             history_paste_job: None,
-            microphones: audio::input_devices(),
+            microphones,
             history_entries: Vec::new(),
             history_loaded: false,
             history_clear_confirm: false,
             extra_body_text,
+            saved,
+            close_confirm: false,
+            allow_close: false,
+            closing: false,
+            paste_transaction: None,
+            home_job: None,
+            home_snapshot: None,
+            history_job: None,
+            history_clear_job: None,
+            model_job: None,
+            retiring_jobs: Vec::new(),
+            model_status: None,
+            model_selection,
+            mic_test: None,
+            mic_result: None,
         }
     }
 
     /// speech.cpp が見つからないときは、始め方の案内を最初に出す
     fn needs_setup(cfg: &config::Config) -> bool {
-        let exe = cfg.speech_exe.trim();
+        let detected;
+        let exe = if cfg.speech_exe.trim().is_empty() {
+            detected = config::find_speech_exe();
+            detected.trim()
+        } else {
+            cfg.speech_exe.trim()
+        };
         if exe.is_empty() {
             return true;
         }
@@ -236,6 +321,9 @@ impl Settings {
 
     fn save(&mut self) -> Result<(), String> {
         use toml::Value as V;
+        if config::parse_hotkey(&self.cfg.hotkey).is_none() {
+            return Err("「入力」で録音開始キーを確認してください".into());
+        }
         crate::lexicon::validate(&self.cfg.terms)?;
         let f = &self.cfg.format;
         let path = config::config_path();
@@ -336,7 +424,10 @@ impl Settings {
         config::update_extra_body(&mut doc, &extra_body)?;
         config::save_api_keys(f.api_key.trim(), f.openai_api_key.trim())?;
         config::save(&doc.to_string())?;
-        startup::set_enabled(self.startup)
+        startup::set_enabled(self.startup)?;
+        self.saved = self.draft();
+        self.close_confirm = false;
+        Ok(())
     }
 
     /// 編集中の内容で整形の設定を作る。接続テストとモデル一覧に使う
@@ -346,10 +437,194 @@ impl Settings {
         f.extra_body = config::parse_extra_body(&self.extra_body_text)?;
         Ok(f)
     }
+
+    fn draft(&self) -> Draft {
+        Draft {
+            config: self.cfg.clone(),
+            startup: self.startup,
+            timeout_secs: self.timeout_secs,
+            extra_body: self.extra_body_text.clone(),
+        }
+    }
+
+    fn is_dirty(&self) -> bool {
+        self.cfg != self.saved.config
+            || self.startup != self.saved.startup
+            || self.timeout_secs != self.saved.timeout_secs
+            || self.extra_body_text != self.saved.extra_body
+    }
+
+    fn select_page(&mut self, page: Page) {
+        if self.page == page {
+            return;
+        }
+        self.mic_test = None;
+        self.mic_result = None;
+        self.page = page;
+        if page == Page::Home {
+            self.home_snapshot = None;
+        }
+        if page == Page::History {
+            self.history_loaded = false;
+        }
+    }
+
+    fn refresh_home(&mut self, ctx: &egui::Context) {
+        if self.home_job.is_none() {
+            self.home_job = Some(spawn(ctx, || {
+                history::home_snapshot().map_err(|e| e.to_string())
+            }));
+        }
+    }
+
+    fn retire_model_job(&mut self) {
+        if let Some(job) = self.model_job.take() {
+            job.cancel();
+            if !job.is_finished() {
+                self.retiring_jobs.push(job);
+            }
+        }
+    }
+
+    fn poll_retiring_jobs(&mut self, ctx: &egui::Context) {
+        self.retiring_jobs.retain(|job| !job.is_finished());
+        if !self.retiring_jobs.is_empty() {
+            ctx.request_repaint_after(Duration::from_millis(50));
+        }
+    }
+
+    fn request_close(&mut self, ctx: &egui::Context) {
+        if self.is_dirty() && !self.allow_close {
+            self.closing = false;
+            self.close_confirm = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            return;
+        }
+        self.mic_test = None;
+        self.history_paste_job = None;
+        self.retire_model_job();
+        self.poll_retiring_jobs(ctx);
+        if self.paste_transaction.is_some() || !self.retiring_jobs.is_empty() {
+            self.closing = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            if let Some(tx) = &self.paste_transaction {
+                ctx.request_repaint_after(tx.deadline().saturating_duration_since(Instant::now()));
+            }
+        } else {
+            self.closing = false;
+            self.allow_close = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
+    fn update_model_jobs(&mut self, ctx: &egui::Context) {
+        let selection = (self.cfg.speech_exe.clone(), self.cfg.model.clone());
+        if selection != self.model_selection {
+            self.retire_model_job();
+            self.model_status = None;
+            self.model_selection = selection;
+        }
+        if let Some(job) = &self.model_job {
+            if self.cfg.format.offline && job.is_download() {
+                job.cancel();
+            }
+            let status = job.status();
+            let done = !matches!(status, setup::ModelStatus::Running { .. });
+            self.model_status = Some(status);
+            if done {
+                self.retire_model_job();
+            }
+        }
+        self.poll_retiring_jobs(ctx);
+        if self.closing {
+            self.request_close(ctx);
+        }
+    }
+
+    fn update_microphone(&mut self, ctx: &egui::Context) {
+        let Some(test) = self.mic_test.as_mut() else {
+            return;
+        };
+        if let Some(error) = test.recorder.take_error() {
+            self.mic_result = Some((false, error));
+            self.mic_test = None;
+            return;
+        }
+        test.recorder.drain_into(&mut test.samples);
+        test.level = audio::rms(&test.samples);
+        test.peak = test.peak.max(test.level);
+        if test.started.elapsed() >= MIC_TEST_DURATION {
+            self.finish_microphone();
+        } else {
+            ctx.request_repaint_after(Duration::from_millis(50));
+        }
+    }
+
+    fn finish_microphone(&mut self) {
+        if let Some(test) = self.mic_test.take() {
+            let detected = test.peak >= 0.001;
+            self.mic_result = Some((detected, if detected {
+                "マイクの入力を検出しました。保存後、録音開始キー → 話す → Enter で音声入力を試せます"
+            } else {
+                "入力がほとんどありません。マイクの選択、ミュート、Windows のマイク許可を確認してください"
+            }.into()));
+        }
+    }
 }
 
 impl eframe::App for Settings {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.update_microphone(ui.ctx());
+        if ui.ctx().input(|i| i.viewport().close_requested()) {
+            self.request_close(ui.ctx());
+        }
+        if let Some(tx) = &self.paste_transaction {
+            let remaining = tx.deadline().saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                let result = self.paste_transaction.take().unwrap().restore();
+                self.history_message = Some(match result {
+                    Ok(()) => "入力を送信しました。貼り付け先で内容を確認してください".into(),
+                    Err(e) => {
+                        format!("入力は送信しましたが、クリップボードの復元を確認できません: {e}")
+                    }
+                });
+                if self.closing {
+                    self.request_close(ui.ctx());
+                }
+            } else {
+                ui.ctx().request_repaint_after(remaining);
+            }
+        }
+        if let Some(result) = take(&mut self.home_job) {
+            self.home_snapshot = Some(result);
+        }
+        if let Some(result) = take(&mut self.history_job) {
+            match result {
+                Ok(mut entries) => {
+                    entries.sort_by_key(|entry| std::cmp::Reverse(entry.id));
+                    self.history_entries = entries;
+                    self.history_message = None;
+                }
+                Err(e) => {
+                    self.history_message = Some(format!(
+                        "履歴を読めません: {e}。履歴を更新して再試行できます"
+                    ))
+                }
+            }
+        }
+        if let Some(result) = take(&mut self.history_clear_job) {
+            self.history_message = Some(match result {
+                Ok(()) => {
+                    self.history_entries.clear();
+                    self.history_job = None;
+                    self.home_snapshot = None;
+                    self.home_job = None;
+                    "復旧履歴を消去しました".into()
+                }
+                Err(e) => format!("消去できません: {e}"),
+            });
+        }
+        self.update_model_jobs(ui.ctx());
         if let Some(r) = take(&mut self.models_job) {
             match r {
                 Ok(m) => self.models = m,
@@ -369,25 +644,32 @@ impl eframe::App for Settings {
             }
         }
         if let Some(r) = take(&mut self.file_job) {
-            self.file_result = Some(r.map(|raw| {
-                let normalized = crate::lexicon::replace_explicit(&raw, &self.cfg.terms);
-                if let Ok(Some(id)) =
-                    history::save_recognized_if_enabled(&raw, self.cfg.recovery_history)
-                {
-                    if normalized != raw {
-                        let _ = history::update_formatted(id, &normalized);
-                    }
-                    let _ = history::update_paste_status(id, history::PasteStatus::Pending);
+            self.file_result = Some(r.map(|file| {
+                if let Some(warning) = file.history_warning {
+                    self.message = Some((false, warning));
                 }
-                normalized
+                self.home_snapshot = None;
+                self.home_job = None;
+                self.history_loaded = false;
+                file.text
             }));
         }
         if let Some((text, owner)) = take(&mut self.history_paste_job) {
             let owner = HWND(owner as *mut std::ffi::c_void);
-            self.history_message = Some(match repaste_after_switch(&text, owner) {
-                Ok(message) => message,
-                Err(message) => format!("貼り直せませんでした: {message}。履歴は残っています"),
-            });
+            match repaste_after_switch(&text, owner) {
+                Ok(tx) => {
+                    ui.ctx().request_repaint_after(
+                        tx.deadline().saturating_duration_since(Instant::now()),
+                    );
+                    self.paste_transaction = Some(tx);
+                    self.history_message = Some("入力を送信しました".into());
+                }
+                Err(message) => {
+                    self.history_message = Some(format!(
+                        "貼り直せませんでした: {message}。履歴は残っています"
+                    ))
+                }
+            }
         }
 
         egui::Panel::left("nav")
@@ -426,7 +708,7 @@ impl eframe::App for Settings {
                         )
                         .clicked()
                     {
-                        self.page = page;
+                        self.select_page(page);
                     }
                 }
             });
@@ -438,13 +720,15 @@ impl eframe::App for Settings {
             )
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    let valid = config::parse_hotkey(&self.cfg.hotkey).is_some();
+                    let valid = config::parse_hotkey(&self.cfg.hotkey).is_some()
+                        && config::parse_extra_body(&self.extra_body_text).is_ok()
+                        && crate::lexicon::validate(&self.cfg.terms).is_ok();
                     let save = egui::Button::new(RichText::new("保存").color(Color32::WHITE))
                         .fill(HINOMARU_RED)
                         .min_size(egui::vec2(84.0, 30.0));
                     if ui.add_enabled(valid, save).clicked() {
                         self.message = Some(match self.save() {
-                            Ok(()) => (true, "保存しました。すぐに反映されます。".into()),
+                            Ok(()) => (true, "保存しました。次の録音から反映されます。".into()),
                             Err(e) => (false, e),
                         });
                     }
@@ -452,13 +736,29 @@ impl eframe::App for Settings {
                         .add(egui::Button::new("閉じる").min_size(egui::vec2(84.0, 30.0)))
                         .clicked()
                     {
-                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                        self.request_close(ui.ctx());
                     }
-                    if let Some((ok, text)) = &self.message {
-                        ui.add_space(8.0);
-                        ui.colored_label(if *ok { OK_GREEN } else { HINOMARU_RED }, text);
+                    if self.is_dirty() {
+                        ui.label(RichText::new("未保存の変更があります").strong());
                     }
                 });
+                if config::parse_hotkey(&self.cfg.hotkey).is_none() {
+                    ui.colored_label(HINOMARU_RED, "「入力」で録音開始キーを確認してください");
+                } else if let Err(e) = config::parse_extra_body(&self.extra_body_text) {
+                    ui.colored_label(
+                        HINOMARU_RED,
+                        format!("「AI」の追加項目を確認してください: {e}"),
+                    );
+                } else if let Err(e) = crate::lexicon::validate(&self.cfg.terms) {
+                    ui.colored_label(
+                        HINOMARU_RED,
+                        format!("「認識」の用語辞書を確認してください: {e}"),
+                    );
+                }
+                if let Some((ok, text)) = &self.message {
+                    ui.add_space(8.0);
+                    ui.colored_label(if *ok { OK_GREEN } else { HINOMARU_RED }, text);
+                }
             });
 
         egui::CentralPanel::default()
@@ -478,6 +778,38 @@ impl eframe::App for Settings {
                         Page::About => self.about(ui),
                     });
             });
+        if self.close_confirm {
+            let modal =
+                egui::Modal::new(egui::Id::unique("unsaved_settings")).show(ui.ctx(), |ui| {
+                    ui.heading("変更を保存しますか？");
+                    ui.label("保存していない設定があります。");
+                    ui.horizontal(|ui| {
+                        if ui.button("保存して閉じる").clicked() {
+                            match self.save() {
+                                Ok(()) => {
+                                    self.allow_close = true;
+                                    self.request_close(ui.ctx());
+                                }
+                                Err(e) => {
+                                    self.message = Some((false, e));
+                                    self.close_confirm = false;
+                                }
+                            }
+                        }
+                        if ui.button("保存せず閉じる").clicked() {
+                            self.allow_close = true;
+                            self.close_confirm = false;
+                            self.request_close(ui.ctx());
+                        }
+                        if ui.button("編集を続ける").clicked() {
+                            self.close_confirm = false;
+                        }
+                    });
+                });
+            if modal.should_close() {
+                self.close_confirm = false;
+            }
+        }
     }
 }
 
@@ -499,66 +831,247 @@ fn grid(ui: &mut egui::Ui, id: &str, body: impl FnOnce(&mut egui::Ui)) {
 }
 
 impl Settings {
-    /// 始め方の案内。speech.cpp の確認、キー、接続先の順に進み具合を出す。
-    /// モデルの取得(ダウンロード)はここでは行わない
     fn start(&mut self, ui: &mut egui::Ui) {
         section(ui, "はじめに");
-        hint(ui, "順に整えてから、録音開始キーを押して話してみてください");
-        ui.add_space(10.0);
+        hint(ui, "認識モデルとマイクを確かめれば、すぐに話し始められます。音声はこの PC の中で処理します。");
+        ui.add_space(16.0);
         let exe_ready = !Self::needs_setup(&self.cfg);
+        ui.strong("1. 音声認識を準備する");
+        if exe_ready {
+            ui.colored_label(OK_GREEN, "speech.cpp が見つかりました");
+        } else {
+            ui.colored_label(HINOMARU_RED, "speech.cpp が見つかりません");
+            hint(
+                ui,
+                "speech.cpp を導入済みなら、「認識」で speech.exe の場所を指定してください。",
+            );
+        }
+        self.model_controls(ui);
+        ui.add_space(18.0);
+        ui.strong("2. マイクを確かめる");
+        self.microphone_controls(ui);
+        ui.add_space(18.0);
+        ui.strong("3. 話して入力する");
+        ui.label(format!(
+            "{} で録音開始 → 話す → Enter で確定",
+            self.cfg.hotkey
+        ));
+        hint(
+            ui,
+            "Esc で取り消せます。途中の字幕は画面にだけ表示し、入力欄には確定後に送ります。",
+        );
         ui.horizontal(|ui| {
-            ui.label(if exe_ready { "✓" } else { "1." });
-            ui.vertical(|ui| {
-                ui.label("音声認識のソフト(speech.cpp)を入れる");
-                ui.label(
-                    RichText::new(format!(
-                        "いまの設定: {}",
-                        if exe_ready {
-                            self.cfg.speech_exe.clone()
-                        } else {
-                            "speech.exe が見つからない".to_string()
-                        }
-                    ))
-                    .weak(),
+            if ui.button("録音キーを変更").clicked() {
+                self.select_page(Page::Input);
+            }
+            if ui.button("マイク・モデルを変更").clicked() {
+                self.select_page(Page::Asr);
+            }
+        });
+        ui.add_space(18.0);
+        ui.strong("文章を整える・選択文を編集する");
+        hint(ui, "AI の接続先は任意です。接続テストで確かめてから設定を保存してください。API キーやサインインはこの画面で設定できます。");
+        if ui.button("AI の接続先を設定").clicked() {
+            self.select_page(Page::Ai);
+        }
+    }
+
+    fn model_controls(&mut self, ui: &mut egui::Ui) {
+        let exe_ready = !Self::needs_setup(&self.cfg);
+        if exe_ready
+            && self.model_job.is_none()
+            && self.model_status.is_none()
+            && self.retiring_jobs.is_empty()
+            && !self.closing
+            && !self.close_confirm
+            && !ui.ctx().egui_wants_keyboard_input()
+        {
+            self.start_model_job(ui.ctx(), false);
+        }
+        ui.label(format!("認識モデル: {}", self.cfg.model));
+        match &self.model_status {
+            Some(setup::ModelStatus::Ready) => {
+                ui.colored_label(OK_GREEN, "取得済み・使用できます");
+            }
+            Some(setup::ModelStatus::Missing) => {
+                hint(ui, "まだ取得していません。初回だけダウンロードが必要です。");
+            }
+            Some(setup::ModelStatus::Cancelled) => {
+                hint(
+                    ui,
+                    "処理を中断しました。状態を確認するか、もう一度取得してください。",
                 );
-            });
-        });
-        ui.add_space(8.0);
+            }
+            Some(setup::ModelStatus::Failed(e)) => {
+                ui.colored_label(HINOMARU_RED, e);
+            }
+            Some(setup::ModelStatus::Running { message, fraction }) => {
+                if let Some(fraction) = fraction {
+                    ui.add(egui::ProgressBar::new(*fraction).show_percentage());
+                }
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(message);
+                });
+            }
+            None => {
+                hint(ui, "モデルはまだ確認していません");
+            }
+        }
+        let busy = self.model_job.is_some()
+            || !self.retiring_jobs.is_empty()
+            || self.closing
+            || self.close_confirm;
         ui.horizontal(|ui| {
-            ui.label("2.");
-            ui.vertical(|ui| {
-                ui.label("録音開始キーを決める(「入力」のページ)");
-                ui.label(RichText::new(format!("いまの設定: {}", self.cfg.hotkey)).weak());
-            });
+            if ui
+                .add_enabled(exe_ready && !busy, egui::Button::new("状態を確認"))
+                .clicked()
+            {
+                self.start_model_job(ui.ctx(), false);
+            }
+            let fetched = matches!(self.model_status, Some(setup::ModelStatus::Ready));
+            let catalog_model = ASR_MODELS.iter().any(|(id, _)| *id == self.cfg.model);
+            if ui
+                .add_enabled(
+                    exe_ready && !busy && !fetched && !self.cfg.format.offline && catalog_model,
+                    egui::Button::new("モデルを取得"),
+                )
+                .clicked()
+            {
+                self.start_model_job(ui.ctx(), true);
+            }
+            if busy && ui.button("中断").clicked() {
+                if let Some(job) = &self.model_job {
+                    job.cancel();
+                }
+            }
         });
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            ui.label("3.");
-            ui.vertical(|ui| {
-                ui.label("文を整えるなら、AI の接続先を選ぶ(「AI」のページ)");
-                let provider = crate::provider::find(&self.cfg.format.provider);
-                let label = provider.map_or("その他", |p| p.label);
-                ui.label(RichText::new(format!("いまの設定: {label}")).weak());
-            });
-        });
-        ui.add_space(8.0);
-        hint(ui, "最初の 1 回は、認識モデル(約 0.35GB)のダウンロードに 1 分ほどかかります。マイクを選ぶときは「認識」のページです");
+        if self.cfg.format.offline {
+            hint(ui, "オフラインモード中は取得しません。取得する場合は「AI」でオフにしてから操作してください。");
+        }
+    }
+
+    fn start_model_job(&mut self, ctx: &egui::Context, fetch: bool) {
+        if self.model_job.is_some()
+            || !self.retiring_jobs.is_empty()
+            || self.closing
+            || self.close_confirm
+            || (fetch && self.cfg.format.offline)
+        {
+            return;
+        }
+        let exe = if self.cfg.speech_exe.trim().is_empty() {
+            config::find_speech_exe()
+        } else {
+            self.cfg.speech_exe.clone()
+        };
+        self.model_job = Some(setup::ModelJob::start(
+            ctx,
+            exe,
+            self.cfg.model.clone(),
+            fetch,
+        ));
+        self.model_status = self.model_job.as_ref().map(setup::ModelJob::status);
+    }
+
+    fn microphone_controls(&mut self, ui: &mut egui::Ui) {
+        if let Some(test) = &self.mic_test {
+            ui.strong("マイクテスト中");
+            ui.label(format!("入力: {}", test.recorder.device_name()));
+            if let Some(notice) = test.recorder.fallback_notice() {
+                ui.label(notice);
+            }
+            let level = ((20.0 * test.level.max(1e-6).log10() + 60.0) / 60.0).clamp(0.0, 1.0);
+            ui.add(egui::ProgressBar::new(level).text("入力レベル"));
+            hint(
+                ui,
+                &format!(
+                    "あと {} 秒。普段の声で話してください",
+                    MIC_TEST_DURATION
+                        .saturating_sub(test.started.elapsed())
+                        .as_secs()
+                        + 1
+                ),
+            );
+            if ui.button("テストを終了").clicked() {
+                self.finish_microphone();
+            }
+        } else {
+            ui.label(format!(
+                "マイク: {}",
+                if self.cfg.microphone.is_empty() {
+                    "Windows の既定デバイス"
+                } else {
+                    &self.cfg.microphone
+                }
+            ));
+            if ui.button("マイクを10秒テスト").clicked() {
+                self.mic_result = None;
+                match audio::Recorder::start_with_device(Some(&self.cfg.microphone)) {
+                    Ok(recorder) => {
+                        self.mic_test = Some(MicrophoneTest {
+                            recorder,
+                            started: Instant::now(),
+                            samples: Vec::new(),
+                            peak: 0.0,
+                            level: 0.0,
+                        });
+                        ui.ctx().request_repaint();
+                    }
+                    Err(e) => self.mic_result = Some((false, e)),
+                }
+            }
+        }
+        if let Some((ok, message)) = &self.mic_result {
+            ui.colored_label(if *ok { OK_GREEN } else { HINOMARU_RED }, message);
+        }
+        hint(
+            ui,
+            "音量だけを確認します。テストの音声は保存せず、外部にも送りません。",
+        );
     }
 
     /// 今日と今週の入力文字数、最近の履歴、状態
     fn home(&mut self, ui: &mut egui::Ui) {
         section(ui, "ホーム");
-        let usage = history::usage_stats().unwrap_or((0, 0));
+        if self.home_snapshot.is_none() {
+            self.refresh_home(ui.ctx());
+        }
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(self.home_job.is_none(), egui::Button::new("更新"))
+                .clicked()
+            {
+                self.refresh_home(ui.ctx());
+            }
+            if self.home_job.is_some() {
+                ui.spinner();
+                ui.label("履歴を読み込んでいます");
+            }
+        });
+        if let Some(Err(e)) = &self.home_snapshot {
+            ui.colored_label(HINOMARU_RED, format!("履歴を読めません: {e}"));
+        }
+        let snapshot = self
+            .home_snapshot
+            .as_ref()
+            .and_then(|result| result.as_ref().ok());
         grid(ui, "home", |ui| {
             ui.label("今日の入力");
-            ui.label(format!("{} 文字", usage.0));
+            ui.label(
+                snapshot.map_or_else(|| "未取得".into(), |s| format!("{} 文字", s.today_chars)),
+            );
             ui.end_row();
             ui.label("今週の入力");
-            ui.label(format!("{} 文字", usage.1));
+            ui.label(
+                snapshot.map_or_else(|| "未取得".into(), |s| format!("{} 文字", s.week_chars)),
+            );
             ui.end_row();
             ui.label("認識エンジン");
             ui.label(if Self::needs_setup(&self.cfg) {
                 "speech.exe が見つかりません".to_string()
+            } else if self.cfg.speech_exe.is_empty() {
+                "speech.cpp を自動検出済み".to_string()
             } else {
                 self.cfg.speech_exe.clone()
             });
@@ -579,14 +1092,13 @@ impl Settings {
         });
         ui.add_space(14.0);
         section(ui, "最近の履歴");
-        let entries = history::recent(5).unwrap_or_default();
-        if entries.is_empty() {
+        if snapshot.is_some_and(|s| s.recent.is_empty()) {
             hint(
                 ui,
                 "まだありません。録音開始キーを押して話し、Enter を押すとここに残ります",
             );
         }
-        for entry in entries {
+        for entry in snapshot.into_iter().flat_map(|s| &s.recent) {
             let preview: String = entry.final_text().chars().take(48).collect();
             ui.label(RichText::new(preview).weak());
         }
@@ -624,7 +1136,7 @@ impl Settings {
                     });
                 hint(
                     ui,
-                    "時間になると自動で録音を終了して認識します。発話ごとに区切って認識するので、長くても Enter からの待ち時間はほぼ一定です",
+                    "時間になると自動で録音を終了します。発話の切れ目ごとに認識を進め、Enter の後は残っている区間の処理を待ちます",
                 );
             });
 
@@ -649,7 +1161,7 @@ impl Settings {
                             );
                         }
                     });
-                hint(ui, "続けて話すとき、認識エンジンの起動とモデルの読み込み(1 秒前後)を飛ばせるようになります。残している間はモデルぶんのメモリ(約 0.35GB)を使います");
+                hint(ui, "続けて話すとき、認識エンジンの起動とモデル読み込みの待ち時間を減らせます。残している間もエンジンのメモリを使います。使用量はモデルと PC によって変わります");
             });
 
             ui.label("自動起動");
@@ -790,6 +1302,9 @@ impl Settings {
             }
             self.models.clear();
             self.test_result = None;
+            if !self.extra_body_text.trim().is_empty() && self.extra_body_text.trim() != "{}" {
+                self.message = Some((false, "接続先を変更しました。追加項目は引き継いでいるため、この接続先で使える内容か確認してください".into()));
+            }
         }
         ui.add_space(14.0);
 
@@ -889,10 +1404,23 @@ impl Settings {
                         .step_by(0.5)
                         .suffix(" 秒"),
                 );
-                hint(ui, "AI の応答がこの時間ずっと途切れたら、自動でやり直します。長く話しても、返っている間は待ちます");
+                hint(ui, "応答が途切れたときの待ち時間です。処理全体の待機目安は90秒です。受信待ちの状況によって終了まで時間がかかる場合があります");
             });
             ui.end_row();
         });
+
+        let mut effective_config = self.cfg.format.clone();
+        effective_config.timeout_ms = (self.timeout_secs * 1000.0).round() as u64;
+        let effective_wait = crate::format::response_wait(&effective_config);
+        if effective_wait.as_millis() != effective_config.timeout_ms as u128 {
+            hint(
+                ui,
+                &format!(
+                    "この接続先では初回読み込みのため、応答がないときの待ち時間を{}秒にしています",
+                    effective_wait.as_secs()
+                ),
+            );
+        }
 
         ui.add_space(8.0);
         ui.checkbox(
@@ -1111,6 +1639,7 @@ impl Settings {
         );
         ui.add_space(10.0);
         let detected = config::find_speech_exe();
+        let microphone_before = self.cfg.microphone.clone();
         grid(ui, "asr", |ui| {
             ui.label("マイク");
             ui.horizontal(|ui| {
@@ -1177,11 +1706,19 @@ impl Settings {
                 );
                 hint(
                     ui,
-                    "空なら自動で探します。認識モデルは初回に自動で取得します",
+                    "空なら自動で探します。下の「モデルを取得」で事前に準備できます",
                 );
             });
             ui.end_row();
         });
+        if microphone_before != self.cfg.microphone {
+            self.mic_test = None;
+            self.mic_result = None;
+        }
+        ui.add_space(14.0);
+        self.model_controls(ui);
+        ui.add_space(14.0);
+        self.microphone_controls(ui);
         ui.add_space(14.0);
         self.dictionary(ui);
         ui.add_space(14.0);
@@ -1270,11 +1807,32 @@ impl Settings {
                 let model = self.cfg.model.clone();
                 let words = crate::lexicon::asr_hints(&self.cfg.words, &self.cfg.terms);
                 let offline = self.cfg.format.offline;
+                let terms = self.cfg.terms.clone();
+                let recovery_history = self.cfg.recovery_history;
                 self.file_result = None;
                 self.file_job = Some(spawn(ui.ctx(), move || {
-                    asr::transcribe_file_async(path, exe, model, words, offline)
+                    let raw = asr::transcribe_file_async(path, exe, model, words, offline)
                         .recv()
-                        .unwrap_or_else(|_| Err("ファイル認識の結果を受信できませんでした".into()))
+                        .unwrap_or_else(|_| {
+                            Err("ファイル認識の結果を受信できませんでした".into())
+                        })?;
+                    let normalized = crate::lexicon::replace_explicit(&raw, &terms);
+                    let saved = history::save_recognized_if_enabled(&raw, recovery_history)
+                        .and_then(|id| {
+                            if let Some(id) = id {
+                                if normalized != raw {
+                                    history::update_formatted(id, &normalized)?;
+                                }
+                                history::update_paste_status(id, history::PasteStatus::Pending)?;
+                            }
+                            Ok(())
+                        });
+                    Ok(TranscribedFile {
+                        text: normalized,
+                        history_warning: saved.err().map(|e| {
+                            format!("文字起こしは完了しましたが、履歴に保存できません: {e}")
+                        }),
+                    })
                 }));
             }
             if busy {
@@ -1311,21 +1869,19 @@ impl Settings {
         }
     }
 
-    fn reload_history(&mut self) {
-        self.history_loaded = true;
-        match history::recent(30) {
-            Ok(mut entries) => {
-                entries.sort_by_key(|a| std::cmp::Reverse(a.id));
-                self.history_entries = entries;
-                self.history_message = None;
-            }
-            Err(e) => self.history_message = Some(format!("復旧履歴の読み込みに失敗: {e}")),
+    fn reload_history(&mut self, ctx: &egui::Context) {
+        if self.history_job.is_some() || self.history_clear_job.is_some() {
+            return;
         }
+        self.history_loaded = true;
+        self.history_job = Some(spawn(ctx, || {
+            history::recent(30).map_err(|e| e.to_string())
+        }));
     }
 
     fn history(&mut self, ui: &mut egui::Ui) {
         if !self.history_loaded {
-            self.reload_history();
+            self.reload_history(ui.ctx());
         }
         section(ui, "履歴と再入力");
         ui.checkbox(
@@ -1334,24 +1890,32 @@ impl Settings {
         );
         hint(ui, "既定でオン。文章はWindowsのユーザーに紐づく暗号化で保存。最大200件・16MiBの短期履歴です。設定を保存すると反映されます。");
         ui.horizontal(|ui| {
-            if ui.button("履歴を更新").clicked() {
-                self.reload_history();
+            if ui
+                .add_enabled(
+                    self.history_job.is_none() && self.history_clear_job.is_none(),
+                    egui::Button::new("履歴を更新"),
+                )
+                .clicked()
+            {
+                self.reload_history(ui.ctx());
+                self.home_snapshot = None;
             }
             if !self.history_clear_confirm {
-                if ui.button("履歴を消去").clicked() {
+                if ui
+                    .add_enabled(
+                        self.history_clear_job.is_none() && self.history_job.is_none(),
+                        egui::Button::new("履歴を消去"),
+                    )
+                    .clicked()
+                {
                     self.history_clear_confirm = true;
                 }
             } else {
                 ui.label("すべて消去しますか？");
                 if ui.button("消去する").clicked() {
-                    match history::clear_recovery() {
-                        Ok(()) => {
-                            self.history_loaded = false;
-                            self.history_entries.clear();
-                            self.history_message = Some("復旧履歴を消去しました".into());
-                        }
-                        Err(e) => self.history_message = Some(format!("消去できません: {e}")),
-                    }
+                    self.history_clear_job = Some(spawn(ui.ctx(), || {
+                        history::clear_recovery().map_err(|e| e.to_string())
+                    }));
                     self.history_clear_confirm = false;
                 }
                 if ui.button("戻る").clicked() {
@@ -1362,6 +1926,12 @@ impl Settings {
         if let Some(msg) = &self.history_message {
             ui.label(msg);
         }
+        if self.history_job.is_some() || self.history_clear_job.is_some() {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("履歴を処理しています");
+            });
+        }
         if self.history_paste_job.is_some() {
             ui.horizontal(|ui| {
                 ui.spinner();
@@ -1369,7 +1939,10 @@ impl Settings {
             });
         }
         ui.add_space(8.0);
-        if self.history_entries.is_empty() {
+        if self.history_entries.is_empty()
+            && self.history_job.is_none()
+            && self.history_message.is_none()
+        {
             hint(ui, "復旧できる文章はまだありません。");
         }
         for entry in &self.history_entries {
@@ -1392,8 +1965,13 @@ impl Settings {
             ui.group(|ui| {
                 ui.horizontal(|ui| {
                     ui.label(format!(
-                        "記録 #{} · {} · {:?}",
-                        entry.id, when, entry.paste_status
+                        "{} · {}",
+                        when,
+                        match entry.paste_status {
+                            history::PasteStatus::Pending => "未入力",
+                            history::PasteStatus::ShortcutSent => "入力送信済み",
+                            history::PasteStatus::Failed => "入力失敗",
+                        }
                     ));
                     if ui.small_button("コピー").clicked() {
                         self.history_message = Some(
@@ -1407,7 +1985,7 @@ impl Settings {
                     }
                     if ui
                         .add_enabled(
-                            self.history_paste_job.is_none(),
+                            self.history_paste_job.is_none() && self.paste_transaction.is_none(),
                             egui::Button::new("貼り直す（3秒）"),
                         )
                         .clicked()
@@ -1491,6 +2069,103 @@ mod clipboard_tests {
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_POPUP,
     };
+
+    fn settings_without_devices_or_user_files() -> Settings {
+        let mut cfg: Config = toml::from_str("").unwrap();
+        cfg.speech_exe = "__missing_setup_fixture__.exe".into();
+        Settings::from_loaded(cfg, None, false, chatgpt::Status::SignedOut, Vec::new())
+    }
+
+    fn has_close(output: egui::FullOutput) -> bool {
+        let close = output.viewport_output.values().any(|viewport| {
+            viewport
+                .commands
+                .iter()
+                .any(|command| matches!(command, egui::ViewportCommand::Close))
+        });
+        output.drop_without_applying_deltas();
+        close
+    }
+
+    fn wait_for_retirement(settings: &mut Settings, ctx: &egui::Context) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !settings.retiring_jobs.is_empty() {
+            settings.poll_retiring_jobs(ctx);
+            assert!(
+                Instant::now() < deadline,
+                "cancelled worker must finish before settings can close"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn closing_settings_keeps_a_starting_worker_until_it_finishes() {
+        let mut settings = settings_without_devices_or_user_files();
+        let ctx = egui::Context::default();
+        let (release, wait) = std::sync::mpsc::channel();
+        let (job, cancelled) = setup::ModelJob::blocked_for_test(wait);
+        settings.model_job = Some(job);
+        let mut close_elapsed = Duration::ZERO;
+        let pending = ctx.run_pass(Default::default(), |ctx| {
+            let started = Instant::now();
+            settings.request_close(ctx);
+            close_elapsed = started.elapsed();
+        });
+        assert!(
+            close_elapsed < Duration::from_millis(250),
+            "UI must not join the worker"
+        );
+        assert!(!has_close(pending));
+        assert!(settings.closing);
+        assert!(settings.model_job.is_none());
+        assert_eq!(settings.retiring_jobs.len(), 1);
+        assert!(cancelled.load(std::sync::atomic::Ordering::Acquire));
+        settings.start_model_job(&ctx, false);
+        assert!(
+            settings.model_job.is_none(),
+            "closing cannot start another worker"
+        );
+        release.send(()).unwrap();
+        wait_for_retirement(&mut settings, &ctx);
+        let finished = ctx.run_pass(Default::default(), |ctx| settings.update_model_jobs(ctx));
+        assert!(has_close(finished));
+        assert!(!settings.closing);
+    }
+
+    #[test]
+    fn closing_also_waits_for_a_worker_cancelled_by_a_model_change() {
+        let mut settings = settings_without_devices_or_user_files();
+        let ctx = egui::Context::default();
+        let (release, wait) = std::sync::mpsc::channel();
+        let (job, cancelled) = setup::ModelJob::blocked_for_test(wait);
+        settings.model_job = Some(job);
+        settings.cfg.model = "changed-model".into();
+        settings.update_model_jobs(&ctx);
+        assert!(settings.model_job.is_none());
+        assert_eq!(settings.retiring_jobs.len(), 1);
+        assert!(cancelled.load(std::sync::atomic::Ordering::Acquire));
+        settings.start_model_job(&ctx, false);
+        assert!(
+            settings.model_job.is_none(),
+            "replacement waits for the prior process to stop"
+        );
+        let confirmation = ctx.run_pass(Default::default(), |ctx| settings.request_close(ctx));
+        assert!(!has_close(confirmation));
+        assert!(
+            settings.close_confirm,
+            "unsaved model changes still need the user's close choice"
+        );
+        settings.allow_close = true;
+        settings.close_confirm = false;
+        let pending = ctx.run_pass(Default::default(), |ctx| settings.request_close(ctx));
+        assert!(!has_close(pending));
+        assert!(settings.closing);
+        release.send(()).unwrap();
+        wait_for_retirement(&mut settings, &ctx);
+        let finished = ctx.run_pass(Default::default(), |ctx| settings.update_model_jobs(ctx));
+        assert!(has_close(finished));
+    }
 
     #[test]
     fn setup_detects_a_missing_configured_executable() {

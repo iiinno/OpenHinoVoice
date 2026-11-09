@@ -488,11 +488,16 @@ impl Worker {
         }
     }
 
-    /// 消費せずに子プロセスを止める。ファイル文字起こしの送り直しの前に使う
-    pub fn kill(&mut self) {
+    /// 終了要求だけを直ちに送る。待機は別途kill/shutdownで行う。
+    pub fn request_stop(&mut self) {
         // Terminate first; a child stuck reading neither stdin nor stdout
         // cannot be asked to exit gracefully. Never join the writer thread.
         let _ = self.child.kill();
+    }
+
+    /// 消費せずに子プロセスを止める。ファイル文字起こしの送り直しの前に使う
+    pub fn kill(&mut self) {
+        self.request_stop();
         let deadline = Instant::now() + Duration::from_millis(250);
         loop {
             match self.child.try_wait() {
@@ -612,6 +617,14 @@ pub fn test_worker(lines: std::sync::mpsc::Receiver<String>, broken_stdin: bool)
         ready: true,
         protocol: 4,
     }
+}
+
+#[cfg(test)]
+pub fn test_starting_worker(lines: std::sync::mpsc::Receiver<String>) -> Worker {
+    let mut worker = test_worker(lines, false);
+    worker.ready = false;
+    worker.protocol = 0;
+    worker
 }
 
 /// 送られた JSON 行を後から読める test_worker。区間と仮の認識の送り方のテストに使う
@@ -739,7 +752,10 @@ pub fn parse_wav(bytes: &[u8]) -> Result<WavData, String> {
     }
     let frames = raw.len() / block_align;
     if (frames as u128) > (sample_rate as u128 * MAX_FILE_SECONDS as u128) {
-        return Err("音声ファイルは10分以内にしてください".into());
+        return Err(format!(
+            "音声ファイルは{}分以内にしてください",
+            MAX_FILE_SECONDS / 60
+        ));
     }
     let pcm = if kind == 1 && channels == 1 {
         raw.to_vec()
@@ -812,29 +828,15 @@ pub fn transcribe_file(
     let wav = parse_wav(&bytes)?;
     drop(bytes);
 
-    // 音を f32 にして区間に分け、区間ごとに PCM16 へ戻して認識させる
-    let samples: Vec<f32> = wav
-        .pcm_le
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .map(|b| i16::from_le_bytes(*b) as f32 / 32768.0)
-        .collect();
-    let mut segmenter = crate::segment::Segmenter::new(wav.sample_rate);
-    let mut intervals = segmenter.push(&samples);
-    if let Some(rest) = segmenter.finish() {
-        if !rest.is_empty() {
-            intervals.push(rest);
-        }
-    }
-    if intervals.is_empty() {
+    let mut intervals = FileIntervals::new(&wav.pcm_le, wav.sample_rate).peekable();
+    if intervals.peek().is_none() {
         return Err("話している部分が見つかりませんでした".into());
     }
 
     let mut worker = Worker::spawn(speech_exe, model).map_err(|e| e.to_string())?;
     let outcome = transcribe_intervals_with_retry(
         &mut worker,
-        &intervals,
+        intervals,
         wav.sample_rate,
         words,
         speech_exe,
@@ -845,21 +847,78 @@ pub fn transcribe_file(
     Ok(crate::segment::join_intervals(&texts))
 }
 
+/// ファイル全体を f32 と区間の一覧に展開せず、認識する一区間ずつ取り出す。
+struct FileIntervals<'a> {
+    pcm: std::slice::Chunks<'a, u8>,
+    segmenter: crate::segment::Segmenter,
+    samples: Vec<f32>,
+    ready: VecDeque<Vec<f32>>,
+    finished: bool,
+}
+
+impl<'a> FileIntervals<'a> {
+    fn new(pcm: &'a [u8], sample_rate: u32) -> Self {
+        let frame_samples = (sample_rate as usize / 5).max(1);
+        Self {
+            pcm: pcm.chunks(frame_samples * 2),
+            segmenter: crate::segment::Segmenter::new(sample_rate),
+            samples: Vec::with_capacity(frame_samples),
+            ready: VecDeque::new(),
+            finished: false,
+        }
+    }
+}
+
+impl Iterator for FileIntervals<'_> {
+    type Item = Vec<f32>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(interval) = self.ready.pop_front() {
+                return Some(interval);
+            }
+            if self.finished {
+                return None;
+            }
+            if let Some(pcm) = self.pcm.next() {
+                self.samples.clear();
+                self.samples.extend(
+                    pcm.as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|b| i16::from_le_bytes(*b) as f32 / 32768.0),
+                );
+                self.ready.extend(self.segmenter.push(&self.samples));
+            } else {
+                self.finished = true;
+                return self
+                    .segmenter
+                    .finish()
+                    .filter(|samples| !samples.is_empty());
+            }
+        }
+    }
+}
+
 /// 区間を順に認識させる。worker が死んだら起動し直して、その区間だけを送り直す。
 /// 終わった区間の文章はすでに texts に積んである
-fn transcribe_intervals_with_retry(
+fn transcribe_intervals_with_retry<I>(
     worker: &mut Worker,
-    intervals: &[Vec<f32>],
+    intervals: I,
     sample_rate: u32,
     words: &str,
     speech_exe: &str,
     model: &str,
-) -> Result<Vec<String>, AsrError> {
+) -> Result<Vec<String>, AsrError>
+where
+    I: IntoIterator,
+    I::Item: AsRef<[f32]>,
+{
     worker.wait_ready(READY_TIMEOUT)?;
-    let mut texts: Vec<String> = Vec::with_capacity(intervals.len());
-    for (index, interval) in intervals.iter().enumerate() {
+    let mut texts = Vec::new();
+    for (index, interval) in intervals.into_iter().enumerate() {
         let id = format!("f{index}");
-        let pcm = crate::audio::samples_to_pcm_le(interval);
+        let pcm = crate::audio::samples_to_pcm_le(interval.as_ref());
         let text = match send_and_await(worker, &id, &pcm, sample_rate, words) {
             Ok(text) => text,
             Err(error) => {
@@ -943,6 +1002,35 @@ mod tests {
                 .unwrap()
                 .unwrap();
         assert!(matches!(terminal.outcome, TerminalOutcome::Error(_)));
+    }
+
+    #[test]
+    fn file_intervals_match_batch_segmentation_and_keep_the_final_fraction() {
+        let rate = 8000;
+        let mut samples = vec![0.25; rate as usize];
+        samples.extend(std::iter::repeat_n(0.0, rate as usize));
+        samples.extend(std::iter::repeat_n(0.5, rate as usize * 22 + 37));
+        let pcm: Vec<u8> = samples
+            .iter()
+            .flat_map(|sample| ((*sample * 32768.0) as i16).to_le_bytes())
+            .collect();
+        let mut batch = crate::segment::Segmenter::new(rate);
+        let mut expected = batch.push(&samples);
+        expected.extend(batch.finish());
+        let mut streaming = FileIntervals::new(&pcm, rate);
+        let first = streaming.next().unwrap();
+        assert!(
+            streaming.pcm.len() > 0,
+            "最初の区間で残りの音声を展開しない"
+        );
+        let actual: Vec<_> = std::iter::once(first).chain(streaming).collect();
+        assert_eq!(actual, expected);
+        assert_eq!(*actual.last().unwrap().last().unwrap(), 0.5);
+    }
+
+    #[test]
+    fn silent_file_intervals_are_empty() {
+        assert!(FileIntervals::new(&vec![0; 16000], 8000).next().is_none());
     }
 
     #[test]
@@ -1405,6 +1493,43 @@ mod tests {
             serde_json::from_str(sent_lines().last().unwrap().as_str()).unwrap();
         assert_eq!(last["type"], "transcribe");
         assert_eq!(last["id"], "s1");
+    }
+
+    #[test]
+    fn a_stop_request_terminates_before_cleanup_is_scheduled() {
+        let mut child = Command::new("cmd.exe")
+            .args(["/D", "/C", "set /p wait="])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .unwrap();
+        let writer = WriterQueue::spawn(child.stdin.take().unwrap());
+        let (_tx, lines) = channel();
+        let mut worker = Worker {
+            child,
+            writer,
+            lines,
+            seqs: HashMap::new(),
+            ready: false,
+            protocol: 0,
+        };
+        assert!(worker.child.try_wait().unwrap().is_none());
+        worker.request_stop();
+        // 回収用スレッドを作らなくても、この呼び出しだけで子が終了する。
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let exited = loop {
+            if worker.child.try_wait().unwrap().is_some() {
+                break true;
+            }
+            if Instant::now() >= deadline {
+                break false;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        worker.shutdown();
+        assert!(exited, "終了要求を回収用スレッドへ先送りしない");
     }
 
     /// shutdown と構造のテスト用に使う、すぐ終わる子プロセス

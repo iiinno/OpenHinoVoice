@@ -100,7 +100,7 @@ usage_log = true
 reasoning_effort = "none"
 "#;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct FormatConfig {
     /// 整形の接続先。"opencode-go"、"openai"(API キー)、"chatgpt"(ChatGPT でログイン)、"custom"(OpenAI 互換)
     #[serde(default = "default_provider")]
@@ -181,7 +181,7 @@ impl Default for FormatConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct Config {
     #[serde(default)]
     pub speech_exe: String,
@@ -294,7 +294,7 @@ fn atomic_replace(path: &std::path::Path, contents: &[u8]) -> Result<(), String>
     let nano = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
-    let tmp = path.with_file_name(format!(".api-keys-{}-{nano}.tmp", std::process::id()));
+    let tmp = path.with_file_name(format!(".openhino-{}-{nano}.tmp", std::process::id()));
     let result = (|| -> std::io::Result<()> {
         let mut file = std::fs::OpenOptions::new()
             .write(true)
@@ -309,7 +309,7 @@ fn atomic_replace(path: &std::path::Path, contents: &[u8]) -> Result<(), String>
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
-    result.map_err(|e| format!("秘密情報を安全に保存できません: {e}"))
+    result.map_err(|e| format!("ファイルを安全に保存できません: {e}"))
 }
 
 fn decode_api_keys(sealed: &[u8]) -> Result<StoredApiKeys, String> {
@@ -427,7 +427,7 @@ pub fn load() -> Result<Config, String> {
                 (Some("format"), "openai_api_key", toml::Value::from("")),
             ],
         )?;
-        std::fs::write(&path, clean)
+        atomic_replace(&path, clean.as_bytes())
             .map_err(|e| format!("旧設定の平文APIキーを除去できません: {e}"))?;
     } else if let Some(keys) = load_api_keys()? {
         cfg.format.api_key = keys.api_key;
@@ -608,8 +608,37 @@ fn update_json_item(item: &mut toml_edit::Item, value: &serde_json::Value) -> Re
 }
 
 pub fn save(text: &str) -> Result<(), String> {
+    save_at(&config_path(), text)
+}
+
+fn save_at(path: &std::path::Path, text: &str) -> Result<(), String> {
     parse(text)?;
-    std::fs::write(config_path(), text).map_err(|e| format!("設定ファイルを書けません: {e}"))
+    atomic_replace(path, text.as_bytes()).map_err(|e| format!("設定ファイルを書けません: {e}"))
+}
+
+/// 検証用プロセスだけを分離し、普段使っているインスタンスと競合させない。
+pub fn mutex_name(base: &str) -> String {
+    mutex_name_with_namespace(base, std::env::var("OHV_TEST_NAMESPACE").ok().as_deref())
+}
+
+pub fn is_test_sandbox() -> bool {
+    valid_test_namespace(std::env::var("OHV_TEST_NAMESPACE").ok().as_deref()).is_some()
+}
+
+fn valid_test_namespace(value: Option<&str>) -> Option<&str> {
+    value.filter(|v| {
+        !v.is_empty()
+            && v.len() <= 64
+            && v.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    })
+}
+
+fn mutex_name_with_namespace(base: &str, namespace: Option<&str>) -> String {
+    match valid_test_namespace(namespace) {
+        Some(namespace) => format!("{base}.{namespace}"),
+        None => base.to_owned(),
+    }
 }
 
 pub const MOD_CTRL: u8 = 1;
@@ -924,6 +953,43 @@ mod tests {
     fn invalid_toml_fails_closed_before_settings_save_or_migration() {
         let bad = "[format] # ok\n[format] # duplicate\n";
         assert!(set_values(bad, &[(Some("format"), "api_key", toml::Value::from(""))]).is_err());
+    }
+
+    #[test]
+    fn invalid_settings_save_preserves_existing_file_and_valid_save_keeps_comments() {
+        let dir = std::env::temp_dir().join(format!(
+            "ohv-config-save-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let original = "# 利用者のコメント\nhotkey = 'F8'\n";
+        std::fs::write(&path, original).unwrap();
+        assert!(save_at(&path, "[format]\n[format]\n").is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        let updated = original.replace("F8", "Ctrl+Alt+J");
+        save_at(&path, &updated).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), updated);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_namespace_is_explicit_and_cannot_change_object_directory() {
+        let base = "Local\\OpenHinoVoice.Singleton";
+        assert_eq!(mutex_name_with_namespace(base, None), base);
+        assert_eq!(mutex_name_with_namespace(base, Some("")), base);
+        assert_eq!(mutex_name_with_namespace(base, Some("a\\b")), base);
+        assert_eq!(mutex_name_with_namespace(base, Some(&"x".repeat(65))), base);
+        assert_eq!(
+            mutex_name_with_namespace(base, Some("qa-123_abc")),
+            format!("{base}.qa-123_abc")
+        );
     }
 
     #[test]

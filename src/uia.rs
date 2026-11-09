@@ -16,6 +16,7 @@ static PROBE_RUNNING: AtomicBool = AtomicBool::new(false);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SelectionProbe {
     Unavailable,
+    TimedOut,
     None,
     Selected(String),
 }
@@ -50,7 +51,7 @@ fn probe_with_timeout(
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
     {
-        return SelectionProbe::None;
+        return SelectionProbe::TimedOut;
     }
     let (sender, receiver) = channel();
     std::thread::spawn(move || {
@@ -61,7 +62,7 @@ fn probe_with_timeout(
     });
     receiver
         .recv_timeout(timeout)
-        .unwrap_or(SelectionProbe::None)
+        .unwrap_or(SelectionProbe::TimedOut)
 }
 
 fn probe_with_com() -> Result<SelectionProbe, String> {
@@ -137,11 +138,11 @@ mod tests {
                 let _ = done.send(());
                 SelectionProbe::Selected("遅れて返る結果".into())
             }),
-            SelectionProbe::None
+            SelectionProbe::TimedOut
         );
         assert_eq!(
             probe_with_timeout(Duration::from_millis(20), || panic!("重複した照会")),
-            SelectionProbe::None
+            SelectionProbe::TimedOut
         );
         release.send(()).unwrap();
         finished.recv_timeout(Duration::from_secs(2)).unwrap();

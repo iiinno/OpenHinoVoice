@@ -1,5 +1,6 @@
+use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{
@@ -9,8 +10,8 @@ use windows::Win32::Graphics::Gdi::{
     ClientToScreen, CreateCompatibleDC, CreateDIBSection, CreateFontW, DeleteDC, DeleteObject,
     DrawTextW, GetMonitorInfoW, MonitorFromWindow, SelectObject, SetBkMode, SetTextColor,
     AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS,
-    DT_CALCRECT, DT_END_ELLIPSIS, DT_NOPREFIX, DT_SINGLELINE, DT_WORDBREAK, HFONT, HGDIOBJ,
-    MONITORINFO, MONITOR_DEFAULTTOPRIMARY, TRANSPARENT,
+    DT_CALCRECT, DT_END_ELLIPSIS, DT_NOPREFIX, DT_SINGLELINE, DT_WORDBREAK, HBITMAP, HDC, HFONT,
+    HGDIOBJ, MONITORINFO, MONITOR_DEFAULTTOPRIMARY, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
@@ -37,6 +38,8 @@ pub const CMD_SETTINGS: usize = 1002;
 pub const CMD_RECOVER_TEXT: usize = 1003;
 
 pub static EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+pub(crate) static EXIT_TEST_LOCK: Mutex<()> = Mutex::new(());
 static RECOVERY_COUNT: AtomicUsize = AtomicUsize::new(0);
 static RECOVERY_REQUESTED: AtomicBool = AtomicBool::new(false);
 static TASKBAR_CREATED: OnceLock<u32> = OnceLock::new();
@@ -44,6 +47,7 @@ static TASKBAR_CREATED: OnceLock<u32> = OnceLock::new();
 static CAPTION: Mutex<Option<(String, String)>> = Mutex::new(None);
 /// 表示の場所。"top" か "caret"
 static CAPTION_ANCHOR: Mutex<String> = Mutex::new(String::new());
+static DIRTY: AtomicBool = AtomicBool::new(true);
 
 pub fn set_recovery_count(count: usize) {
     RECOVERY_COUNT.store(count, Ordering::SeqCst);
@@ -63,11 +67,16 @@ pub enum Tone {
 pub enum Mode {
     Recording {
         started: Instant,
+        preparing: bool,
     },
     /// Edit モードの録音。「編集」と選んだ文の先頭を出す
     Editing {
         started: Instant,
         head: String,
+        preparing: bool,
+    },
+    Recognizing {
+        preparing: bool,
     },
     Busy {
         label: String,
@@ -77,6 +86,44 @@ pub enum Mode {
         tone: Tone,
         text: String,
     },
+}
+
+impl Mode {
+    fn set_engine_preparing(&mut self, preparing: bool) -> bool {
+        let current = match self {
+            Self::Recording { preparing, .. }
+            | Self::Editing { preparing, .. }
+            | Self::Recognizing { preparing } => preparing,
+            Self::Busy { .. } | Self::Notice { .. } => return false,
+        };
+        if *current == preparing {
+            return false;
+        }
+        *current = preparing;
+        true
+    }
+}
+
+fn recording_label(elapsed: Duration, editing: bool, preparing: bool) -> String {
+    let secs = elapsed.as_secs();
+    let prefix = if editing { "編集 " } else { "" };
+    if preparing {
+        format!(
+            "{prefix}{}:{:02} · 認識エンジン準備中・録音継続",
+            secs / 60,
+            secs % 60
+        )
+    } else {
+        format!("{prefix}{}:{:02}", secs / 60, secs % 60)
+    }
+}
+
+fn recognizing_text(preparing: bool) -> (&'static str, Option<&'static str>) {
+    if preparing {
+        ("認識エンジンを準備中", Some("音声は録音済みです"))
+    } else {
+        ("認識中", None)
+    }
 }
 
 const FADE_IN: Duration = Duration::from_millis(140);
@@ -96,6 +143,7 @@ struct Overlay {
     theme: String,
     palette: &'static Palette,
     last_frame: Instant,
+    fade_settled: bool,
 }
 
 fn store() -> &'static Mutex<Overlay> {
@@ -113,6 +161,7 @@ fn store() -> &'static Mutex<Overlay> {
             theme: "hinomaru".into(),
             palette: &HINOMARU,
             last_frame: Instant::now(),
+            fade_settled: false,
         })
     })
 }
@@ -239,6 +288,19 @@ pub fn show(mode: Mode) {
     o.hiding_since = None;
     o.visible = true;
     o.last_frame = Instant::now() - FRAME;
+    o.fade_settled = false;
+    DIRTY.store(true, Ordering::Release);
+}
+
+/// 準備状態だけを切り替え、通知・表示位置・フェードの開始時刻を保つ。
+pub fn set_engine_preparing(preparing: bool) {
+    if lock()
+        .mode
+        .as_mut()
+        .is_some_and(|mode| mode.set_engine_preparing(preparing))
+    {
+        DIRTY.store(true, Ordering::Release);
+    }
 }
 
 /// 設定の theme を渡す。次に表示を出すときから効く
@@ -257,17 +319,20 @@ pub fn set_caption(confirmed: &str, partial: &str) {
         return;
     }
     *caption = Some((confirmed.to_string(), partial.to_string()));
+    DIRTY.store(true, Ordering::Release);
 }
 
 /// リアルタイム表示を消す。録音の終わりと Esc で呼ぶ
 pub fn clear_caption() {
     *caption_lock() = None;
     *CAPTION_MASKS.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    DIRTY.store(true, Ordering::Release);
 }
 
 /// 帯の場所を設定から渡す。"top" か "caret"。それ以外は "top" 扱いにする
 pub fn set_caption_anchor(anchor: &str) {
     *CAPTION_ANCHOR.lock().unwrap_or_else(|p| p.into_inner()) = anchor.to_string();
+    DIRTY.store(true, Ordering::Release);
 }
 
 fn caption_lock() -> std::sync::MutexGuard<'static, Option<(String, String)>> {
@@ -325,6 +390,33 @@ pub fn is_visible() -> bool {
     lock().visible
 }
 
+/// 静止した通知ではタイマーを回さず、次の状態変更まで待機できる。
+pub fn needs_animation() -> bool {
+    let o = lock();
+    o.visible
+        && redraw_needed(
+            o.mode.as_ref(),
+            o.fade_settled,
+            o.hiding_since.is_some(),
+            DIRTY.load(Ordering::Acquire),
+        )
+}
+
+fn redraw_needed(mode: Option<&Mode>, fade_settled: bool, hiding: bool, dirty: bool) -> bool {
+    dirty
+        || !fade_settled
+        || hiding
+        || matches!(
+            mode,
+            Some(
+                Mode::Recording { .. }
+                    | Mode::Editing { .. }
+                    | Mode::Recognizing { .. }
+                    | Mode::Busy { .. }
+            )
+        )
+}
+
 /// 録音中のマイクの音を渡す。表示の棒の高さに使う
 pub fn push_level(samples: &[f32]) {
     if samples.is_empty() {
@@ -341,6 +433,14 @@ pub fn push_level(samples: &[f32]) {
 pub fn tick() {
     let mut o = lock();
     if !o.visible || o.last_frame.elapsed() < FRAME {
+        return;
+    }
+    if !redraw_needed(
+        o.mode.as_ref(),
+        o.fade_settled,
+        o.hiding_since.is_some(),
+        DIRTY.swap(false, Ordering::AcqRel),
+    ) {
         return;
     }
     o.last_frame = Instant::now();
@@ -364,28 +464,29 @@ pub fn tick() {
         }
         None => ease_out((o.shown_at.elapsed().as_secs_f32() / FADE_IN.as_secs_f32()).min(1.0)),
     };
-    let Some(mode) = o.mode.clone() else { return };
+    o.fade_settled = o.shown_at.elapsed() >= FADE_IN;
+    let Some(mode) = o.mode.as_ref() else { return };
     let (work, scale, level, palette) = (o.work, o.scale, o.level, o.palette);
     // 字幕の文字は変わったときだけ描き直す。描き直した Bitmap は描画の間だけ借りる
-    let caption = caption_lock().clone();
-    let caption = caption
+    let caption_guard = caption_lock();
+    let caption = caption_guard
+        .as_ref()
         .filter(|(confirmed, partial)| !confirmed.trim().is_empty() || !partial.trim().is_empty());
-    let masks_guard = caption.as_ref().map(|(confirmed, partial)| {
+    let masks_guard = caption.map(|(confirmed, partial)| {
         let font_px = px_of_scale(o.scale, 13.0);
+        let max_w = px_of_scale(o.scale, 520.0)
+            .min((work.right - work.left - px_of_scale(o.scale, 44.0)).max(1));
         let mut guard = CAPTION_MASKS.lock().unwrap_or_else(|p| p.into_inner());
-        let reusable = guard
-            .as_ref()
-            .is_some_and(|m| m.key.0 == *confirmed && m.key.1 == *partial && m.font_px == font_px);
+        let reusable = guard.as_ref().is_some_and(|m| {
+            m.key.0 == *confirmed && m.key.1 == *partial && m.font_px == font_px && m.max_w == max_w
+        });
         if !reusable {
-            *guard = Some(unsafe {
-                caption_masks(confirmed, partial, font_px, px_of_scale(o.scale, 520.0))
-            });
+            *guard = Some(unsafe { caption_masks(confirmed, partial, font_px, max_w) });
         }
         guard
     });
     let masks = masks_guard.as_ref().map(|g| g.as_ref().unwrap());
-    drop(o);
-    unsafe { present(window, &mode, palette, work, scale, level, fade, masks) };
+    unsafe { present(window, mode, palette, work, scale, level, fade, masks) };
 }
 
 fn px_of_scale(scale: f32, v: f32) -> i32 {
@@ -485,6 +586,10 @@ struct Canvas {
     w: i32,
     h: i32,
     px: Vec<[f32; 4]>, // 乗算済みの b, g, r, a(0〜1)
+}
+
+thread_local! {
+    static FRAME_CANVAS: RefCell<Option<Canvas>> = const { RefCell::new(None) };
 }
 
 impl Canvas {
@@ -597,6 +702,37 @@ struct TextMask {
     cov: Vec<u8>,
 }
 
+struct CachedText {
+    text: String,
+    font_px: i32,
+    bold: bool,
+    max_w: i32,
+    mask: Arc<TextMask>,
+}
+
+static TEXT_MASKS: Mutex<Vec<CachedText>> = Mutex::new(Vec::new());
+
+unsafe fn cached_text(text: &str, font_px: i32, bold: bool, max_w: i32) -> Arc<TextMask> {
+    let mut cache = TEXT_MASKS.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(entry) = cache.iter().find(|entry| {
+        entry.text == text && entry.font_px == font_px && entry.bold == bold && entry.max_w == max_w
+    }) {
+        return Arc::clone(&entry.mask);
+    }
+    let mask = Arc::new(render_text(text, font_px, bold, max_w));
+    if cache.len() == 8 {
+        cache.remove(0);
+    }
+    cache.push(CachedText {
+        text: text.to_owned(),
+        font_px,
+        bold,
+        max_w,
+        mask: Arc::clone(&mask),
+    });
+    mask
+}
+
 /// 折り返して描いた文字。長い文章は下から max_lines 行だけを残す(古い行は上へ送る)
 unsafe fn render_text_wrapped(
     text: &str,
@@ -692,6 +828,7 @@ unsafe fn render_text_wrapped(
 struct CaptionMasks {
     key: (String, String),
     font_px: i32,
+    max_w: i32,
     confirmed: TextMask,
     partial: Option<TextMask>,
 }
@@ -708,6 +845,7 @@ unsafe fn caption_masks(confirmed: &str, partial: &str, font_px: i32, max_w: i32
     CaptionMasks {
         key: (confirmed.to_string(), partial.to_string()),
         font_px,
+        max_w,
         confirmed: confirmed_mask,
         partial: partial_mask,
     }
@@ -807,44 +945,56 @@ unsafe fn present(
     let pad = px(14.0);
     let gap = px(9.0);
     let font_px = px(13.0) as i32;
-    let max_text = px(440.0) as i32;
+    let max_text = (px(440.0) as i32).min(((work.right - work.left - px(150.0) as i32) / 2).max(1));
 
     // 中身の幅を先に決める
-    let (label, hint, dot): (Option<TextMask>, Option<TextMask>, Option<Rgb>) = match mode {
-        Mode::Recording { started } => {
-            let secs = started.elapsed().as_secs();
+    let (label, hint, dot): (Option<Arc<TextMask>>, Option<Arc<TextMask>>, Option<Rgb>) = match mode
+    {
+        Mode::Recording { started, preparing } => (
+            Some(cached_text(
+                &recording_label(started.elapsed(), false, *preparing),
+                font_px,
+                true,
+                max_text,
+            )),
+            Some(cached_text(
+                "Enter 確定 · Esc 取消",
+                font_px,
+                false,
+                max_text,
+            )),
+            None,
+        ),
+        Mode::Editing {
+            started,
+            head,
+            preparing,
+        } => (
+            Some(cached_text(
+                &recording_label(started.elapsed(), true, *preparing),
+                font_px,
+                true,
+                max_text,
+            )),
+            Some(cached_text(head, font_px, false, max_text)),
+            None,
+        ),
+        Mode::Recognizing { preparing } => {
+            let (label, hint) = recognizing_text(*preparing);
             (
-                Some(render_text(
-                    &format!("{}:{:02}", secs / 60, secs % 60),
-                    font_px,
-                    true,
-                    max_text,
-                )),
-                None,
-                None,
-            )
-        }
-        Mode::Editing { started, head } => {
-            let secs = started.elapsed().as_secs();
-            (
-                Some(render_text(
-                    &format!("編集 {}:{:02}", secs / 60, secs % 60),
-                    font_px,
-                    true,
-                    max_text,
-                )),
-                Some(render_text(head, font_px, false, max_text)),
+                Some(cached_text(label, font_px, true, max_text)),
+                hint.map(|text| cached_text(text, font_px, false, max_text)),
                 None,
             )
         }
         Mode::Busy { label, hint } => (
-            Some(render_text(label, font_px, true, max_text)),
+            Some(cached_text(label, font_px, true, max_text)),
             hint.as_deref()
-                .map(|h| render_text(h, font_px, false, max_text)),
+                .map(|h| cached_text(h, font_px, false, max_text)),
             None,
         ),
         Mode::Notice { tone, text } => (
-            Some(render_text(text, font_px, true, max_text)),
+            Some(cached_text(text, font_px, true, max_text * 2)),
             None,
             Some(if *tone == Tone::Warn {
                 pal.amber
@@ -857,7 +1007,7 @@ unsafe fn present(
         Mode::Recording { .. } | Mode::Editing { .. } => {
             px(10.0) + gap + px(3.0) * BARS as f32 + px(3.0) * (BARS as f32 - 1.0)
         }
-        Mode::Busy { .. } => px(22.0),
+        Mode::Recognizing { .. } | Mode::Busy { .. } => px(22.0),
         Mode::Notice { .. } => px(8.0),
     };
     let label_w = label.as_ref().map_or(0, |m| m.w) as f32;
@@ -889,8 +1039,14 @@ unsafe fn present(
     };
 
     let w = (pill_w.max(band_w) + shadow * 2.0) as i32;
-    let h = (pill_h + shadow * 2.0 + band_h) as i32;
-    let mut c = Canvas::new(w, h);
+    let h = (pill_h + shadow * 2.0 + band_h + if caption_shown { gap } else { 0.0 }) as i32;
+    let mut c = FRAME_CANVAS
+        .with(|slot| slot.borrow_mut().take())
+        .unwrap_or_else(|| Canvas::new(w, h));
+    c.w = w;
+    c.h = h;
+    c.px.resize((w * h) as usize, [0.0; 4]);
+    c.px.fill([0.0; 4]);
     let (x0, y0) = (shadow, shadow);
 
     // 影、地、縁取り
@@ -950,7 +1106,7 @@ unsafe fn present(
             }
             x += gap - px(3.0);
         }
-        Mode::Busy { .. } => {
+        Mode::Recognizing { .. } | Mode::Busy { .. } => {
             // 3 つの点が順に明るくなる
             for i in 0..3 {
                 let a = 0.3 + 0.7 * (((phase * 5.0 - i as f32 * 0.9).sin() * 0.5 + 0.5).powi(2));
@@ -970,7 +1126,7 @@ unsafe fn present(
         x += m.w as f32 + px(6.0);
     }
     if let Some(m) = &hint {
-        c.text(m, x as i32, (cy - m.h as f32 / 2.0) as i32, pal.fg, 0.5);
+        c.text(m, x as i32, (cy - m.h as f32 / 2.0) as i32, pal.fg, 0.72);
     }
 
     // 字幕帯。確定は通常の色、仮は薄い色。話している途中の文字が入力欄に入ることはない
@@ -996,7 +1152,7 @@ unsafe fn present(
             text_y += m.h as f32 + band_gap;
         }
         if let Some(m) = partial_mask {
-            c.text(m, text_x as i32, text_y as i32, pal.fg, 0.45);
+            c.text(m, text_x as i32, text_y as i32, pal.fg, 0.72);
         }
     }
 
@@ -1033,7 +1189,16 @@ unsafe fn present(
             work.top + px(4.0) as i32 - drop as i32,
         )
     };
+    let (wx, wy) = clamp_to_work_area(wx, wy, w, h, work);
     blit(window, &c, wx, wy, (fade * 255.0) as u8);
+    FRAME_CANVAS.with(|slot| *slot.borrow_mut() = Some(c));
+}
+
+fn clamp_to_work_area(x: i32, y: i32, w: i32, h: i32, work: RECT) -> (i32, i32) {
+    (
+        x.clamp(work.left, (work.right - w).max(work.left)),
+        y.clamp(work.top, (work.bottom - h).max(work.top)),
+    )
 }
 
 fn start_phase() -> f32 {
@@ -1041,29 +1206,85 @@ fn start_phase() -> f32 {
     T0.get_or_init(Instant::now).elapsed().as_secs_f32()
 }
 
-unsafe fn blit(window: HWND, c: &Canvas, x: i32, y: i32, alpha: u8) {
-    let dc = CreateCompatibleDC(None);
-    let info = BITMAPINFO {
-        bmiHeader: BITMAPINFOHEADER {
-            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: c.w,
-            biHeight: -c.h,
-            biPlanes: 1,
-            biBitCount: 32,
-            biCompression: BI_RGB.0,
+struct BlitSurface {
+    dc: HDC,
+    bitmap: HBITMAP,
+    old: HGDIOBJ,
+    bits: *mut u8,
+    w: i32,
+    h: i32,
+}
+
+impl BlitSurface {
+    unsafe fn new(w: i32, h: i32) -> Option<Self> {
+        let dc = CreateCompatibleDC(None);
+        if dc.0.is_null() {
+            return None;
+        }
+        let info = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: w,
+                biHeight: -h,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
             ..Default::default()
-        },
-        ..Default::default()
-    };
-    let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
-    if let Ok(bmp) = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut bits, None, 0) {
-        let out = std::slice::from_raw_parts_mut(bits as *mut u8, (c.w * c.h * 4) as usize);
+        };
+        let mut bits = std::ptr::null_mut();
+        match CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut bits, None, 0) {
+            Ok(bitmap) => {
+                let old = SelectObject(dc, HGDIOBJ(bitmap.0));
+                Some(Self {
+                    dc,
+                    bitmap,
+                    old,
+                    bits: bits.cast(),
+                    w,
+                    h,
+                })
+            }
+            Err(_) => {
+                let _ = DeleteDC(dc);
+                None
+            }
+        }
+    }
+}
+
+impl Drop for BlitSurface {
+    fn drop(&mut self) {
+        unsafe {
+            SelectObject(self.dc, self.old);
+            let _ = DeleteObject(self.bitmap);
+            let _ = DeleteDC(self.dc);
+        }
+    }
+}
+
+thread_local! {
+    // GDI resources remain on the presenting thread and are released on resize or exit.
+    static BLIT_SURFACE: RefCell<Option<BlitSurface>> = const { RefCell::new(None) };
+}
+
+unsafe fn blit(window: HWND, c: &Canvas, x: i32, y: i32, alpha: u8) {
+    BLIT_SURFACE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot
+            .as_ref()
+            .is_none_or(|surface| surface.w != c.w || surface.h != c.h)
+        {
+            *slot = BlitSurface::new(c.w, c.h);
+        }
+        let Some(surface) = slot.as_ref() else { return };
+        let out = std::slice::from_raw_parts_mut(surface.bits, (c.w * c.h * 4) as usize);
         for (i, p) in c.px.iter().enumerate() {
             for k in 0..4 {
                 out[i * 4 + k] = (p[k].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
             }
         }
-        let old = SelectObject(dc, HGDIOBJ(bmp.0));
         let blend = BLENDFUNCTION {
             BlendOp: AC_SRC_OVER as u8,
             BlendFlags: 0,
@@ -1078,7 +1299,7 @@ unsafe fn blit(window: HWND, c: &Canvas, x: i32, y: i32, alpha: u8) {
             None,
             Some(&dst),
             Some(&size),
-            dc,
+            surface.dc,
             Some(&src),
             COLORREF(0),
             Some(&blend),
@@ -1094,10 +1315,7 @@ unsafe fn blit(window: HWND, c: &Canvas, x: i32, y: i32, alpha: u8) {
             SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
         );
         let _ = ShowWindow(window, SW_SHOWNOACTIVATE);
-        SelectObject(dc, old);
-        let _ = DeleteObject(bmp);
-    }
-    let _ = DeleteDC(dc);
+    });
 }
 
 unsafe fn show_exit_menu(window: HWND) {
@@ -1153,6 +1371,12 @@ unsafe extern "system" fn wnd_proc(
         return LRESULT(0);
     }
     match msg {
+        x if x == windows::Win32::UI::WindowsAndMessaging::WM_CLOSE => {
+            // The resident owns shutdown. Keep the clipboard owner and tray alive
+            // until pending restoration/saves and recoverable text are handled.
+            EXIT_REQUESTED.store(true, Ordering::SeqCst);
+            LRESULT(0)
+        }
         x if x == WM_TRAY => {
             let event = (lparam.0 as u32) & 0xFFFF;
             if event == WM_RBUTTONUP || event == WM_CONTEXTMENU {
@@ -1168,6 +1392,7 @@ unsafe extern "system" fn wnd_proc(
             }
             LRESULT(0)
         }
+        // Do not post WM_QUIT here: the resident decides when shutdown is safe.
         x if x == WM_DESTROY => LRESULT(0),
         _ => DefWindowProcW(window, msg, wparam, lparam),
     }
@@ -1176,6 +1401,168 @@ unsafe extern "system" fn wnd_proc(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn close_request_preserves_the_hidden_clipboard_owner_until_shutdown() {
+        let _exit_guard = EXIT_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        use windows::Win32::UI::WindowsAndMessaging::{
+            IsWindow, IsWindowVisible, SendMessageW, UnregisterClassW, WM_CLOSE,
+        };
+        unsafe {
+            let instance = GetModuleHandleW(None).unwrap();
+            let class = windows::core::w!("OpenHinoVoiceHiddenCloseRegression");
+            let atom = RegisterClassW(&WNDCLASSW {
+                lpfnWndProc: Some(wnd_proc),
+                hInstance: instance.into(),
+                lpszClassName: class,
+                ..Default::default()
+            });
+            assert_ne!(atom, 0);
+            let window = CreateWindowExW(
+                WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+                class,
+                class,
+                WS_POPUP,
+                0,
+                0,
+                1,
+                1,
+                None,
+                None,
+                HINSTANCE(instance.0),
+                None,
+            )
+            .unwrap();
+            let previous = EXIT_REQUESTED.swap(false, Ordering::SeqCst);
+            SendMessageW(window, WM_CLOSE, WPARAM(0), LPARAM(0));
+            let kept_alive = IsWindow(window).as_bool();
+            let kept_hidden = !IsWindowVisible(window).as_bool();
+            let requested = EXIT_REQUESTED.swap(previous, Ordering::SeqCst);
+            let _ = DestroyWindow(window);
+            let _ = UnregisterClassW(class, HINSTANCE(instance.0));
+            assert!(
+                kept_alive,
+                "WM_CLOSE must not destroy the clipboard/tray owner"
+            );
+            assert!(
+                kept_hidden,
+                "the regression fixture must never show a window"
+            );
+            assert!(requested);
+        }
+    }
+
+    #[test]
+    fn preparation_updates_preserve_recording_details_and_do_not_replace_notices() {
+        let started = Instant::now();
+        for mut mode in [
+            Mode::Recording {
+                started,
+                preparing: true,
+            },
+            Mode::Editing {
+                started,
+                head: "選んだ文".into(),
+                preparing: true,
+            },
+            Mode::Recognizing { preparing: true },
+        ] {
+            let original = mode.clone();
+            assert!(!mode.set_engine_preparing(true));
+            assert!(mode.set_engine_preparing(false));
+            assert!(!mode.set_engine_preparing(false));
+            assert!(mode.set_engine_preparing(true));
+            assert_eq!(mode, original);
+        }
+        for mut mode in [
+            Mode::Notice {
+                tone: Tone::Warn,
+                text: "マイクを切り替えました".into(),
+            },
+            Mode::Busy {
+                label: "整形中".into(),
+                hint: Some("Enter で生テキスト".into()),
+            },
+        ] {
+            let original = mode.clone();
+            assert!(!mode.set_engine_preparing(true));
+            assert!(!mode.set_engine_preparing(false));
+            assert_eq!(mode, original);
+        }
+    }
+
+    #[test]
+    fn preparation_copy_distinguishes_live_recording_from_recorded_audio() {
+        let elapsed = Duration::from_secs(65);
+        assert_eq!(recording_label(elapsed, false, false), "1:05");
+        assert_eq!(recording_label(elapsed, true, false), "編集 1:05");
+        for editing in [false, true] {
+            let label = recording_label(elapsed, editing, true);
+            assert!(label.contains("1:05"));
+            assert!(label.contains("認識エンジン準備中・録音継続"));
+        }
+        assert_eq!(
+            recognizing_text(true),
+            ("認識エンジンを準備中", Some("音声は録音済みです"))
+        );
+        assert_eq!(recognizing_text(false), ("認識中", None));
+    }
+
+    #[test]
+    fn static_notice_stops_rendering_only_after_the_final_fade_frame() {
+        let notice = Mode::Notice {
+            tone: Tone::Warn,
+            text: "確認してください".into(),
+        };
+        assert!(redraw_needed(Some(&notice), false, false, false));
+        assert!(!redraw_needed(Some(&notice), true, false, false));
+        assert!(redraw_needed(Some(&notice), true, true, false));
+        assert!(redraw_needed(Some(&notice), true, false, true));
+        let busy = Mode::Busy {
+            label: "認識中".into(),
+            hint: None,
+        };
+        assert!(redraw_needed(Some(&busy), true, false, false));
+        assert!(redraw_needed(
+            Some(&Mode::Recording {
+                started: Instant::now(),
+                preparing: false,
+            }),
+            true,
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn caret_overlay_stays_inside_offset_work_area() {
+        let work = RECT {
+            left: -1920,
+            top: 100,
+            right: 0,
+            bottom: 1180,
+        };
+        assert_eq!(clamp_to_work_area(-2000, 90, 800, 200, work), (-1920, 100));
+        assert_eq!(clamp_to_work_area(-100, 1150, 800, 200, work), (-800, 980));
+        assert_eq!(clamp_to_work_area(-1300, 300, 800, 200, work), (-1300, 300));
+        assert_eq!(
+            clamp_to_work_area(-1300, 300, 3000, 2000, work),
+            (-1920, 100)
+        );
+    }
+
+    #[test]
+    fn repeated_labels_share_a_bounded_text_mask_cache() {
+        let first = unsafe { cached_text("キャッシュの確認", 13, false, 440) };
+        let second = unsafe { cached_text("キャッシュの確認", 13, false, 440) };
+        assert!(Arc::ptr_eq(&first, &second));
+        for n in 0..12 {
+            unsafe {
+                cached_text(&format!("時刻 {n}"), 13, false, 440);
+            }
+        }
+        assert!(TEXT_MASKS.lock().unwrap_or_else(|p| p.into_inner()).len() <= 8);
+    }
 
     #[test]
     fn taskbar_created_message_registration_is_stable() {

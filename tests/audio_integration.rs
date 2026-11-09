@@ -1,8 +1,4 @@
-// Integration crates compile full production modules but use only a subset of their APIs.
-#![allow(dead_code)]
-
-#[path = "../src/audio.rs"]
-mod audio;
+use openhinovoice::audio;
 
 #[test]
 #[ignore = "needs a microphone; run explicitly"]

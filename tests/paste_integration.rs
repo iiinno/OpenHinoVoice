@@ -1,8 +1,4 @@
-// Integration crates compile full production modules but use only a subset of their APIs.
-#![allow(dead_code)]
-
-#[path = "../src/paste.rs"]
-mod paste;
+use openhinovoice::paste;
 
 #[test]
 #[ignore = "needs a focused text field in the interactive session; run explicitly"]

@@ -11,11 +11,7 @@
 //!
 //! Ctrl+C で終わる
 
-#[path = "../src/context.rs"]
-mod context;
-#[path = "../src/uia.rs"]
-mod uia;
-
+use openhinovoice::{context, uia};
 use std::time::Duration;
 
 fn focused_app() -> String {
@@ -47,6 +43,7 @@ fn main() {
                 format!("[{app_name}] 対応していない(Edit を使えないと表示する)")
             }
             uia::SelectionProbe::None => format!("[{app_name}] 選択なし"),
+            uia::SelectionProbe::TimedOut => format!("[{app_name}] 選択範囲の取得が時間切れ"),
         };
         if line != last {
             println!("{line}");
