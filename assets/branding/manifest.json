@@ -1,0 +1,399 @@
+{
+  "schema_version": 1,
+  "product": "OpenHinoVoice",
+  "selected_concept": "b-hwave-v2",
+  "source": "source.svg",
+  "app_icon": "app.ico",
+  "settings_icon": "settings.png",
+  "tray_icons": {
+    "light": {
+      "idle": "tray/light-idle.ico",
+      "recording": "tray/light-recording.ico",
+      "processing": "tray/light-processing.ico",
+      "error": "tray/light-error.ico"
+    },
+    "dark": {
+      "idle": "tray/dark-idle.ico",
+      "recording": "tray/dark-recording.ico",
+      "processing": "tray/dark-processing.ico",
+      "error": "tray/dark-error.ico"
+    }
+  },
+  "palette": {
+    "brand": "#BC002D",
+    "tray": {
+      "light": {
+        "idle": "#33363D",
+        "recording": "#BC002D",
+        "processing": "#596471",
+        "error": "#A64A00"
+      },
+      "dark": {
+        "idle": "#E7EAF0",
+        "recording": "#FF8094",
+        "processing": "#BFC7D2",
+        "error": "#FFBD66"
+      }
+    }
+  },
+  "state_shapes": {
+    "idle": "H with rising voice stroke",
+    "recording": "three voice bars",
+    "processing": "hourglass",
+    "error": "exclamation mark"
+  },
+  "runtime_asset_bytes": 60445,
+  "runtime_budget_bytes": 131072,
+  "files": [
+    {
+      "path": "source.svg",
+      "bytes": 487,
+      "sha256": "e1a66b75ed14509b26891393297e50ca82233d5b9518d7823cfaba180347bbcd",
+      "format": "svg",
+      "viewBox": [
+        0,
+        0,
+        256,
+        256
+      ]
+    },
+    {
+      "path": "monochrome.svg",
+      "bytes": 492,
+      "sha256": "3cf8429c60faa81b7249a9ec52a044ae9bfe7030167a015f53a5c84205ebb649",
+      "format": "svg",
+      "viewBox": [
+        0,
+        0,
+        256,
+        256
+      ]
+    },
+    {
+      "path": "reversed.svg",
+      "bytes": 490,
+      "sha256": "90b5367994893d57ec13d9e92b45fb1b40292d9ecf33e8a221cda13e18b8a2fb",
+      "format": "svg",
+      "viewBox": [
+        0,
+        0,
+        256,
+        256
+      ]
+    },
+    {
+      "path": "app.ico",
+      "bytes": 11708,
+      "sha256": "ac7de32b4b7077164bebffd73a1a7c147ccbc6f7e09687c40342355baf43ffd8",
+      "format": "ico",
+      "sizes": [
+        16,
+        20,
+        24,
+        32,
+        40,
+        48,
+        64,
+        128,
+        256
+      ]
+    },
+    {
+      "path": "settings.png",
+      "bytes": 4613,
+      "sha256": "cbccce6e19ebdce348c3be593c4bea94abfd851ef9ff396acdac4aec684fa306",
+      "format": "png",
+      "width": 256,
+      "height": 256,
+      "mode": "RGBA"
+    },
+    {
+      "path": "tray/light-idle.svg",
+      "bytes": 505,
+      "sha256": "31ae3450ac8d76196c8a8086887cef1a50cc3c8df30244195a9e5467467a7021",
+      "format": "svg",
+      "viewBox": [
+        0,
+        0,
+        256,
+        256
+      ]
+    },
+    {
+      "path": "tray/light-idle.ico",
+      "bytes": 4907,
+      "sha256": "197fa8f0b9e084cddb585fdc602c83dd16d159503bfb97a8055ce1bbe6ece391",
+      "format": "ico",
+      "sizes": [
+        16,
+        20,
+        24,
+        32,
+        40,
+        48,
+        64
+      ]
+    },
+    {
+      "path": "tray/light-idle.png",
+      "bytes": 596,
+      "sha256": "589d16094771d396cb4d71aa558ccea903e9510f27e755d4520cc63693ace42a",
+      "format": "png",
+      "width": 32,
+      "height": 32,
+      "mode": "RGBA"
+    },
+    {
+      "path": "tray/light-recording.svg",
+      "bytes": 565,
+      "sha256": "0d31386f87d13500def41cd024413d9d547e73f94a43e982ef62e15fa34ccf1a",
+      "format": "svg",
+      "viewBox": [
+        0,
+        0,
+        256,
+        256
+      ]
+    },
+    {
+      "path": "tray/light-recording.ico",
+      "bytes": 4376,
+      "sha256": "eebaac93f4df6bac443d9f45ab5e8eb56bcf1b45e365abc409255b02b03894a6",
+      "format": "ico",
+      "sizes": [
+        16,
+        20,
+        24,
+        32,
+        40,
+        48,
+        64
+      ]
+    },
+    {
+      "path": "tray/light-recording.png",
+      "bytes": 499,
+      "sha256": "03a1aacb0c6aba9c305f2097a8c738eadb8b05cf9c980a67c09edff22d58434c",
+      "format": "png",
+      "width": 32,
+      "height": 32,
+      "mode": "RGBA"
+    },
+    {
+      "path": "tray/light-processing.svg",
+      "bytes": 398,
+      "sha256": "7d18b8e056a7b68c63a52a7d1ea80d3e446c558dec5b5a95f2a70a86ce842d62",
+      "format": "svg",
+      "viewBox": [
+        0,
+        0,
+        256,
+        256
+      ]
+    },
+    {
+      "path": "tray/light-processing.ico",
+      "bytes": 4640,
+      "sha256": "2bd7ebf74365338e0a2711b843cc59a95d300f2b00d515a966c48542054ff2bd",
+      "format": "ico",
+      "sizes": [
+        16,
+        20,
+        24,
+        32,
+        40,
+        48,
+        64
+      ]
+    },
+    {
+      "path": "tray/light-processing.png",
+      "bytes": 553,
+      "sha256": "a36431352194185fcc8928d319a7aad18ae015328f55b4e43db3535da3f7c5f0",
+      "format": "png",
+      "width": 32,
+      "height": 32,
+      "mode": "RGBA"
+    },
+    {
+      "path": "tray/light-error.svg",
+      "bytes": 380,
+      "sha256": "2b8d5378d0ff9be3a6b773e4889ca5420527551502f14ba83e3e25690dd958a9",
+      "format": "svg",
+      "viewBox": [
+        0,
+        0,
+        256,
+        256
+      ]
+    },
+    {
+      "path": "tray/light-error.ico",
+      "bytes": 3683,
+      "sha256": "f6e8fed0eb6c66cd0b86d27766a4cc63da2452cf2c7d576b8b46830b0a064d8a",
+      "format": "ico",
+      "sizes": [
+        16,
+        20,
+        24,
+        32,
+        40,
+        48,
+        64
+      ]
+    },
+    {
+      "path": "tray/light-error.png",
+      "bytes": 420,
+      "sha256": "31f252fabf4ec40a3af6a7d4df23953c4a0c81ce892213f985a9328b61d207fd",
+      "format": "png",
+      "width": 32,
+      "height": 32,
+      "mode": "RGBA"
+    },
+    {
+      "path": "tray/dark-idle.svg",
+      "bytes": 504,
+      "sha256": "8092a573367bfaf4404bc660c1f4a6e842ba02bf8dec63015e43af33c3aab287",
+      "format": "svg",
+      "viewBox": [
+        0,
+        0,
+        256,
+        256
+      ]
+    },
+    {
+      "path": "tray/dark-idle.ico",
+      "bytes": 4758,
+      "sha256": "4e29d0f989d6fb59e16726e2eb71aff32616736d2662c9923bc9074576d7a096",
+      "format": "ico",
+      "sizes": [
+        16,
+        20,
+        24,
+        32,
+        40,
+        48,
+        64
+      ]
+    },
+    {
+      "path": "tray/dark-idle.png",
+      "bytes": 577,
+      "sha256": "015e6ae4a267ed6ae6ba2177279fd82ec091c60fd0f1b0017f552321964ff4a6",
+      "format": "png",
+      "width": 32,
+      "height": 32,
+      "mode": "RGBA"
+    },
+    {
+      "path": "tray/dark-recording.svg",
+      "bytes": 564,
+      "sha256": "6c9da49a504cc69355331b1b1d7db27e5ce7c3095af3862f6f8d8f6551d3afab",
+      "format": "svg",
+      "viewBox": [
+        0,
+        0,
+        256,
+        256
+      ]
+    },
+    {
+      "path": "tray/dark-recording.ico",
+      "bytes": 4333,
+      "sha256": "cd4ac44c8fc52e5fab36e4da0e4c06b8a1b5daf721c67389f3d74f00ce53b167",
+      "format": "ico",
+      "sizes": [
+        16,
+        20,
+        24,
+        32,
+        40,
+        48,
+        64
+      ]
+    },
+    {
+      "path": "tray/dark-recording.png",
+      "bytes": 477,
+      "sha256": "0e5336f4fb92d3acfd7022b8712ad1e32f3d255bba9a547918d8096f747c5e54",
+      "format": "png",
+      "width": 32,
+      "height": 32,
+      "mode": "RGBA"
+    },
+    {
+      "path": "tray/dark-processing.svg",
+      "bytes": 397,
+      "sha256": "095bdaafd99d78b377c89a69c1090b740c77920826e0e582b5682dee8258c4b8",
+      "format": "svg",
+      "viewBox": [
+        0,
+        0,
+        256,
+        256
+      ]
+    },
+    {
+      "path": "tray/dark-processing.ico",
+      "bytes": 4509,
+      "sha256": "0d7d419cadb299327dc8e94ed2db7f998341f4df2e39a930ae9817e1a9b23798",
+      "format": "ico",
+      "sizes": [
+        16,
+        20,
+        24,
+        32,
+        40,
+        48,
+        64
+      ]
+    },
+    {
+      "path": "tray/dark-processing.png",
+      "bytes": 529,
+      "sha256": "00d4cdebf326d301b31a537498e2c1eaf9e87577dd26f10be02de16313e19342",
+      "format": "png",
+      "width": 32,
+      "height": 32,
+      "mode": "RGBA"
+    },
+    {
+      "path": "tray/dark-error.svg",
+      "bytes": 379,
+      "sha256": "f84d759026ef22209fb97fae5591b392187015e387cf40634161448bdb83de40",
+      "format": "svg",
+      "viewBox": [
+        0,
+        0,
+        256,
+        256
+      ]
+    },
+    {
+      "path": "tray/dark-error.ico",
+      "bytes": 3688,
+      "sha256": "3bf614eb8c91fd49eb8ed77a99d952dd678e8f2f740052b47a51e01fcc174c3b",
+      "format": "ico",
+      "sizes": [
+        16,
+        20,
+        24,
+        32,
+        40,
+        48,
+        64
+      ]
+    },
+    {
+      "path": "tray/dark-error.png",
+      "bytes": 418,
+      "sha256": "3da5ebdebf6ac8e1b3e0f5aaf951dc83e7cd22f8cbf0fe89db52d8ea2df69113",
+      "format": "png",
+      "width": 32,
+      "height": 32,
+      "mode": "RGBA"
+    }
+  ]
+}
