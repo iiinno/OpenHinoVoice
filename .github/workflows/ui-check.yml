@@ -102,49 +102,35 @@ jobs:
         run: |
           cargo build --release --locked --offline --bin openhinovoice --example overlay_preview 2>&1 | Tee-Object -FilePath target/qa/visual/build.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Render offscreen HUD fixtures
+      - name: Render and benchmark with system animation enabled
         id: render
+        run: ./scripts/verify-renderer.ps1 -Executable target/release/examples/overlay_preview.exe -OutputDir target/qa/visual/renderer
+      - name: Prepare isolated software OpenGL for the hosted desktop
+        id: opengl
+        if: ${{ !cancelled() && inputs.settings_ui && (steps.validate_artifact.outcome == 'success' || steps.build.outcome == 'success') }}
         run: |
-          ./target/release/examples/overlay_preview.exe target/qa/visual/overlay --all-dpi 2>&1 | Tee-Object -FilePath target/qa/visual/render.log
+          ./scripts/prepare-ci-opengl.ps1 -OutputDir target/qa/visual/opengl
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $index = Get-Content -LiteralPath target/qa/visual/overlay/index.json -Raw | ConvertFrom-Json
-          if ($index.frames.Count -ne 720) { throw 'Expected all 720 style/theme/state/motion/DPI fixtures.' }
-          if (@($index.frames.file | Sort-Object -Unique).Count -ne 720) { throw 'Fixture file names are not unique.' }
-          if ($index.windows_created -ne 0 -or $index.audio_played -ne $false -or $index.microphone_accessed -ne $false) {
-            throw 'The offscreen renderer did not report its expected side-effect boundary.'
-          }
-          foreach ($frame in $index.frames) {
-            $path = Join-Path target/qa/visual/overlay $frame.file
-            if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -le 54) {
-              throw "Missing or empty fixture: $path"
-            }
-          }
-      - name: Measure the shared renderer only
-        id: renderer_benchmark
-        run: |
-          ./target/release/examples/overlay_preview.exe target/qa/visual/renderer-benchmark --benchmark 2>&1 | Tee-Object -FilePath target/qa/visual/renderer-benchmark.log
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $benchmark = Get-Content -LiteralPath target/qa/visual/renderer-benchmark/benchmark.json -Raw | ConvertFrom-Json
-          if ($benchmark.status -ne 'measured' -or $benchmark.measurements.Count -ne 24) { throw 'The renderer benchmark did not complete all 24 measurements.' }
-          if ($benchmark.conditions.audio -ne $false -or $benchmark.conditions.windows -ne $false) { throw 'Unexpected benchmark side effects.' }
+          Copy-Item -LiteralPath target/release/openhinovoice.exe -Destination target/qa/visual/opengl/openhinovoice.exe
       - name: Check settings UIA and capture on the hosted desktop
         id: settings_ui
-        if: ${{ inputs.settings_ui }}
-        run: ./scripts/verify-ui.ps1 -Executable target/release/openhinovoice.exe -OutputDir target/qa/visual/settings-ui
+        if: ${{ !cancelled() && inputs.settings_ui && steps.opengl.outcome == 'success' }}
+        run: ./scripts/verify-ui.ps1 -Executable target/qa/visual/opengl/openhinovoice.exe -OutputDir target/qa/visual/settings-ui
       - name: Record visual diagnostic scope
         if: always()
         env:
           RELEASE_ARTIFACT: ${{ inputs.release_artifact }}
           DOWNLOAD_RESULT: ${{ steps.download.outcome }}
           ARTIFACT_VALIDATION_RESULT: ${{ steps.validate_artifact.outcome }}
-          RENDERER_BENCHMARK_RESULT: ${{ steps.renderer_benchmark.outcome }}
           DEPENDENCIES_RESULT: ${{ steps.dependencies.outcome }}
           BUILD_RESULT: ${{ steps.build.outcome }}
           RENDER_RESULT: ${{ steps.render.outcome }}
+          OPENGL_RESULT: ${{ steps.opengl.outcome }}
           SETTINGS_UI_RESULT: ${{ steps.settings_ui.outcome }}
         run: |
           New-Item -ItemType Directory -Force -Path target/qa/visual | Out-Null
           $uiResult = if ($env:SETTINGS_UI_RESULT -eq 'skipped') { 'not_run' } else { $env:SETTINGS_UI_RESULT }
+          $renderer = if (Test-Path -LiteralPath target/qa/visual/renderer/result.json) { Get-Content -LiteralPath target/qa/visual/renderer/result.json -Raw | ConvertFrom-Json } else { $null }
           [ordered]@{
             revision = $env:GITHUB_SHA
             releaseArtifact = $env:RELEASE_ARTIFACT
@@ -153,15 +139,18 @@ jobs:
             binarySource = $(if ($env:ARTIFACT_VALIDATION_RESULT -eq 'success') { 'verified_same_run_artifact' } elseif ($env:BUILD_RESULT -eq 'success') { 'standalone_remote_build' } else { 'unavailable' })
             dependencies = $env:DEPENDENCIES_RESULT
             build = $env:BUILD_RESULT
-            offscreenFixtures = $env:RENDER_RESULT
+            rendererTask = $env:RENDER_RESULT
+            offscreenFixtures = $renderer.fixtures ?? 'not_run'
             settingsUi = $uiResult
+            softwareOpenGlPreparation = $env:OPENGL_RESULT
+            settingsRenderer = 'Mesa llvmpipe 26.2.6; isolated test copy'
             humanVisualReview = 'not_run'
-            rendererBenchmark = $env:RENDERER_BENCHMARK_RESULT
+            rendererBenchmark = $renderer.rendererBenchmark ?? 'not_run'
             wholeApplicationPerformanceBenchmark = 'not_run'
             liveMicrophoneAndModelTests = 'not_run'
             limitations = @('Hosted desktop/OpenGL availability is not guaranteed.', 'Rendered fixtures do not prove settings UI behavior.', 'Captured images still require visual review.')
           } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath target/qa/visual/status.json -Encoding utf8NoBOM
-          "Offscreen fixtures: $env:RENDER_RESULT; renderer-only benchmark: $env:RENDERER_BENCHMARK_RESULT; settings UI: $uiResult; visual review: not_run." | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+          "Renderer task: $env:RENDER_RESULT; settings UI: $uiResult; visual review: not_run." | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
       - name: Keep diagnostic output even when capture fails
         if: always()
         uses: actions/upload-artifact@v4

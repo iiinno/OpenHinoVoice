@@ -100,3 +100,7 @@ Reuseの先頭は初回起動。後続3sessionが同じPID・追加spawnなし�
 `scripts/measure-ui.ps1` はGitHub Actions専用。`-CompileOnly`はハーネスのコンパイルだけを確認し、測定成功とは区別する。測定では明示した2つのexeを別desktopで交互の順に3〜10回起動し、各条件30〜60秒観測する。`-Mode Settings`はUIA照会の前後を分け、UIAなし・ありは同じソースとrelease条件で比較する。exe hash/bytes、Private/WS、CPU時間、GDI/USER、応答するウィンドウまでの時間、正常終了をJSONへ記録する。
 
 UIAなしは初回の空のtreeだけで判定せず5秒間観測する。子孫processがケース間に残れば後続の測定を止める。採取成功のstatus=measuredと予算合格は別で、privateExceeded/executableExceededを必ず読む。非対話desktopやOpenGL不足で起動できない場合は失敗のまま記録する。実HUD稼働・入力遅延・マイク・ASR・貼付はこの測定に含まない。
+
+Actionsのrenderer専用ジョブは `verify-renderer.ps1` で一時的にclient-area animationを有効化し、子exe自身が有効状態を読んだことを確認する。720fixture/24測定の後、元の設定へfinallyで戻す。Windowsの動き設定を変更するこの処理はGitHub-hosted Windowsだけで動き、ローカル・self-hostedでは開始前に停止する。過去のmotion無効の数値は静止描画の比較として区別する。
+
+GitHub-hosted Windowsの標準OpenGLではeguiが起動できないことを実際のダイアログで確認したため、UI/設定Private比較には固定版Mesa llvmpipeを使う。`prepare-ci-opengl.ps1`が公開SHA256を照合してからtarget/qa配下へDLLを展開し、検証済みexeの隔離コピーだけを同じフォルダーへ置く。配布artifactへDLLは追加しない。software描画条件・archive/DLL hashを保存し、実機GPUの性能値とは扱わない。

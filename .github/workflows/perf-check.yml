@@ -111,13 +111,20 @@ jobs:
             sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
             bytes = (Get-Item -LiteralPath $path).Length
           } | ConvertTo-Json | Set-Content -LiteralPath target/qa/perf/feature-off-build.json -Encoding utf8NoBOM
+      - name: Prepare matching isolated software OpenGL for both binaries
+        id: opengl
+        run: |
+          ./scripts/prepare-ci-opengl.ps1 -OutputDir target/qa/perf/opengl
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item -LiteralPath target/perf-feature-off/release/openhinovoice.exe -Destination target/qa/perf/opengl/baseline.exe
+          Copy-Item -LiteralPath target/perf-artifacts/default/openhinovoice.exe -Destination target/qa/perf/opengl/candidate.exe
       - name: Compare settings before and after UIA activation
         id: settings
         run: |
           $parameters = @{
             Mode = 'Settings'
-            BaselineExecutable = Join-Path $env:GITHUB_WORKSPACE 'target/perf-feature-off/release/openhinovoice.exe'
-            CandidateExecutable = Join-Path $env:GITHUB_WORKSPACE 'target/perf-artifacts/default/openhinovoice.exe'
+            BaselineExecutable = Join-Path $env:GITHUB_WORKSPACE 'target/qa/perf/opengl/baseline.exe'
+            CandidateExecutable = Join-Path $env:GITHUB_WORKSPACE 'target/qa/perf/opengl/candidate.exe'
             BaselineRevision = $env:GITHUB_SHA; CandidateRevision = $env:GITHUB_SHA
             BaselineFeatures = '--no-default-features'; CandidateFeatures = 'default (accessibility)'
             BaselineUia = 'Absent'; CandidateUia = 'Present'
@@ -157,6 +164,7 @@ jobs:
           TOOLCHAIN_RESULT: ${{ steps.toolchain.outcome }}
           DEPENDENCIES_RESULT: ${{ steps.dependencies.outcome }}
           BUILD_RESULT: ${{ steps.build.outcome }}
+          OPENGL_RESULT: ${{ steps.opengl.outcome }}
           SETTINGS_RESULT: ${{ steps.settings.outcome }}
           BUDGET_RESULT: ${{ steps.budgets.outcome }}
         run: |
@@ -169,6 +177,7 @@ jobs:
             artifactDownload = Outcome $env:DOWNLOAD_RESULT; artifactValidation = Outcome $env:ARTIFACT_RESULT
             harnessCompilation = Outcome $env:HARNESS_RESULT; toolchain = Outcome $env:TOOLCHAIN_RESULT
             dependencies = Outcome $env:DEPENDENCIES_RESULT; featureOffBuild = Outcome $env:BUILD_RESULT
+            softwareOpenGlPreparation = Outcome $env:OPENGL_RESULT
             settingsMeasurement = Outcome $env:SETTINGS_RESULT; budgetEvaluation = Outcome $env:BUDGET_RESULT
           }
           $status = if ($phases.Values -contains 'failed') { 'failed' } elseif ($phases.Values -contains 'not_run') { 'not_run' } else { 'passed' }
@@ -176,6 +185,7 @@ jobs:
             status = $status; revision = $env:GITHUB_SHA; runId = $env:GITHUB_RUN_ID; releaseArtifact = $env:RELEASE_ARTIFACT
             phases = $phases; repetitions = 3; durationSeconds = 30
             baselineFeatures = '--no-default-features'; candidateFeatures = 'default (accessibility)'
+            settingsRenderer = 'Mesa llvmpipe 26.2.6 for both isolated copies'
             residentMeasurement = 'not_run'; residentReason = 'An inactive desktop has no guaranteed Explorer tray; this workflow measures settings UIA cost only.'
             liveMicrophoneAndModelTests = 'not_run'
             limitations = @('Hosted desktop/OpenGL/UIA availability is not guaranteed; unavailable observations fail.', 'Expected feature-off UIA absence is not accessibility success.', 'Measurement completion and performance budget acceptance are separate results.', 'Inactive desktop metrics do not establish active HUD, ASR or end-to-end input latency.')
