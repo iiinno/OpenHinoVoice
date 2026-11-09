@@ -3,6 +3,10 @@ name: Explicit UI diagnostics
 on:
   workflow_call:
     inputs:
+      release_artifact:
+        description: Same-run release artifact produced by the required Full verification job
+        type: string
+        required: true
       settings_ui:
         description: Attempt settings UIA and capture on the hosted desktop
         type: boolean
@@ -35,16 +39,65 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Download the verified release artifact from this run
+        id: download
+        if: ${{ inputs.release_artifact != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.release_artifact }}
+          path: target/ci-artifacts
+      - name: Validate the artifact revision and binary checksums
+        id: validate_artifact
+        if: ${{ inputs.release_artifact != '' }}
+        env:
+          RELEASE_ARTIFACT: ${{ inputs.release_artifact }}
+        run: |
+          New-Item -ItemType Directory -Force -Path target/qa/visual | Out-Null
+          $validation = [ordered]@{ status = 'running'; artifact = $env:RELEASE_ARTIFACT; expectedRevision = $env:GITHUB_SHA; files = @() }
+          try {
+            $metadata = Get-Content -LiteralPath target/ci-artifacts/build.json -Raw | ConvertFrom-Json
+            $validation['artifactRevision'] = $metadata.revision
+            if ($metadata.revision -cne $env:GITHUB_SHA) { throw 'Release artifact revision does not match this workflow revision.' }
+            $checksums = @{}
+            foreach ($line in Get-Content -LiteralPath target/ci-artifacts/SHA256SUMS.txt) {
+              if ($line -cnotmatch '^([0-9a-fA-F]{64}) \*(openhinovoice\.exe|overlay_preview\.exe)$') { throw 'Malformed release checksum manifest.' }
+              $name = $Matches[2]
+              if ($checksums.ContainsKey($name)) { throw "Duplicate checksum entry: $name" }
+              $checksums[$name] = $Matches[1].ToLowerInvariant()
+            }
+            if ($checksums.Count -ne 2) { throw 'Both release binaries must be present in the checksum manifest.' }
+            foreach ($name in @('openhinovoice.exe', 'overlay_preview.exe')) {
+              $actual = (Get-FileHash -LiteralPath (Join-Path target/ci-artifacts $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+              if ($actual -cne $checksums[$name]) { throw "Release checksum mismatch: $name" }
+              $validation.files += [ordered]@{ file = $name; sha256 = $actual }
+            }
+            New-Item -ItemType Directory -Force -Path target/release/examples | Out-Null
+            Copy-Item -LiteralPath target/ci-artifacts/openhinovoice.exe -Destination target/release/openhinovoice.exe
+            Copy-Item -LiteralPath target/ci-artifacts/overlay_preview.exe -Destination target/release/examples/overlay_preview.exe
+            $validation.status = 'passed'
+          } catch {
+            $validation.status = 'failed'
+            $validation['error'] = $_.Exception.Message
+            throw
+          } finally {
+            $validation | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath target/qa/visual/artifact-validation.json -Encoding utf8NoBOM
+          }
       - uses: dtolnay/rust-toolchain@stable
+        if: ${{ inputs.release_artifact == '' }}
       - uses: Swatinem/rust-cache@v2
+        if: ${{ inputs.release_artifact == '' }}
+        with:
+          cache-on-failure: true
       - name: Prepare locked dependencies
         id: dependencies
+        if: ${{ inputs.release_artifact == '' }}
         run: |
           New-Item -ItemType Directory -Force -Path target/qa/visual | Out-Null
           cargo fetch --locked 2>&1 | Tee-Object -FilePath target/qa/visual/fetch.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build release binaries for this revision
         id: build
+        if: ${{ inputs.release_artifact == '' }}
         run: |
           cargo build --release --locked --offline --bin openhinovoice --example overlay_preview 2>&1 | Tee-Object -FilePath target/qa/visual/build.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -65,6 +118,14 @@ jobs:
               throw "Missing or empty fixture: $path"
             }
           }
+      - name: Measure the shared renderer only
+        id: renderer_benchmark
+        run: |
+          ./target/release/examples/overlay_preview.exe target/qa/visual/renderer-benchmark --benchmark 2>&1 | Tee-Object -FilePath target/qa/visual/renderer-benchmark.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $benchmark = Get-Content -LiteralPath target/qa/visual/renderer-benchmark/benchmark.json -Raw | ConvertFrom-Json
+          if ($benchmark.status -ne 'measured' -or $benchmark.measurements.Count -ne 24) { throw 'The renderer benchmark did not complete all 24 measurements.' }
+          if ($benchmark.conditions.audio -ne $false -or $benchmark.conditions.windows -ne $false) { throw 'Unexpected benchmark side effects.' }
       - name: Check settings UIA and capture on the hosted desktop
         id: settings_ui
         if: ${{ inputs.settings_ui }}
@@ -72,6 +133,10 @@ jobs:
       - name: Record visual diagnostic scope
         if: always()
         env:
+          RELEASE_ARTIFACT: ${{ inputs.release_artifact }}
+          DOWNLOAD_RESULT: ${{ steps.download.outcome }}
+          ARTIFACT_VALIDATION_RESULT: ${{ steps.validate_artifact.outcome }}
+          RENDERER_BENCHMARK_RESULT: ${{ steps.renderer_benchmark.outcome }}
           DEPENDENCIES_RESULT: ${{ steps.dependencies.outcome }}
           BUILD_RESULT: ${{ steps.build.outcome }}
           RENDER_RESULT: ${{ steps.render.outcome }}
@@ -81,16 +146,21 @@ jobs:
           $uiResult = if ($env:SETTINGS_UI_RESULT -eq 'skipped') { 'not_run' } else { $env:SETTINGS_UI_RESULT }
           [ordered]@{
             revision = $env:GITHUB_SHA
+            releaseArtifact = $env:RELEASE_ARTIFACT
+            artifactDownload = $env:DOWNLOAD_RESULT
+            artifactValidation = $env:ARTIFACT_VALIDATION_RESULT
+            binarySource = $(if ($env:ARTIFACT_VALIDATION_RESULT -eq 'success') { 'verified_same_run_artifact' } elseif ($env:BUILD_RESULT -eq 'success') { 'standalone_remote_build' } else { 'unavailable' })
             dependencies = $env:DEPENDENCIES_RESULT
             build = $env:BUILD_RESULT
             offscreenFixtures = $env:RENDER_RESULT
             settingsUi = $uiResult
             humanVisualReview = 'not_run'
-            performanceBenchmark = 'not_run'
+            rendererBenchmark = $env:RENDERER_BENCHMARK_RESULT
+            wholeApplicationPerformanceBenchmark = 'not_run'
             liveMicrophoneAndModelTests = 'not_run'
             limitations = @('Hosted desktop/OpenGL availability is not guaranteed.', 'Rendered fixtures do not prove settings UI behavior.', 'Captured images still require visual review.')
           } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath target/qa/visual/status.json -Encoding utf8NoBOM
-          "Offscreen fixtures: $env:RENDER_RESULT; settings UI: $uiResult; visual review: not_run." | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+          "Offscreen fixtures: $env:RENDER_RESULT; renderer-only benchmark: $env:RENDERER_BENCHMARK_RESULT; settings UI: $uiResult; visual review: not_run." | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
       - name: Keep diagnostic output even when capture fails
         if: always()
         uses: actions/upload-artifact@v4

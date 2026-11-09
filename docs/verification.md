@@ -4,7 +4,7 @@ Rustのビルド・テスト・clippy・release生成はGitHub ActionsのWindows
 
 # 開発とAIの検証手順
 
-WindowsとPowerShell 7.2以降で、リポジトリ直下から実行する。初回だけRustの依存を `cargo fetch --locked` で取得する。検証中のCargoは `--offline --locked` を使う。モデル、マイク、APIキーは通常テストに不要。
+以下はWindows Actions runnerとPowerShell 7.2以降で、リポジトリ直下から実行する。初回だけRustの依存を `cargo fetch --locked` で取得する。検証中のCargoは `--offline --locked` を使う。モデル、マイク、APIキーは通常テストに不要。
 
 ```powershell
 pwsh -NoProfile -File scripts/verify.ps1 -Mode Fast
@@ -27,7 +27,7 @@ pwsh -NoProfile -File scripts/verify.ps1 -Mode Full
 
 AIは終了コードとJSONの両方を読む。`status` が `passed` でも、対象は `scope` に記録された範囲だけである。各チェックには成否、所要時間、終了コード、相対ログパスがあり、失敗後のチェックは `not_run` になる。`ignored` と `manualPrerequisites` は未実施であり、成功件数へ含めない。フィルターに一致するテストが0件の場合も失敗する。
 
-`revision` はHEADで、`dirty` は未コミット差分の有無。`sourceSha256` は実行開始時のsrc・tests・examples・scriptsとCargo設定などの内容をまとめたSHA-256で、新規ファイルも含む。差分がある測定をコミットだけで再現できるとは扱わない。検証中は同じ作業ツリーを編集せず、並列担当は別worktreeと別の出力先を使う。Cargoの出力先を共有した場合、ビルドはCargo自身のロックで順番に進む。ロック待ちを障害としてビルドプロセスを停止しない。
+`revision` はHEADで、`dirty` は未コミット差分の有無。`sourceSha256` は実行開始時のsrc・tests・examples・scripts・assetsとCargo設定などの内容をまとめたSHA-256で、新規ファイルも含む。差分がある測定をコミットだけで再現できるとは扱わない。検証中は同じ作業ツリーを編集せず、並列担当は別worktreeと別の出力先を使う。Cargoの出力先を共有した場合、ビルドはCargo自身のロックで順番に進む。ロック待ちを障害としてビルドプロセスを停止しない。
 
 非同期writerのテストは、送信を予約した時点と実際に書き込まれた時点を分けて確認する。固定のsleep後に成功を仮定せず、対象要求のtypeとidを期限付きで待つ。必要ならテスト用sinkをロックし、write前の状態を意図的に作る。
 
@@ -49,7 +49,7 @@ RealtimeのJSONには最初の非空partial結果の時刻、未認識PCM量の�
 
 ## 前面に出さない設定画面の確認
 
-`scripts/verify-ui.ps1` はビルド済みexeを、専用の非表示Windows desktopで検査する。実行前にUI・ASR・buildの測定枠を予約し、既存の利用者プロセスや画面設定は変更しない。
+`scripts/verify-ui.ps1` はActionsでビルド済みexeを、専用の非表示Windows desktopで検査する。CI以外ではコンパイル前に停止する。既存の利用者プロセスや画面設定は変更しない。
 
 ```powershell
 pwsh -NoProfile -File scripts/verify-ui.ps1 -Executable target/release/openhinovoice.exe
@@ -62,21 +62,22 @@ pwsh -NoProfile -File scripts/verify-ui.ps1 -Executable target/release/openhinov
 - `result.json`：exeとハーネスのSHA-256、コンパイルとUIの成否、未実施項目。CompileOnlyのstatusはcompiled_only、UIはnot_run。
 - `controller-result.json`・`worker-result.json`：別desktop、処理phase、子PID、終了、タイムアウト。UIAが停止した場合も最後に完了したphaseを残す。
 - 各サイズの`uia.json`：名前・role・フォーカス可能状態・現在のfocus・画面内外・矩形。可視の「試す」操作が取得できなければ失敗。
-- 各サイズの`client.png`：実settings HWNDに対するPrintWindow。失敗または単色に近い画像は失敗。非単色だけでレイアウト・可読性の成功とは扱わず、画像は別途確認する。
+- 各サイズの`client.png`：egui公式screenshot callbackから取得した実GL framebuffer。専用namespaceと隔離された保存先でだけ有効になる。失敗または単色に近い画像は失敗。非単色だけでレイアウト・可読性の成功とは扱わず、画像は別途確認する。
+- 7操作のUIA状態と画像：ソフト選択、保存済みへ戻す、試す、停止、再試行、ページ離脱、復帰。操作後の期待状態を待ってから撮影し、設定ファイルが保存されていないことも確認する。
 - 各サイズのPrivate・Working Set・CPU・GDI/USER観測とstdout/stderr。UIA・キャプチャを挟む前後値なので、アイドル性能や描画p95/p99とは区別する。
 
 ワーカーは90秒で期限切れとなり、作成したJobに所属する子だけを回収する。通常は設定へWM_CLOSEを送り実終了を待つ。期限切れ、実ウィンドウ欠損、UIA非対応、キャプチャ失敗を成功へ読み替えない。別desktopでOpenGLの出力が得られない環境もあり、その場合は画像確認を未達として残す。
 
 ネイティブのDPIは現在のWindows設定を記録するだけで、125〜200%の実画面確認や高コントラスト切替の代わりにはならない。キーボード操作・音・マイク・ASR・貼付・外部APIもこの検証の対象外。
 
-本番HUDと同じ描画だけを確認する場合は、`cargo run --example overlay_preview -- <output-directory> --all-dpi`を別の予約枠で実行する。4スタイル×8状態×2テーマ×2動作設定×5倍率のBMPとindex.jsonを出力し、ウィンドウ・音・マイク・本番状態を作らない。こちらは設定画面全体の実画面確認とは区別する。index.jsonのrender_usは単発のfixture生成時間であり、性能ベンチマークではない。
+本番HUDと同じ描画だけを確認する場合は、Actionsのrelease成果物に含まれる`overlay_preview.exe <output-directory> --all-dpi`を実行する。4スタイル×9状態×2テーマ×2動作設定×5倍率のBMPとindex.jsonを出力し、ウィンドウ・音・マイク・本番状態を作らない。こちらは設定画面全体の実画面確認とは区別する。index.jsonのrender_usは単発のfixture生成時間であり、性能ベンチマークではない。
 
 別desktopの指定とUIAの呼出し条件は[CreateDesktopW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-createdesktopw)、[STARTUPINFOW.lpDesktop](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/ns-processthreadsapi-startupinfow)、[UI Automationのスレッド](https://learn.microsoft.com/en-us/dotnet/framework/ui-automation/ui-automation-threading-issues)を参照。
 
-同じexampleの `--benchmark` は標準・リッチの録音/認識/整形/成功を3反復、各120フレーム描画し、各状態の前に12フレームをwarmupする。`benchmark.json` にp50/p95/p99/max、プロセスCPU時間、Private/WS/GDI/USERを残す。さらに4スタイル・8状態の切替を100回ずつ2周し、2周目のGDI/USER非増加とPrivate増分1MiB以内を確認する。超過は終了コード1となる。
+同じexampleの `--benchmark` は標準・リッチの録音/認識/整形/成功を3反復、各120フレーム描画し、各状態の前に12フレームをwarmupする。`benchmark.json` にp50/p95/p99/max、プロセスCPU時間、Private/WS/GDI/USERを残す。さらに4スタイル・9状態の切替を100回ずつ2周し、2周目のGDI/USER非増加とPrivate増分1MiB以内を確認する。超過は終了コード1となる。
 
 ```powershell
-cargo run --release --example overlay_preview -- <output-directory> --benchmark
+./target/release/examples/overlay_preview.exe <output-directory> --benchmark
 ```
 
 これは時間間隔を空けないoffscreenの処理時間測定で、実HUDのUpdateLayeredWindow、eguiのtexture upload、実際の60fps間隔、入力遅延は含まない。Windowsが動きを無効にしている場合はその条件をJSONへ記録する。100切替もCPU描画側の資源確認であり、設定画面の「試す」100回や停止後の周期repaintを確認した証拠にはしない。
@@ -92,4 +93,4 @@ Realtimeはマイク・AI・貼付を使わず、既存WAVを実時間で本番�
 
 Reuseの先頭は初回起動。後続3sessionが同じPID・追加spawnなしの比較対象になる。各sessionにPID、spawn数、ready、仮認識、Enter後、backlog、CER、要求受付と終端の時刻を記録する。受付から終端まではqueue待ちと推論の両方を含む。取消終端欠損、未対応終端、未送信確定区間、未完了要求、trace上限超過を完了扱いしない。現プロトコルで同じIDを再使用した後の古い終端を厳密識別できない制約も結果へ記録する。UI/描画/通常buildとASRの測定は同時に実行しない。
 
-長いverifyの実行中は各checkの `*.stdout.log` / `*.stderr.log` を読める。終了後の集約 `*.log` とresult.jsonでexit code・成功数を判断し、途中ログだけで成功としない。Nodeから非表示で起動する際も子の完了までPromiseをawaitし、tool終了時にbackground childを失った検証は成功に含めない。
+長いverifyの実行中は各checkの `*.stdout.log` / `*.stderr.log` を読める。終了後の集約 `*.log` とresult.jsonでexit code・成功数を判断し、途中ログだけで成功としない。起動した子の完了まで待ち、途中で失われた検証は成功に含めない。
