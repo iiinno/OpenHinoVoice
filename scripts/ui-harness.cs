@@ -315,6 +315,75 @@ internal static class HiddenUiProbe
         }
     }
 
+
+    static AutomationElement FindControl(IntPtr window, string name, bool button)
+    {
+        var conditions = new List<Condition> { new PropertyCondition(AutomationElement.NameProperty, name) };
+        if (button) conditions.Add(new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button));
+        Condition condition = conditions.Count == 1 ? conditions[0] : new AndCondition(conditions.ToArray());
+        var controls = AutomationElement.FromHandle(window).FindAll(TreeScope.Descendants, condition);
+        foreach (AutomationElement control in controls)
+            if (!control.Current.IsOffscreen) return control;
+        return null;
+    }
+    static bool HasText(IntPtr window, string name)
+    {
+        return FindControl(window, name, false) != null;
+    }
+    static void Invoke(IntPtr window, string name)
+    {
+        AutomationElement control = FindControl(window, name, true);
+        if (control == null || !control.Current.IsEnabled) throw new InvalidOperationException("UIA button unavailable: " + name);
+        object pattern;
+        if (!control.TryGetCurrentPattern(InvokePattern.Pattern, out pattern))
+            throw new InvalidOperationException("UIA InvokePattern unavailable: " + name);
+        ((InvokePattern)pattern).Invoke();
+    }
+    static void ExerciseControls(IntPtr window, string directory, string captureDirectory, string label, string configPath, Dictionary<string, object> result)
+    {
+        byte[] originalConfig = File.ReadAllBytes(configPath);
+        var actions = new List<object>();
+        result["actions"] = actions;
+        int token = 1;
+        Action<string, Action, Func<bool>> step = delegate(string name, Action action, Func<bool> expected)
+        {
+            var check = Map("name", name, "status", "running");
+            actions.Add(check);
+            Phase(label + ":action:" + name);
+            try
+            {
+                action();
+                int colors;
+                string path = Path.Combine(directory, "action-" + name + ".png");
+                if (!CaptureFramebuffer(window, captureDirectory, path, ++token, out colors))
+                    throw new InvalidOperationException("Action framebuffer is blank.");
+                check["capturePath"] = label + "/action-" + name + ".png";
+                check["captureColors"] = colors;
+                if (!Until(expected, 3000)) throw new InvalidOperationException("Expected UI state was not observed before its deadline.");
+                Save(Path.Combine(label, "uia-" + name + ".json"), Uia(window));
+                check["status"] = "passed";
+            }
+            catch (Exception error) { check["status"] = "failed"; check["error"] = error.ToString(); throw; }
+        };
+        step("preset-soft", delegate { Invoke(window, "ソフト"); },
+            delegate { return HasText(window, "未保存の変更があります"); });
+        step("restore", delegate { Invoke(window, "音と表示を保存済みに戻す"); },
+            delegate { return !HasText(window, "未保存の変更があります") && HasText(window, "保存済み") && HasText(window, "無音"); });
+        step("preview-start", delegate { Invoke(window, "試す"); },
+            delegate { return FindControl(window, "プレビューを停止", true) != null; });
+        step("preview-stop", delegate { Invoke(window, "プレビューを停止"); },
+            delegate { return FindControl(window, "試す", true) != null; });
+        step("preview-before-navigation", delegate { Invoke(window, "試す"); },
+            delegate { return FindControl(window, "プレビューを停止", true) != null; });
+        step("leave-display", delegate { Invoke(window, "入力"); },
+            delegate { return HasText(window, "録音開始キー"); });
+        step("return-display", delegate { Invoke(window, "音と表示"); },
+            delegate { return FindControl(window, "試す", true) != null && FindControl(window, "プレビューを停止", true) == null; });
+        bool unchanged = originalConfig.SequenceEqual(File.ReadAllBytes(configPath));
+        result["configUnchangedByPreview"] = unchanged;
+        if (!unchanged) throw new InvalidOperationException("Preset/preview navigation unexpectedly persisted configuration.");
+    }
+
     static int Worker(string app, string namespaceValue)
     {
         SetProcessDpiAwarenessContext(new IntPtr(-4));
@@ -323,7 +392,7 @@ internal static class HiddenUiProbe
             "audioRequested", false, "microphoneRequested", false, "globalInputSent", false,
             "limitations", new[] { "Capture success requires human inspection; nonblank is only a transport check.",
                 "Native DPI is the existing Windows value; no user display settings are changed.",
-                "No keyboard shortcut, preview audio, ASR, paste, or external API validation is performed." });
+                "UIA Invoke tests presets, restore, silent preview start/stop and page exit. Keyboard shortcuts, audio, ASR, paste and external APIs remain untested." });
         Phase("starting");
         bool passed = true;
         foreach (var size in new[] { new[] { 600, 420 }, new[] { 720, 520 } })
@@ -409,6 +478,7 @@ internal static class HiddenUiProbe
                 result["capturePath"] = label + "/client-framebuffer.png";
                 result["captureRenderer"] = "eframe glow framebuffer";
                 if (!captured) throw new InvalidOperationException("Egui framebuffer capture produced a blank client image.");
+                if (uiaReady) ExerciseControls(window, directory, captureDirectory, label, Path.Combine(appdata, "OpenHinoVoice", "config.toml"), result);
                 result["metricsAfter"] = Metrics(process);
                 if (uiaReady) result["status"] = "passed";
             }

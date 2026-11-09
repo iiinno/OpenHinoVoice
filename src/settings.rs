@@ -54,6 +54,12 @@ pub fn run() {
             use_japanese_font(&cc.egui_ctx);
             // 選択中の項目やチェックの色を日の丸の赤に寄せる
             cc.egui_ctx.all_styles_mut(|style| {
+                style.visuals.weak_text_color =
+                    Some(Color32::from_gray(if style.visuals.dark_mode {
+                        168
+                    } else {
+                        90
+                    }));
                 style.visuals.selection.bg_fill = Color32::from_rgb(150, 0, 36);
                 style.visuals.selection.stroke.color = Color32::WHITE;
                 style.spacing.item_spacing = egui::vec2(10.0, 8.0);
@@ -961,6 +967,8 @@ impl eframe::App for Settings {
                     }
                     if self.is_dirty() {
                         ui.label(RichText::new("未保存の変更があります").strong());
+                    } else {
+                        ui.label("保存済み");
                     }
                 });
                 if let Some((page, message)) = self.validation_issue() {
@@ -983,7 +991,11 @@ impl eframe::App for Settings {
         egui::CentralPanel::default()
             .frame(egui::Frame::central_panel(ui.style()).inner_margin(egui::Margin::same(20)))
             .show(ui, |ui| {
+                ui.style_mut().spacing.scroll = egui::style::ScrollStyle::solid();
                 egui::ScrollArea::vertical()
+                    .scroll_bar_visibility(
+                        egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded,
+                    )
                     .auto_shrink([false, false])
                     .show(ui, |ui| match self.page {
                         Page::Start => self.start(ui),
@@ -1488,7 +1500,16 @@ impl Settings {
             }
         });
         ui.add_space(6.0);
-        ui.label(RichText::new("プレビュー").strong());
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("プレビュー").strong());
+            let feedback = FeedbackSettings::from_config(&self.cfg);
+            if !SoundEvent::ALL
+                .into_iter()
+                .any(|event| feedback.sound_enabled(event))
+            {
+                hint(ui, "無音");
+            }
+        });
         self.preview.ui(ui, &self.cfg);
         hint(
             ui,

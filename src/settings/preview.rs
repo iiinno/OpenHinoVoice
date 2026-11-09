@@ -346,7 +346,7 @@ impl Preview {
 
     pub fn ui(&mut self, ui: &mut egui::Ui, cfg: &Config) {
         let (rect, _) =
-            ui.allocate_exact_size(egui::vec2(ui.available_width(), 92.0), egui::Sense::hover());
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 76.0), egui::Sense::hover());
         if ui
             .ctx()
             .input(|input| input.viewport().visible() == Some(false))
