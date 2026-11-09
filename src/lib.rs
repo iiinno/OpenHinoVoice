@@ -26,3 +26,5 @@ pub(crate) mod startup;
 pub(crate) mod state;
 pub mod uia;
 pub(crate) mod usage;
+
+pub(crate) mod preview_ipc;

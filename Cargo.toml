@@ -16,6 +16,10 @@ LegalCopyright = "Copyright (c) 2026 iiinno"
 [build-dependencies]
 winresource = "0.1.34"
 
+[features]
+default = ["accessibility"]
+accessibility = ["eframe/accesskit"]
+
 [dependencies]
 windows = { version = "0.58", features = [
     "Win32_Foundation",
@@ -31,6 +35,7 @@ windows = { version = "0.58", features = [
     "Win32_System_Pipes",
     "Win32_System_JobObjects",
     "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_DataExchange",
     "Win32_System_SystemInformation",
     "Win32_System_Time",
     "Win32_UI_Accessibility",
@@ -48,6 +53,7 @@ jsonwebtoken = { version = "9", default-features = false, features = ["use_pem"]
 toml = "0.8"
 toml_edit = "0.22"
 base64 = "0.22"
+raw-window-handle = "0.6"
 eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts"] }
 
 [profile.release]

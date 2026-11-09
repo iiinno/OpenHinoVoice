@@ -1,25 +1,44 @@
 //! 録音と入力の効果音。非同期再生中のPCMは、停止を確認するまで所有する。
 
+pub use crate::feedback::SoundEvent as Sound;
+use crate::feedback::{FeedbackSettings, SoundSet};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
 const MAX_PCM_BYTES: usize = 256 * 1024;
 const START_CAPTURE_MARGIN: Duration = Duration::from_millis(40);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Sound {
-    Start,
-    Stop,
-    Done,
-    Error,
-}
-
-fn wav(sound: Sound) -> &'static [u8] {
-    match sound {
-        Sound::Start => include_bytes!("../assets/sounds/start.wav"),
-        Sound::Stop => include_bytes!("../assets/sounds/stop.wav"),
-        Sound::Done => include_bytes!("../assets/sounds/done.wav"),
-        Sound::Error => include_bytes!("../assets/sounds/error.wav"),
+fn wav(set: SoundSet, sound: Sound) -> &'static [u8] {
+    match (set, sound) {
+        (_, Sound::Error) => include_bytes!("../assets/sounds/error.wav"),
+        (_, Sound::Warning) => include_bytes!("../assets/sounds/soft/warning.wav"),
+        (SoundSet::Classic, Sound::Start) => include_bytes!("../assets/sounds/start.wav"),
+        (SoundSet::Classic, Sound::Stop) => include_bytes!("../assets/sounds/stop.wav"),
+        (SoundSet::Classic, Sound::Startup | Sound::Done) => {
+            include_bytes!("../assets/sounds/done.wav")
+        }
+        (SoundSet::Classic | SoundSet::Soft, Sound::Cancel) => {
+            include_bytes!("../assets/sounds/soft/stop.wav")
+        }
+        (SoundSet::Soft, Sound::Start) => include_bytes!("../assets/sounds/soft/start.wav"),
+        (SoundSet::Soft, Sound::Stop) => include_bytes!("../assets/sounds/soft/stop.wav"),
+        (SoundSet::Soft, Sound::Startup | Sound::Done) => {
+            include_bytes!("../assets/sounds/soft/done.wav")
+        }
+        (SoundSet::Minimal, Sound::Start) => include_bytes!("../assets/sounds/minimal/start.wav"),
+        (SoundSet::Minimal, Sound::Stop | Sound::Cancel) => {
+            include_bytes!("../assets/sounds/minimal/stop.wav")
+        }
+        (SoundSet::Minimal, Sound::Startup | Sound::Done) => {
+            include_bytes!("../assets/sounds/minimal/done.wav")
+        }
+        (SoundSet::Rich, Sound::Start) => include_bytes!("../assets/sounds/rich/start.wav"),
+        (SoundSet::Rich, Sound::Stop | Sound::Cancel) => {
+            include_bytes!("../assets/sounds/rich/stop.wav")
+        }
+        (SoundSet::Rich, Sound::Startup | Sound::Done) => {
+            include_bytes!("../assets/sounds/rich/done.wav")
+        }
     }
 }
 
@@ -91,8 +110,8 @@ impl<B: PlaybackBackend> Player<B> {
         self.stop()
     }
 
-    fn play(&mut self, sound: Sound, volume: u8, owner: PlaybackOwner) -> bool {
-        self.play_pcm(wav(sound), volume, owner)
+    fn play(&mut self, set: SoundSet, sound: Sound, volume: u8, owner: PlaybackOwner) -> bool {
+        self.play_pcm(wav(set, sound), volume, owner)
     }
 
     fn play_pcm(&mut self, source: &[u8], volume: u8, owner: PlaybackOwner) -> bool {
@@ -108,10 +127,19 @@ impl<B: PlaybackBackend> Player<B> {
         true
     }
 
-    fn start_recording(&mut self, enabled: bool, volume: u8) -> Duration {
-        let volume = if enabled { volume } else { 0 };
-        if self.play(Sound::Start, volume, PlaybackOwner::Production) {
-            duration(Sound::Start) + START_CAPTURE_MARGIN
+    fn start_recording(&mut self, settings: FeedbackSettings) -> Duration {
+        let volume = if settings.sound_enabled(Sound::Start) {
+            settings.volume
+        } else {
+            0
+        };
+        if self.play(
+            settings.sound_set,
+            Sound::Start,
+            volume,
+            PlaybackOwner::Production,
+        ) {
+            duration_for(settings.sound_set, Sound::Start) + START_CAPTURE_MARGIN
         } else {
             Duration::ZERO
         }
@@ -127,32 +155,35 @@ fn player() -> MutexGuard<'static, Player<WinMm>> {
         .unwrap_or_else(|p| p.into_inner())
 }
 
-pub fn play(sound: Sound, volume: u8) {
-    player().play(sound, volume, PlaybackOwner::Production);
-}
-
 /// 古い完了音や試聴を、マイク取得を始める前に止める。
 pub fn stop() -> bool {
     player().stop()
 }
 
 /// 開始音を再生できた場合だけ、録音から除外する時間を返す。
-pub fn start_recording(enabled: bool, volume: u8) -> Duration {
-    player().start_recording(enabled, volume)
+pub fn start_recording(settings: FeedbackSettings) -> Duration {
+    player().start_recording(settings)
 }
 
-#[allow(dead_code)] // 設定からの試聴IPCを接続する入口。
-pub fn play_preview(sound: Sound, volume: u8, token: u64) -> bool {
-    player().play(sound, volume, PlaybackOwner::Preview(token))
+pub fn play_event(settings: FeedbackSettings, event: Sound) -> bool {
+    let volume = if settings.sound_enabled(event) {
+        settings.volume
+    } else {
+        0
+    };
+    player().play(settings.sound_set, event, volume, PlaybackOwner::Production)
 }
 
-#[allow(dead_code)] // 遅れた試聴停止は、その世代が再生中の場合だけ適用する。
+pub fn play_preview(set: SoundSet, sound: Sound, volume: u8, token: u64) -> bool {
+    player().play(set, sound, volume, PlaybackOwner::Preview(token))
+}
+
 pub fn stop_preview(token: u64) -> bool {
     player().stop_preview(token)
 }
 
-pub fn duration(sound: Sound) -> Duration {
-    let w = wav(sound);
+pub fn duration_for(set: SoundSet, sound: Sound) -> Duration {
+    let w = wav(set, sound);
     match (data_range(w), fmt_rate(w)) {
         (Some(r), Some(rate)) if rate > 0 => {
             Duration::from_secs_f64(r.len() as f64 / 2.0 / rate as f64)
@@ -205,31 +236,59 @@ fn fmt_rate(w: &[u8]) -> Option<u32> {
 mod tests {
     use super::*;
 
+    fn settings(enabled: bool, volume: u8) -> FeedbackSettings {
+        let mut cfg: crate::config::Config = toml::from_str("").unwrap();
+        cfg.sounds = enabled;
+        cfg.volume = volume;
+        FeedbackSettings::from_config(&cfg)
+    }
+
     #[test]
-    fn embedded_sounds_are_16bit_mono_pcm() {
-        for s in [Sound::Start, Sound::Stop, Sound::Done, Sound::Error] {
-            let w = wav(s);
-            assert_eq!(&w[0..4], b"RIFF");
-            let (_, fmt) = chunks(w).find(|(id, _)| *id == b"fmt ").expect("fmt chunk");
-            let f = &w[fmt];
-            assert_eq!(u16::from_le_bytes([f[0], f[1]]), 1, "{s:?} must be PCM");
-            assert_eq!(u16::from_le_bytes([f[2], f[3]]), 1, "{s:?} must be mono");
-            assert_eq!(
-                u16::from_le_bytes([f[14], f[15]]),
-                16,
-                "{s:?} must be 16-bit"
-            );
-            let d = duration(s);
-            assert!(
-                d > Duration::from_millis(30) && d < Duration::from_millis(800),
-                "{s:?}: {d:?}"
-            );
+    fn all_embedded_sets_are_bounded_16bit_mono_pcm() {
+        for set in SoundSet::ALL {
+            for event in Sound::ALL {
+                let w = wav(set, event);
+                assert_eq!(&w[0..4], b"RIFF");
+                assert_eq!(&w[8..12], b"WAVE");
+                assert!(w.len() <= MAX_PCM_BYTES, "{set:?}/{event:?}");
+                let (_, fmt) = chunks(w).find(|(id, _)| *id == b"fmt ").expect("fmt chunk");
+                let f = &w[fmt];
+                assert_eq!(u16::from_le_bytes([f[0], f[1]]), 1, "{set:?}/{event:?} PCM");
+                assert_eq!(
+                    u16::from_le_bytes([f[2], f[3]]),
+                    1,
+                    "{set:?}/{event:?} mono"
+                );
+                assert_eq!(
+                    u16::from_le_bytes([f[14], f[15]]),
+                    16,
+                    "{set:?}/{event:?} bits"
+                );
+                assert_eq!(fmt_rate(w), Some(44_100), "{set:?}/{event:?} rate");
+                let duration = duration_for(set, event);
+                assert!(
+                    duration > Duration::ZERO && duration < Duration::from_millis(800),
+                    "{set:?}/{event:?}: {duration:?}"
+                );
+                if event == Sound::Start {
+                    assert!(
+                        duration <= Duration::from_secs_f64(7207.0 / 44_100.0),
+                        "{set:?}: {duration:?}"
+                    );
+                }
+                if event == Sound::Done {
+                    assert!(
+                        duration <= Duration::from_millis(500),
+                        "{set:?}: {duration:?}"
+                    );
+                }
+            }
         }
     }
 
     #[test]
     fn volume_scales_samples() {
-        let w = wav(Sound::Done);
+        let w = wav(SoundSet::Classic, Sound::Done);
         let r = data_range(w).unwrap();
         let peak = |b: &[u8]| {
             b[r.clone()]
@@ -291,8 +350,16 @@ mod tests {
     fn mute_recording_stops_previous_sound_without_capture_exclusion() {
         for (enabled, volume) in [(false, 100), (true, 0)] {
             let mut player = Player::new(FakeBackend::default());
-            assert!(player.play(Sound::Done, 100, PlaybackOwner::Production));
-            assert_eq!(player.start_recording(enabled, volume), Duration::ZERO);
+            assert!(player.play(
+                SoundSet::Classic,
+                Sound::Done,
+                100,
+                PlaybackOwner::Production
+            ));
+            assert_eq!(
+                player.start_recording(settings(enabled, volume)),
+                Duration::ZERO
+            );
             assert_eq!(player.backend.calls.len(), 2);
             assert_eq!(player.backend.calls[1], Call::Stop);
             assert!(player.backend.playing.is_none());
@@ -301,32 +368,49 @@ mod tests {
     }
 
     #[test]
+    fn disabled_start_event_stops_preview_without_excluding_capture() {
+        let mut player = Player::new(FakeBackend::default());
+        assert!(player.play(SoundSet::Rich, Sound::Done, 80, PlaybackOwner::Preview(9)));
+        let mut selected = settings(true, 80);
+        selected.sound_events.start = false;
+        assert_eq!(player.start_recording(selected), Duration::ZERO);
+        assert_eq!(player.backend.calls.len(), 2);
+        assert_eq!(player.backend.calls[1], Call::Stop);
+        assert!(player.playing.is_none());
+    }
+
+    #[test]
     fn failed_start_playback_has_no_capture_exclusion_or_owned_pcm() {
         let mut player = Player::new(FakeBackend {
             reject_play: true,
             ..FakeBackend::default()
         });
-        assert_eq!(player.start_recording(true, 80), Duration::ZERO);
+        assert_eq!(player.start_recording(settings(true, 80)), Duration::ZERO);
         assert!(player.playing.is_none());
         assert!(player.backend.playing.is_none());
         player.backend.reject_play = false;
         assert_eq!(
-            player.start_recording(true, 80),
-            duration(Sound::Start) + Duration::from_millis(40)
+            player.start_recording(settings(true, 80)),
+            duration_for(SoundSet::Classic, Sound::Start) + Duration::from_millis(40)
         );
     }
 
     #[test]
     fn recording_stops_preview_before_start_and_ignores_delayed_preview_stop() {
         let mut player = Player::new(FakeBackend::default());
-        assert!(player.play(Sound::Done, 75, PlaybackOwner::Preview(7)));
-        assert!(!player.start_recording(true, 80).is_zero());
+        assert!(player.play(
+            SoundSet::Classic,
+            Sound::Done,
+            75,
+            PlaybackOwner::Preview(7)
+        ));
+        assert!(!player.start_recording(settings(true, 80)).is_zero());
         assert!(matches!(player.backend.calls[0], Call::Play { .. }));
         assert_eq!(player.backend.calls[1], Call::Stop);
         assert!(matches!(player.backend.calls[2], Call::Play { .. }));
         for sound in [Sound::Start, Sound::Done, Sound::Error] {
             if sound != Sound::Start {
-                assert!(player.play(sound, 80, PlaybackOwner::Production));
+                assert!(player.play(SoundSet::Classic, sound, 80, PlaybackOwner::Production));
             }
             let count = player.backend.calls.len();
             let pcm = player.playing.as_ref().unwrap()._pcm.as_ptr();
@@ -344,8 +428,18 @@ mod tests {
     #[test]
     fn only_the_current_preview_token_can_stop_and_release_its_pcm() {
         let mut player = Player::new(FakeBackend::default());
-        assert!(player.play(Sound::Start, 60, PlaybackOwner::Preview(10)));
-        assert!(player.play(Sound::Done, 60, PlaybackOwner::Preview(11)));
+        assert!(player.play(
+            SoundSet::Classic,
+            Sound::Start,
+            60,
+            PlaybackOwner::Preview(10)
+        ));
+        assert!(player.play(
+            SoundSet::Classic,
+            Sound::Done,
+            60,
+            PlaybackOwner::Preview(11)
+        ));
         let playing = player.backend.playing;
         let count = player.backend.calls.len();
         assert!(!player.stop_preview(10));
@@ -359,10 +453,20 @@ mod tests {
     #[test]
     fn failed_stop_keeps_the_original_pcm_alive_and_rejects_replacement() {
         let mut player = Player::new(FakeBackend::default());
-        assert!(player.play(Sound::Done, 100, PlaybackOwner::Preview(3)));
+        assert!(player.play(
+            SoundSet::Classic,
+            Sound::Done,
+            100,
+            PlaybackOwner::Preview(3)
+        ));
         let original = player.playing.as_ref().unwrap()._pcm.as_ptr();
         player.backend.reject_stop = true;
-        assert!(!player.play(Sound::Error, 50, PlaybackOwner::Production));
+        assert!(!player.play(
+            SoundSet::Classic,
+            Sound::Error,
+            50,
+            PlaybackOwner::Production
+        ));
         assert_eq!(player.playing.as_ref().unwrap()._pcm.as_ptr(), original);
         assert_eq!(
             player.playing.as_ref().unwrap().owner,
@@ -380,9 +484,9 @@ mod tests {
         let mut player = Player::new(FakeBackend::default());
         for volume in 1..=100 {
             for sound in [Sound::Start, Sound::Stop, Sound::Done, Sound::Error] {
-                assert!(player.play(sound, volume, PlaybackOwner::Production));
+                assert!(player.play(SoundSet::Classic, sound, volume, PlaybackOwner::Production));
                 let pcm = &player.playing.as_ref().unwrap()._pcm;
-                assert_eq!(pcm.len(), wav(sound).len());
+                assert_eq!(pcm.len(), wav(SoundSet::Classic, sound).len());
                 assert!(pcm.len() <= MAX_PCM_BYTES);
                 assert_eq!(
                     player.backend.playing,

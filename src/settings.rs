@@ -1,14 +1,18 @@
 //! トレイの「設定」から別プロセスで開く管理画面。保存すると常駐側が設定ファイルの変化に気づいて読み直す
 
+mod preview;
 mod setup;
 
 use crate::asr;
 use crate::audio;
 use crate::chatgpt;
 use crate::config::{self, Config};
+use crate::feedback::{
+    self, FeedbackMotion, FeedbackSettings, FeedbackSnapshot, HudStyle, Preset, SoundEvent,
+    SoundSet,
+};
 use crate::history;
 use crate::paste;
-use crate::sound::{self, Sound};
 use crate::startup;
 use eframe::egui::{self, Color32, RichText};
 use std::sync::{Arc, Mutex};
@@ -28,12 +32,18 @@ const ASR_MODELS: [(&str, &str); 4] = [
 ];
 
 pub fn run() {
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("OpenHinoVoice")
+        .with_active(!config::is_test_sandbox())
+        .with_inner_size(initial_size())
+        .with_min_inner_size([600.0, 420.0]);
+    if let Ok(icon) =
+        eframe::icon_data::from_png_bytes(include_bytes!("../assets/branding/settings.png"))
+    {
+        viewport = viewport.with_icon(icon);
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("OpenHinoVoice")
-            .with_active(!config::is_test_sandbox())
-            .with_inner_size([720.0, 520.0])
-            .with_min_inner_size([600.0, 420.0]),
+        viewport,
         ..Default::default()
     };
     if let Err(e) = eframe::run_native(
@@ -48,10 +58,38 @@ pub fn run() {
                 style.spacing.item_spacing = egui::vec2(10.0, 8.0);
                 style.spacing.button_padding = egui::vec2(10.0, 6.0);
             });
-            Ok(Box::new(Settings::load()))
+            let mut settings = Settings::load();
+            settings.preview.observe_environment(cc);
+            Ok(Box::new(settings))
         }),
     ) {
         crate::overlay::show_error(&format!("設定画面を開けません: {e}"));
+    }
+}
+
+fn initial_size() -> [f32; 2] {
+    if config::is_test_sandbox() {
+        match std::env::var("OHV_TEST_SETTINGS_SIZE").as_deref() {
+            Ok("600x420") => return [600.0, 420.0],
+            Ok("720x520") => return [720.0, 520.0],
+            _ => {}
+        }
+    }
+    [720.0, 520.0]
+}
+
+fn test_page(name: &str) -> Option<Page> {
+    match name {
+        "start" => Some(Page::Start),
+        "home" => Some(Page::Home),
+        "input" => Some(Page::Input),
+        "display" => Some(Page::Display),
+        "asr" => Some(Page::Asr),
+        "ai" => Some(Page::Ai),
+        "edit" => Some(Page::Edit),
+        "history" => Some(Page::History),
+        "about" => Some(Page::About),
+        _ => None,
     }
 }
 
@@ -238,6 +276,35 @@ struct Draft {
     extra_body: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DisplaySnapshot {
+    feedback: FeedbackSnapshot,
+    theme: String,
+    live_caption: bool,
+    partial_caption: bool,
+    caption_position: String,
+}
+
+impl DisplaySnapshot {
+    fn capture(cfg: &Config) -> Self {
+        Self {
+            feedback: FeedbackSnapshot::capture(cfg),
+            theme: cfg.theme.clone(),
+            live_caption: cfg.live_caption,
+            partial_caption: cfg.partial_caption,
+            caption_position: cfg.caption_position.clone(),
+        }
+    }
+
+    fn restore(&self, cfg: &mut Config) {
+        self.feedback.restore(cfg);
+        cfg.theme.clone_from(&self.theme);
+        cfg.live_caption = self.live_caption;
+        cfg.partial_caption = self.partial_caption;
+        cfg.caption_position.clone_from(&self.caption_position);
+    }
+}
+
 struct Settings {
     cfg: Config,
     page: Page,
@@ -277,6 +344,9 @@ struct Settings {
     model_selection: (String, String),
     mic_test: Option<MicrophoneTest>,
     mic_result: Option<(bool, String)>,
+    preview: preview::Preview,
+    brand_icon: Option<egui::TextureHandle>,
+    validation_focus: Option<Page>,
 }
 
 impl Settings {
@@ -310,6 +380,14 @@ impl Settings {
             Page::Start
         } else {
             Page::Home
+        };
+        let page = if config::is_test_sandbox() {
+            std::env::var("OHV_TEST_SETTINGS_PAGE")
+                .ok()
+                .and_then(|name| test_page(&name))
+                .unwrap_or(page)
+        } else {
+            page
         };
         let saved = Draft {
             config: cfg.clone(),
@@ -356,6 +434,9 @@ impl Settings {
             model_selection,
             mic_test: None,
             mic_result: None,
+            preview: preview::Preview::default(),
+            brand_icon: None,
+            validation_focus: None,
         }
     }
 
@@ -382,6 +463,43 @@ impl Settings {
             .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(path).is_file()))
     }
 
+    fn validation_issue(&self) -> Option<(Page, String)> {
+        if config::parse_hotkey(&self.cfg.hotkey).is_none() {
+            return Some((Page::Input, "録音開始キーを確認してください。".into()));
+        }
+        if let Err(error) = crate::lexicon::validate(&self.cfg.terms) {
+            return Some((Page::Asr, format!("用語辞書を確認してください。{error}")));
+        }
+        config::parse_extra_body(&self.extra_body_text)
+            .err()
+            .map(|error| (Page::Ai, format!("AIの追加項目を確認してください。{error}")))
+    }
+
+    fn show_validation_issue(&mut self, ctx: &egui::Context, page: Page, message: String) {
+        self.select_page(page);
+        self.message = Some((false, message));
+        self.validation_focus = Some(page);
+        let field = match page {
+            Page::Input => Some("recording_hotkey"),
+            Page::Ai => Some("format_extra_body"),
+            _ => None,
+        };
+        if let Some(field) = field {
+            ctx.memory_mut(|memory| memory.request_focus(egui::Id::unique(field)));
+        }
+    }
+
+    fn save_from_ui(&mut self, ctx: &egui::Context) {
+        if let Some((page, message)) = self.validation_issue() {
+            self.show_validation_issue(ctx, page, message);
+            return;
+        }
+        self.message = Some(match self.save() {
+            Ok(()) => (true, "保存しました。次の録音から反映されます。".into()),
+            Err(error) => (false, error),
+        });
+    }
+
     fn save(&mut self) -> Result<(), String> {
         use toml::Value as V;
         if config::parse_hotkey(&self.cfg.hotkey).is_none() {
@@ -398,7 +516,7 @@ impl Settings {
         } else {
             self.cfg.speech_exe.trim()
         };
-        let edits = [
+        let mut edits = vec![
             (None, "hotkey", V::from(self.cfg.hotkey.trim())),
             (
                 None,
@@ -457,6 +575,7 @@ impl Settings {
             ),
             (Some("format"), "prompt", V::from(f.prompt.as_str())),
         ];
+        edits.extend(FeedbackSnapshot::capture(&self.cfg).edits());
         let extra_body = config::parse_extra_body(&self.extra_body_text)?;
         let updated = config::set_values(text.trim_start_matches('\u{feff}'), &edits)?;
         let mut doc: toml_edit::DocumentMut = updated
@@ -521,6 +640,8 @@ impl Settings {
         if self.page == page {
             return;
         }
+        self.preview.stop();
+        self.validation_focus = None;
         self.mic_test = None;
         self.mic_result = None;
         self.page = page;
@@ -557,6 +678,7 @@ impl Settings {
     }
 
     fn request_close(&mut self, ctx: &egui::Context) {
+        self.preview.stop();
         if self.is_dirty() && !self.allow_close {
             self.closing = false;
             self.close_confirm = true;
@@ -636,7 +758,29 @@ impl Settings {
 }
 
 impl eframe::App for Settings {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if ctx.input(|input| input.viewport().visible() == Some(false)) {
+            self.preview.stop();
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let hidden = ui
+            .ctx()
+            .input(|input| input.viewport().visible() == Some(false));
+        if hidden || self.page != Page::Display {
+            self.preview.stop();
+        }
+        if self.preview.running()
+            && ui
+                .ctx()
+                .input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            self.preview.stop();
+        }
+        if !self.closing && !self.close_confirm && save_shortcut(ui.ctx()) {
+            self.save_from_ui(ui.ctx());
+        }
         self.update_microphone(ui.ctx());
         if ui.ctx().input(|i| i.viewport().close_requested()) {
             self.request_close(ui.ctx());
@@ -741,17 +885,31 @@ impl eframe::App for Settings {
             .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::same(14)))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    let (rect, _) =
-                        ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
-                    ui.painter().circle_filled(rect.center(), 6.0, HINOMARU_RED);
-                    ui.heading("OpenHinoVoice");
+                    if self.brand_icon.is_none() {
+                        if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!(
+                            "../assets/branding/settings.png"
+                        )) {
+                            self.brand_icon = Some(ui.ctx().load_texture(
+                                "openhinovoice-brand",
+                                egui::ColorImage::from_rgba_unmultiplied(
+                                    [icon.width as usize, icon.height as usize],
+                                    &icon.rgba,
+                                ),
+                                egui::TextureOptions::LINEAR,
+                            ));
+                        }
+                    }
+                    if let Some(icon) = &self.brand_icon {
+                        ui.image((icon.id(), egui::vec2(22.0, 22.0)));
+                    }
+                    ui.label(RichText::new("OpenHinoVoice").size(15.0).strong());
                 });
                 ui.add_space(16.0);
                 for (page, label) in [
                     (Page::Start, "はじめに"),
                     (Page::Home, "ホーム"),
                     (Page::Input, "入力"),
-                    (Page::Display, "表示"),
+                    (Page::Display, "音と表示"),
                     (Page::Asr, "認識"),
                     (Page::Ai, "AI"),
                     (Page::Edit, "Edit"),
@@ -783,17 +941,13 @@ impl eframe::App for Settings {
             )
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    let valid = config::parse_hotkey(&self.cfg.hotkey).is_some()
-                        && config::parse_extra_body(&self.extra_body_text).is_ok()
-                        && crate::lexicon::validate(&self.cfg.terms).is_ok();
-                    let save = egui::Button::new(RichText::new("保存").color(Color32::WHITE))
-                        .fill(HINOMARU_RED)
-                        .min_size(egui::vec2(84.0, 30.0));
+                    let valid = self.validation_issue().is_none();
+                    let save =
+                        egui::Button::new(RichText::new("保存 (Ctrl+S)").color(Color32::WHITE))
+                            .fill(HINOMARU_RED)
+                            .min_size(egui::vec2(84.0, 30.0));
                     if ui.add_enabled(valid, save).clicked() {
-                        self.message = Some(match self.save() {
-                            Ok(()) => (true, "保存しました。次の録音から反映されます。".into()),
-                            Err(e) => (false, e),
-                        });
+                        self.save_from_ui(ui.ctx());
                     }
                     if ui
                         .add(egui::Button::new("閉じる").min_size(egui::vec2(84.0, 30.0)))
@@ -805,18 +959,16 @@ impl eframe::App for Settings {
                         ui.label(RichText::new("未保存の変更があります").strong());
                     }
                 });
-                if config::parse_hotkey(&self.cfg.hotkey).is_none() {
-                    ui.colored_label(HINOMARU_RED, "「入力」で録音開始キーを確認してください");
-                } else if let Err(e) = config::parse_extra_body(&self.extra_body_text) {
-                    ui.colored_label(
-                        HINOMARU_RED,
-                        format!("「AI」の追加項目を確認してください: {e}"),
-                    );
-                } else if let Err(e) = crate::lexicon::validate(&self.cfg.terms) {
-                    ui.colored_label(
-                        HINOMARU_RED,
-                        format!("「認識」の用語辞書を確認してください: {e}"),
-                    );
+                if let Some((page, message)) = self.validation_issue() {
+                    ui.colored_label(HINOMARU_RED, &message);
+                    let label = match page {
+                        Page::Input => "入力を開く",
+                        Page::Asr => "認識を開く",
+                        _ => "AIを開く",
+                    };
+                    if ui.small_button(label).clicked() {
+                        self.show_validation_issue(ui.ctx(), page, message);
+                    }
                 }
                 if let Some((ok, text)) = &self.message {
                     ui.add_space(8.0);
@@ -874,6 +1026,15 @@ impl eframe::App for Settings {
             }
         }
     }
+}
+
+fn save_shortcut(ctx: &egui::Context) -> bool {
+    ctx.input_mut(|input| {
+        input.consume_shortcut(&egui::KeyboardShortcut::new(
+            egui::Modifiers::CTRL,
+            egui::Key::S,
+        ))
+    })
 }
 
 fn section(ui: &mut egui::Ui, title: &str) {
@@ -1191,7 +1352,16 @@ impl Settings {
         grid(ui, "input", |ui| {
             ui.label("録音開始キー");
             ui.vertical(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut self.cfg.hotkey).desired_width(180.0));
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut self.cfg.hotkey)
+                        .id(egui::Id::unique("recording_hotkey"))
+                        .desired_width(180.0),
+                );
+                if self.validation_focus == Some(Page::Input) {
+                    response.request_focus();
+                    response.scroll_to_me(Some(egui::Align::Center));
+                    self.validation_focus = None;
+                }
                 if config::parse_hotkey(&self.cfg.hotkey).is_none() {
                     ui.colored_label(HINOMARU_RED, "書き方が正しくありません(例: Ctrl+Alt+J、F8)");
                 } else {
@@ -1252,68 +1422,208 @@ impl Settings {
             ui.checkbox(&mut self.startup, "Windows にサインインしたときに起動する");
             ui.end_row();
         });
-
-        ui.add_space(18.0);
-        section(ui, "効果音");
-        ui.checkbox(&mut self.cfg.sounds, "録音開始、確定、エラーで音を鳴らす");
-        ui.add_space(10.0);
-        grid(ui, "sound", |ui| {
-            ui.label("音量");
-            ui.add(egui::Slider::new(&mut self.cfg.volume, 0..=100).suffix(" %"));
-            ui.end_row();
-
-            ui.label("試し聞き");
-            ui.horizontal(|ui| {
-                for (s, label) in [
-                    (Sound::Start, "録音開始"),
-                    (Sound::Stop, "確定"),
-                    (Sound::Done, "貼り付け"),
-                    (Sound::Error, "エラー"),
-                ] {
-                    if ui.button(label).clicked() {
-                        sound::play(s, self.cfg.volume);
-                    }
-                }
-            });
-            ui.end_row();
-        });
     }
 
     fn display(&mut self, ui: &mut egui::Ui) {
-        section(ui, "表示");
-        grid(ui, "display", |ui| {
-            ui.label("表示のテーマ");
-            ui.vertical(|ui| {
+        section(ui, "音と表示");
+        hint(ui, "好みの組合せを選び、保存する前に試せます。");
+        let before = DisplaySnapshot::capture(&self.cfg);
+        let selected = Preset::detect(&self.cfg);
+        ui.horizontal_wrapped(|ui| {
+            for preset in Preset::ALL {
+                if ui
+                    .add(egui::Button::selectable(
+                        selected == Some(preset),
+                        preset.label(),
+                    ))
+                    .clicked()
+                {
+                    self.preview.stop();
+                    preset.apply(&mut self.cfg);
+                }
+            }
+        });
+        hint(
+            ui,
+            match Preset::detect(&self.cfg) {
+                Some(Preset::Standard) => "いつもの音と、状態が分かる標準の表示。",
+                Some(Preset::Soft) => "やわらかな音と控えめな動き。",
+                Some(Preset::Minimal) => "必要な音だけ、表示もコンパクトに。",
+                Some(Preset::Silent) => "音を鳴らさず、文字と形で状態を伝えます。",
+                Some(Preset::Rich) => "重なりのある音色と、波紋・光彩・粒の演出。",
+                None => "カスタム。音と表示を個別に調整しています。",
+            },
+        );
+        ui.add_space(10.0);
+        let mut requested = None;
+        let mut toggle = false;
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .button(if self.preview.running() {
+                    "プレビューを停止"
+                } else {
+                    "試す"
+                })
+                .clicked()
+            {
+                if self.preview.running() {
+                    self.preview.stop();
+                } else {
+                    toggle = true;
+                }
+            }
+            if ui
+                .add_enabled(
+                    before != DisplaySnapshot::capture(&self.saved.config),
+                    egui::Button::new("音と表示を保存済みに戻す"),
+                )
+                .clicked()
+            {
+                self.preview.stop();
+                DisplaySnapshot::capture(&self.saved.config).restore(&mut self.cfg);
+            }
+        });
+        ui.add_space(6.0);
+        ui.label(RichText::new("プレビュー").strong());
+        self.preview.ui(ui, &self.cfg);
+        hint(
+            ui,
+            "録音から入力完了までの合成プレビューです。マイクや入力先は操作しません。",
+        );
+        if let Some(message) = &self.preview.message {
+            ui.label(message);
+        }
+        for warning in feedback::warnings(&self.cfg) {
+            ui.colored_label(HINOMARU_RED, warning.message());
+        }
+
+        ui.add_space(16.0);
+        ui.label(RichText::new("音").strong());
+        ui.checkbox(&mut self.cfg.sounds, "効果音を鳴らす");
+        ui.horizontal_wrapped(|ui| {
+            let label = ui.label("音セット");
+            egui::ComboBox::from_id_salt("sound_set")
+                .selected_text(
+                    SoundSet::from_id(&self.cfg.sound_set)
+                        .unwrap_or(SoundSet::Classic)
+                        .label(),
+                )
+                .show_ui(ui, |ui| {
+                    for set in SoundSet::ALL {
+                        ui.selectable_value(&mut self.cfg.sound_set, set.id().into(), set.label());
+                    }
+                })
+                .response
+                .labelled_by(label.id);
+        });
+        ui.horizontal(|ui| {
+            ui.label("音量");
+            ui.add(
+                egui::Slider::new(&mut self.cfg.volume, 0..=100)
+                    .suffix(" %")
+                    .text("効果音の音量"),
+            );
+        });
+        egui::CollapsingHeader::new("場面ごとの音")
+            .id_salt("feedback_events")
+            .show(ui, |ui| {
+                hint(ui, "チェックした場面で鳴ります。各音を単独で試せます。");
+                for event in SoundEvent::ALL {
+                    let can_play = FeedbackSettings::from_config(&self.cfg).sound_enabled(event);
+                    ui.horizontal(|ui| {
+                        let enabled = match event {
+                            SoundEvent::Startup => &mut self.cfg.startup_sound,
+                            SoundEvent::Start => &mut self.cfg.sound_events.start,
+                            SoundEvent::Stop => &mut self.cfg.sound_events.stop,
+                            SoundEvent::Done => &mut self.cfg.sound_events.done,
+                            SoundEvent::Warning => &mut self.cfg.sound_events.warning,
+                            SoundEvent::Error => &mut self.cfg.sound_events.error,
+                            SoundEvent::Cancel => &mut self.cfg.sound_events.cancel,
+                        };
+                        ui.add_sized([140.0, 24.0], egui::Checkbox::new(enabled, event.label()));
+                        if ui
+                            .add_enabled(
+                                can_play,
+                                egui::Button::new(format!("{}を試聴", event.label())),
+                            )
+                            .clicked()
+                        {
+                            requested = Some(event);
+                        }
+                    });
+                }
+                hint(ui, "起動音は、ここで有効にした場合だけ鳴ります。");
+            });
+
+        ui.add_space(16.0);
+        ui.label(RichText::new("表示と動き").strong());
+        ui.horizontal_wrapped(|ui| {
+            let label = ui.label("表示スタイル");
+            egui::ComboBox::from_id_salt("hud_style")
+                .selected_text(
+                    HudStyle::from_id(&self.cfg.hud_style)
+                        .unwrap_or(HudStyle::Standard)
+                        .label(),
+                )
+                .show_ui(ui, |ui| {
+                    for style in HudStyle::ALL {
+                        ui.selectable_value(
+                            &mut self.cfg.hud_style,
+                            style.id().into(),
+                            style.label(),
+                        );
+                    }
+                })
+                .response
+                .labelled_by(label.id);
+        });
+        ui.horizontal_wrapped(|ui| {
+            for motion in FeedbackMotion::ALL {
+                ui.radio_value(
+                    &mut self.cfg.feedback_motion,
+                    motion.id().into(),
+                    motion.label(),
+                );
+            }
+        });
+        hint(
+            ui,
+            "音とは別に選べます。Windowsで動きを無効にしている場合も、静かな表示になります。",
+        );
+
+        ui.add_space(14.0);
+        egui::CollapsingHeader::new("テーマとリアルタイム字幕")
+            .id_salt("caption_display")
+            .show(ui, |ui| {
+                ui.label(RichText::new("表示のテーマ").strong());
                 ui.radio_value(
                     &mut self.cfg.theme,
                     "hinomaru".to_string(),
-                    "日の丸(白地に赤い点)",
+                    "日の丸（白地に赤い点）",
                 );
                 ui.radio_value(
                     &mut self.cfg.theme,
                     "auto".to_string(),
                     "Windows のライト、ダークに合わせる",
                 );
-            });
-            ui.end_row();
-
-            ui.label("リアルタイム表示");
-            ui.vertical(|ui| {
+                ui.add_space(10.0);
                 ui.checkbox(
                     &mut self.cfg.live_caption,
-                    "話している途中の文字と区間の確定を画面の上の帯に出す",
+                    "話している途中の文字を画面上の帯に表示する",
                 );
-                ui.add_space(4.0);
                 ui.add_enabled(
                     self.cfg.live_caption,
                     egui::Checkbox::new(
                         &mut self.cfg.partial_caption,
-                        "仮の表示(1 秒ごとに途中の音を認識する。処理の遅い PC ではオフにする)",
+                        "途中の音を認識して仮の文字を表示する",
                     ),
                 );
-                ui.add_space(4.0);
+                hint(
+                    ui,
+                    "仮の文字は1秒ごとに更新します。処理が遅いPCではオフにできます。",
+                );
                 ui.add_enabled_ui(self.cfg.live_caption, |ui| {
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.label("帯の場所");
                         ui.radio_value(
                             &mut self.cfg.caption_position,
@@ -1328,7 +1638,16 @@ impl Settings {
                     });
                 });
             });
-        });
+        if before != DisplaySnapshot::capture(&self.cfg) {
+            self.preview.stop();
+        }
+        if let Some(event) = requested {
+            self.preview.start(preview::Kind::Event(event), &self.cfg);
+            ui.ctx().request_repaint();
+        } else if toggle {
+            self.preview.start(preview::Kind::Sequence, &self.cfg);
+            ui.ctx().request_repaint();
+        }
     }
 
     fn edit_page(&mut self, ui: &mut egui::Ui) {
@@ -1526,14 +1845,21 @@ impl Settings {
         });
 
         ui.add_space(10.0);
-        egui::CollapsingHeader::new("リクエストの追加項目(extra_body)").show(ui, |ui| {
+        egui::CollapsingHeader::new("リクエストの追加項目(extra_body)")
+            .open((self.validation_focus == Some(Page::Ai)).then_some(true))
+            .show(ui, |ui| {
             hint(ui, "リクエストの本体にそのまま混ぜる項目を JSON で書きます。推論(考える過程)の止め方はエンジンごとに違うので、ここで指定します。空なら送りません");
-            ui.add(
-                egui::TextEdit::multiline(&mut self.extra_body_text)
+            let response = ui.add(
+                egui::TextEdit::multiline(&mut self.extra_body_text).id(egui::Id::unique("format_extra_body"))
                     .desired_rows(4)
                     .desired_width(f32::INFINITY)
                     .code_editor(),
             );
+            if self.validation_focus == Some(Page::Ai) {
+                response.request_focus();
+                response.scroll_to_me(Some(egui::Align::Center));
+                self.validation_focus = None;
+            }
             ui.horizontal(|ui| {
                 if ui.small_button("空にする").clicked() {
                     self.extra_body_text.clear();
@@ -1823,7 +2149,13 @@ impl Settings {
                 });
                 ui.horizontal(|ui| {
                     ui.label("正式表記");
-                    ui.add(egui::TextEdit::singleline(&mut term.canonical).desired_width(220.0));
+                    let response = ui
+                        .add(egui::TextEdit::singleline(&mut term.canonical).desired_width(220.0));
+                    if i == 0 && self.validation_focus == Some(Page::Asr) {
+                        response.request_focus();
+                        response.scroll_to_me(Some(egui::Align::Center));
+                        self.validation_focus = None;
+                    }
                     ui.label("文脈");
                     ui.add(egui::TextEdit::singleline(&mut term.hint).desired_width(240.0));
                 });
@@ -2252,6 +2584,60 @@ mod clipboard_tests {
     }
 
     #[test]
+    fn save_shortcut_consumes_ctrl_s_without_matching_plain_s() {
+        let ctx = egui::Context::default();
+        for (modifiers, expected) in [
+            (egui::Modifiers::NONE, false),
+            (egui::Modifiers::CTRL, true),
+        ] {
+            let input = egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key: egui::Key::S,
+                    physical_key: Some(egui::Key::S),
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                }],
+                ..Default::default()
+            };
+            let output = ctx.run_pass(input, |ctx| {
+                assert_eq!(save_shortcut(ctx), expected);
+                assert!(!save_shortcut(ctx), "a shortcut is consumed once");
+            });
+            output.drop_without_applying_deltas();
+        }
+    }
+
+    #[test]
+    fn validation_errors_route_to_the_field_without_discarding_the_draft() {
+        let mut settings = settings_without_devices_or_user_files();
+        settings.cfg.hotkey = "invalid shortcut".into();
+        settings.extra_body_text = "{invalid}".into();
+        let (page, message) = settings.validation_issue().unwrap();
+        assert!(page == Page::Input);
+        let before = settings.cfg.clone();
+        let ctx = egui::Context::default();
+        let output = ctx.run_pass(Default::default(), |ctx| {
+            settings.show_validation_issue(ctx, page, message.clone());
+        });
+        output.drop_without_applying_deltas();
+        assert!(settings.page == Page::Input);
+        assert_eq!(settings.cfg, before);
+        assert_eq!(settings.message, Some((false, message)));
+        settings.cfg.hotkey = "F8".into();
+        assert!(settings.validation_issue().unwrap().0 == Page::Ai);
+        settings.extra_body_text = "{}".into();
+        assert!(settings.validation_issue().is_none());
+    }
+
+    #[test]
+    fn sandbox_page_names_only_select_known_pages() {
+        assert!(test_page("display") == Some(Page::Display));
+        assert!(test_page("input") == Some(Page::Input));
+        assert!(test_page("start-recording").is_none());
+    }
+
+    #[test]
     fn home_preparation_never_reports_ready_without_an_engine_or_verified_model() {
         let ready = setup::ModelStatus::Ready;
         let no_engine = preparation_notice(false, Some(&ready), false);
@@ -2336,5 +2722,27 @@ mod clipboard_tests {
         assert!(check_settings_clipboard_owner(owner).is_ok());
         unsafe { DestroyWindow(owner) }.expect("destroy the owner window");
         assert!(check_settings_clipboard_owner(owner).is_err());
+    }
+
+    #[test]
+    fn display_restore_covers_theme_and_captions_without_other_page_edits() {
+        let saved = config::parse("").unwrap();
+        let snapshot = DisplaySnapshot::capture(&saved);
+        let mut edited = saved.clone();
+        edited.theme = "dark".into();
+        edited.live_caption = !saved.live_caption;
+        edited.partial_caption = !saved.partial_caption;
+        edited.caption_position = "caret".into();
+        assert_ne!(DisplaySnapshot::capture(&edited), snapshot);
+        edited.sound_set = "rich".into();
+        edited.hotkey = "Ctrl+Alt+J".into();
+        edited.format.model = "other-model".into();
+        snapshot.restore(&mut edited);
+        assert_eq!(DisplaySnapshot::capture(&edited), snapshot);
+        assert_eq!(edited.hotkey, "Ctrl+Alt+J");
+        assert_eq!(edited.format.model, "other-model");
+        edited.theme = "dark".into();
+        Preset::Rich.apply(&mut edited);
+        assert_eq!(edited.theme, "dark", "preset selection keeps the theme");
     }
 }

@@ -1,0 +1,94 @@
+{
+  "schemaVersion": 1,
+  "runId": "20261109T155852779Z-f73ed22a",
+  "mode": "Fast",
+  "liveTest": null,
+  "scope": "fast",
+  "startedAt": "2026-11-09T15:58:53.0803428Z",
+  "finishedAt": "2026-11-09T16:03:17.9664627Z",
+  "revision": "a22dbe6aa19c0e312919fca44ff5d525826a6517",
+  "dirty": true,
+  "sourceSha256": "D1E7BDA9FCA808C25B91A71AAE2141C1E08AB5E966661A889925EE24947E370D",
+  "sourceFileCount": 100,
+  "status": "passed",
+  "checks": [
+    {
+      "name": "format",
+      "status": "passed",
+      "durationMs": 15901,
+      "exitCode": 0,
+      "log": "format.log",
+      "validationError": null
+    },
+    {
+      "name": "tests",
+      "status": "passed",
+      "durationMs": 243064,
+      "exitCode": 0,
+      "log": "tests.log",
+      "validationError": null
+    }
+  ],
+  "tests": {
+    "passed": 282,
+    "failed": 0,
+    "ignored": 11
+  },
+  "ignored": [
+    {
+      "name": "settings::setup::tests::pipe_holder_parent_fixture",
+      "reason": "subprocess fixture with an inherited-pipe descendant"
+    },
+    {
+      "name": "settings::setup::tests::waiting_child_fixture",
+      "reason": "subprocess fixture for cancellation; invoked by its owning test"
+    },
+    {
+      "name": "wav_is_transcribed",
+      "reason": "needs the speech.cpp worker, a Haas model and a test WAV; run explicitly"
+    },
+    {
+      "name": "records_two_seconds",
+      "reason": "needs a microphone; run explicitly"
+    },
+    {
+      "name": "real_api_formats_long_dictation",
+      "reason": "calls the real formatting API with a long transcript from JV_RAW_FILE; run explicitly"
+    },
+    {
+      "name": "real_api_formats_with_prewarm",
+      "reason": "calls the real formatting API with the key in the user config; run explicitly"
+    },
+    {
+      "name": "cycle_overlay_states",
+      "reason": "shows the overlay on screen; run explicitly"
+    },
+    {
+      "name": "pastes_into_focused_app",
+      "reason": "needs a focused text field in the interactive session; run explicitly"
+    },
+    {
+      "name": "live_segmented_latency_and_accuracy_on_corpus",
+      "reason": "取得済みspeech.cppモデルとcorpusが必要。verify.ps1 -Mode Liveで明示実行"
+    },
+    {
+      "name": "live_worker_latency_and_accuracy_on_corpus",
+      "reason": "取得済みspeech.cppモデルとcorpusが必要。verify.ps1 -Mode Liveで明示実行"
+    },
+    {
+      "name": "live_realtime_session_on_corpus",
+      "reason": "本番セッションと既存モデル・音声を実時間で検証。verify.ps1 -Mode Live -LiveTest Realtimeで明示実行"
+    }
+  ],
+  "manualPrerequisites": [
+    "実マイクの録音と切断",
+    "対象アプリの本文とクリップボード復元",
+    "UIAとDPI・複数モニター",
+    "実クラウドAPIと複数のローカルLLM"
+  ],
+  "isolation": {
+    "appData": "appdata",
+    "localAppData": "localappdata",
+    "namespace": "20261109T155852779Z-f73ed22a"
+  }
+}

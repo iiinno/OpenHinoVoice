@@ -85,6 +85,10 @@ pub fn acknowledge_hotkey() {
     });
 }
 
+pub(crate) fn preview_blocked() -> bool {
+    mirror() != MIRROR_IDLE || PENDING_KEYS.load(Ordering::SeqCst) > 0
+}
+
 pub fn mirror() -> u8 {
     MIRROR.load(Ordering::SeqCst)
 }

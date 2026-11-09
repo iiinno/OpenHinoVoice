@@ -3,6 +3,7 @@ use crate::{
     settings, sound, startup, state, uia, usage,
 };
 
+use crate::feedback::FeedbackSettings;
 use asr::Worker;
 use audio::Recorder;
 use config::Config;
@@ -318,6 +319,71 @@ impl Session {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OutputFeedback {
+    Success,
+    Warning(String),
+    Failure(String),
+    Cancelled,
+}
+
+impl OutputFeedback {
+    fn event(&self) -> Sound {
+        match self {
+            Self::Success => Sound::Done,
+            Self::Warning(_) => Sound::Warning,
+            Self::Failure(_) => Sound::Error,
+            Self::Cancelled => Sound::Cancel,
+        }
+    }
+
+    fn presentation(&self) -> (Tone, String, Duration) {
+        match self {
+            Self::Success => (
+                Tone::Success,
+                "入力しました".into(),
+                Duration::from_millis(600),
+            ),
+            Self::Warning(message) => (Tone::Warn, message.clone(), Duration::from_millis(2500)),
+            Self::Failure(message) => (Tone::Error, message.clone(), Duration::from_millis(3500)),
+            Self::Cancelled => (
+                Tone::Info,
+                "取り消しました".into(),
+                Duration::from_millis(500),
+            ),
+        }
+    }
+}
+
+fn output_feedback(
+    error: Option<&str>,
+    volatile: bool,
+    fallback: bool,
+    notice: Option<OverlayKind>,
+) -> OutputFeedback {
+    if let Some(error) = error {
+        return OutputFeedback::Failure(format!("入力失敗。トレイでテキストをコピー（{error}）"));
+    }
+    if volatile {
+        return OutputFeedback::Warning("入力しました。履歴はトレイから回収できます".into());
+    }
+    if fallback {
+        return OutputFeedback::Warning("一部を原文のまま入力しました".into());
+    }
+    match notice {
+        Some(OverlayKind::FormatSkipped { reason }) => {
+            OutputFeedback::Warning(format!("生テキストを送りました（{reason}）"))
+        }
+        Some(OverlayKind::ApiKeyMissing) => {
+            OutputFeedback::Warning("APIキー未設定のため生テキストを送りました".into())
+        }
+        Some(OverlayKind::Error { message } | OverlayKind::EditUnavailable { message }) => {
+            OutputFeedback::Warning(message)
+        }
+        _ => OutputFeedback::Success,
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct WorkerKey {
     executable: String,
@@ -448,6 +514,13 @@ impl App {
         if self.replay.is_some() {
             return;
         }
+        crate::preview_ipc::set_available(
+            matches!(self.state, State::Idle)
+                && self.pending_paste.is_none()
+                && self.paste_transaction.is_none()
+                && !self.start_requested
+                && self.quit_started.is_none(),
+        );
         hook::set_mirror(
             if self.pending_paste.is_some()
                 || self.paste_transaction.is_some()
@@ -461,6 +534,13 @@ impl App {
     }
 
     fn dispatch(&mut self, event: Event) {
+        let cancelled = matches!(&event, Event::Esc)
+            && (!matches!(self.state, State::Idle)
+                || self.pending_paste.is_some()
+                || self.start_requested);
+        if matches!(&event, Event::Esc) {
+            self.paste_notice = None;
+        }
         if let Some(replay) = &mut self.replay {
             match &event {
                 Event::AsrDone { text, .. } => {
@@ -483,6 +563,9 @@ impl App {
                 _ => {}
             }
             self.sync_mirror();
+            if cancelled {
+                self.present_output(OutputFeedback::Cancelled);
+            }
             return;
         }
         let current = std::mem::replace(&mut self.state, State::Idle);
@@ -504,6 +587,9 @@ impl App {
             }
         }
         self.sync_mirror();
+        if cancelled {
+            self.present_output(OutputFeedback::Cancelled);
+        }
     }
 
     fn fail_session(&mut self, message: String) {
@@ -554,6 +640,11 @@ impl App {
         }
         match action {
             Action::StartSession => {
+                self.paste_notice = None;
+                self.transient_until = None;
+                if self.replay.is_none() {
+                    crate::preview_ipc::invalidate();
+                }
                 if let Err(message) = asr::check_offline_model(
                     &self.cfg.speech_exe,
                     &self.cfg.model,
@@ -633,7 +724,7 @@ impl App {
                             self.session.segmenter = segment::Segmenter::new(recorder.sample_rate);
                             self.session.recorder = Some(recorder);
                             let exclusion =
-                                sound::start_recording(self.cfg.sounds, self.cfg.volume);
+                                sound::start_recording(FeedbackSettings::from_config(&self.cfg));
                             self.session.skip_until = Instant::now() + exclusion;
                         }
                         Err(e) => {
@@ -891,9 +982,11 @@ impl App {
         let recoverable_before = self.recoveries.count();
         self.recoveries.tick(hook::wake_resident);
         if self.recoveries.count() > recoverable_before {
-            self.show_overlay(OverlayKind::Error {
-                message: "履歴保存に失敗。原文はトレイから回収できます".into(),
-            });
+            self.show_notice(
+                Tone::Warn,
+                "履歴保存に失敗。原文はトレイから回収できます".into(),
+                Duration::from_millis(3500),
+            );
         }
         if self
             .paste_transaction
@@ -901,7 +994,7 @@ impl App {
             .is_some_and(|transaction| transaction.deadline() <= now)
         {
             if let Err(message) = self.paste_transaction.take().unwrap().restore() {
-                self.show_overlay(OverlayKind::Error { message });
+                self.show_notice(Tone::Warn, message, Duration::from_millis(3500));
             }
         }
         if self.pending_paste.as_ref().is_some_and(|pending| {
@@ -924,28 +1017,16 @@ impl App {
                 "paste",
                 serde_json::json!({"ok": result.is_ok(), "error": result.as_ref().err()}),
             );
-            match result {
-                Ok(transaction) => {
-                    self.paste_transaction = Some(transaction);
-                    self.sfx(Sound::Done);
-                    if self.recoveries.volatile(pending.recovery_id) {
-                        self.show_overlay(OverlayKind::Error {
-                            message: "履歴保存に失敗。原文はトレイから回収できます".into(),
-                        });
-                    } else if self.session.fallback_chunks > 0 {
-                        self.show_overlay(OverlayKind::Error {
-                            message: "一部を原文のまま入力しました".into(),
-                        });
-                    } else if let Some(notice) = self.paste_notice.take() {
-                        self.show_overlay(notice);
-                    } else {
-                        overlay::hide();
-                    }
-                }
-                Err(error) => self.show_overlay(OverlayKind::Error {
-                    message: format!("入力失敗。トレイでテキストをコピー（{error}）"),
-                }),
+            let feedback = output_feedback(
+                result.as_ref().err().map(String::as_str),
+                self.recoveries.volatile(pending.recovery_id),
+                self.session.fallback_chunks > 0,
+                self.paste_notice.take(),
+            );
+            if let Ok(transaction) = result {
+                self.paste_transaction = Some(transaction);
             }
+            self.present_output(feedback);
             self.paste_notice = None;
         }
         self.recoveries.tick(hook::wake_resident);
@@ -1017,6 +1098,8 @@ impl App {
             self.pending_paste.as_ref().map(|p| p.deadline),
             self.paste_transaction.as_ref().map(|p| p.deadline()),
             self.quit_started.map(|at| at + Duration::from_secs(5)),
+            crate::preview_ipc::deadline(),
+            overlay::next_deadline(),
         ]
         .into_iter()
         .flatten()
@@ -1026,10 +1109,24 @@ impl App {
         wait
     }
 
-    fn sfx(&self, s: Sound) {
-        if self.cfg.sounds {
-            sound::play(s, self.cfg.volume);
+    fn sfx(&self, event: Sound) {
+        if self.replay.is_none() {
+            sound::play_event(FeedbackSettings::from_config(&self.cfg), event);
         }
+    }
+
+    fn show_notice(&mut self, tone: Tone, text: String, duration: Duration) {
+        if self.replay.is_some() {
+            return;
+        }
+        overlay::show(Mode::Notice { tone, text });
+        self.transient_until = Some(Instant::now() + duration);
+    }
+
+    fn present_output(&mut self, feedback: OutputFeedback) {
+        self.sfx(feedback.event());
+        let (tone, text, duration) = feedback.presentation();
+        self.show_notice(tone, text, duration);
     }
 
     fn engine_preparing_update(&mut self, ready: bool) -> Option<bool> {
@@ -1825,6 +1922,8 @@ pub fn run() {
     usage::ENABLED.store(cfg.format.usage_log, std::sync::atomic::Ordering::Relaxed);
     let hotkey = config::parse_hotkey(&cfg.hotkey).unwrap_or(config::Hotkey { mods: 0, vk: 0x77 });
     overlay::set_theme(&cfg.theme);
+    let feedback = FeedbackSettings::from_config(&cfg);
+    overlay::set_feedback(feedback.hud_style, feedback.motion);
     overlay::set_caption_anchor(&cfg.caption_position);
     let mut config_mtime = config_modified();
     let mut last_config_check = Instant::now();
@@ -1832,6 +1931,10 @@ pub fn run() {
     if let Err(e) = overlay::create() {
         overlay::show_error(&e);
         return;
+    }
+
+    if let Err(error) = crate::preview_ipc::register_endpoint(overlay::hwnd()) {
+        eprintln!("{error}");
     }
 
     let (key_tx, key_rx) = channel::<hook::KeyEvent>();
@@ -1849,7 +1952,15 @@ pub fn run() {
     };
 
     let mut app = App::new(cfg);
-    hook::set_mirror(hook::MIRROR_IDLE);
+    app.sync_mirror();
+    if app.cfg.startup_sound {
+        app.sfx(Sound::Startup);
+        app.show_notice(
+            Tone::Info,
+            "OpenHinoVoice を起動しました".into(),
+            Duration::from_millis(600),
+        );
+    }
 
     if let Some(Ok(false)) = model_notice {
         overlay::show(Mode::Notice {
@@ -1971,6 +2082,9 @@ pub fn run() {
             }
         }
 
+        app.sync_mirror();
+        crate::preview_ipc::tick(Instant::now());
+
         while let Ok(outcome) = app.format_rx.try_recv() {
             app.receive_format(outcome);
         }
@@ -1990,6 +2104,8 @@ pub fn run() {
                             hook::set_hotkey(h);
                         }
                         overlay::set_theme(&cfg.theme);
+                        let feedback = FeedbackSettings::from_config(&cfg);
+                        overlay::set_feedback(feedback.hud_style, feedback.motion);
                         overlay::set_caption_anchor(&cfg.caption_position);
                         usage::ENABLED
                             .store(cfg.format.usage_log, std::sync::atomic::Ordering::Relaxed);
@@ -2061,6 +2177,8 @@ pub fn run() {
         retire_worker(kept.worker);
     }
     hook::uninstall();
+    crate::preview_ipc::unregister_endpoint(overlay::hwnd());
+    sound::stop();
     overlay::remove_tray();
     let _ = LPARAM(0);
     let _ = WPARAM(0);
@@ -2086,6 +2204,46 @@ fn config_modified() -> Option<std::time::SystemTime> {
 #[cfg(test)]
 mod flow_tests {
     use super::*;
+
+    #[test]
+    fn output_feedback_selects_one_result_and_keeps_warnings_distinct() {
+        assert_eq!(
+            output_feedback(None, false, false, None),
+            OutputFeedback::Success
+        );
+        assert_eq!(
+            output_feedback(None, false, false, None).event(),
+            Sound::Done
+        );
+        for result in [
+            output_feedback(None, true, false, None),
+            output_feedback(None, false, true, None),
+            output_feedback(None, false, false, Some(OverlayKind::ApiKeyMissing)),
+            output_feedback(
+                None,
+                false,
+                false,
+                Some(OverlayKind::FormatSkipped {
+                    reason: "接続失敗".into(),
+                }),
+            ),
+        ] {
+            assert!(matches!(result, OutputFeedback::Warning(_)));
+            assert_eq!(result.event(), Sound::Warning);
+            assert_eq!(result.presentation().0, Tone::Warn);
+        }
+        let failure = output_feedback(
+            Some("入力先なし"),
+            true,
+            true,
+            Some(OverlayKind::ApiKeyMissing),
+        );
+        assert!(matches!(failure, OutputFeedback::Failure(_)));
+        assert_eq!(failure.event(), Sound::Error);
+        assert_eq!(failure.presentation().0, Tone::Error);
+        assert_eq!(OutputFeedback::Cancelled.event(), Sound::Cancel);
+        assert_eq!(OutputFeedback::Cancelled.presentation().0, Tone::Info);
+    }
 
     #[test]
     fn idle_loop_slows_only_when_nothing_is_on_screen() {
@@ -2786,6 +2944,83 @@ mod flow_tests {
         assert!(!app.start_requested);
         assert!(app.pending_paste.is_none());
         assert_eq!(app.recoveries.first_text(), Some((id, "入力文")));
+    }
+
+    #[test]
+    fn replay_cancel_discards_pending_output_notice_before_the_next_result() {
+        for notice in [
+            OverlayKind::FormatSkipped {
+                reason: "previous failure".into(),
+            },
+            OverlayKind::ApiKeyMissing,
+        ] {
+            let mut app = test_app();
+            app.replay = Some(Box::new(ReplayCapture {
+                sample_rate: 16_000,
+                ..ReplayCapture::default()
+            }));
+            app.cfg.sounds = true;
+            let id = app.session.recovery_id.unwrap();
+            app.recoveries.update_raw(id, "cancelled text".into());
+            app.pending_paste = Some(PendingPaste {
+                text: "cancelled text".into(),
+                target: None,
+                recovery_id: id,
+                deadline: Instant::now() + Duration::from_secs(5),
+            });
+            app.paste_notice = Some(notice);
+            app.dispatch(Event::Esc);
+            assert!(app.pending_paste.is_none());
+            assert!(app.paste_notice.is_none());
+            assert_eq!(
+                output_feedback(None, false, false, app.paste_notice.take()),
+                OutputFeedback::Success
+            );
+            assert!(
+                app.transient_until.is_none(),
+                "replay does not show a native notice"
+            );
+        }
+    }
+
+    #[test]
+    fn replay_new_session_cannot_inherit_a_previous_output_warning() {
+        let mut app = test_app();
+        app.replay = Some(Box::new(ReplayCapture {
+            sample_rate: 16_000,
+            ..ReplayCapture::default()
+        }));
+        app.cfg.sounds = true;
+        app.cfg.format.provider = "disabled".into();
+        let (_tx, rx) = channel();
+        app.kept_worker = Some(KeptWorker {
+            worker: asr::test_worker(rx, false),
+            key: WorkerKey::for_config(&app.cfg),
+            expires: Instant::now() + Duration::from_secs(5),
+        });
+        app.paste_notice = Some(OverlayKind::FormatSkipped {
+            reason: "previous failure".into(),
+        });
+        app.dispatch(Event::F8);
+        assert_eq!(app.state, State::Recording);
+        assert!(app.paste_notice.is_none());
+        assert!(app.session.recorder.is_none());
+        app.dispatch(Event::Enter);
+        app.dispatch(Event::Enter);
+        app.dispatch(Event::AsrDone {
+            text: "current success".into(),
+            has_api_key: false,
+        });
+        assert_eq!(app.state, State::Idle);
+        assert_eq!(
+            output_feedback(None, false, false, app.paste_notice.take()),
+            OutputFeedback::Success
+        );
+        assert!(app.pending_paste.is_none(), "replay does not paste");
+        assert!(
+            app.transient_until.is_none(),
+            "replay does not show a native notice"
+        );
     }
 
     #[test]
