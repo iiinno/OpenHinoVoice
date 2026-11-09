@@ -1,0 +1,75 @@
+{
+  "checkedAt": "2026-11-09T14:12:44.059Z",
+  "processes": [
+    {
+      "name": "full-final",
+      "pid": 11292,
+      "exitCode": 0,
+      "signalCode": null,
+      "killed": false
+    },
+    {
+      "name": "full-reviewed",
+      "pid": 8228,
+      "exitCode": 0,
+      "signalCode": null,
+      "killed": false
+    },
+    {
+      "name": "resident-idle",
+      "pid": 316,
+      "exitCode": null,
+      "signalCode": "SIGTERM",
+      "killed": true
+    },
+    {
+      "name": "measure-resident",
+      "pid": 24064,
+      "exitCode": 0,
+      "signalCode": null,
+      "killed": false
+    },
+    {
+      "name": "full-complete",
+      "pid": 12624,
+      "exitCode": 1,
+      "signalCode": null,
+      "killed": false
+    },
+    {
+      "name": "full-verified",
+      "pid": 36112,
+      "exitCode": 0,
+      "signalCode": null,
+      "killed": false
+    },
+    {
+      "name": "fast-cache",
+      "pid": 4192,
+      "exitCode": 0,
+      "signalCode": null,
+      "killed": false
+    },
+    {
+      "name": "release-cache",
+      "pid": 13192,
+      "exitCode": 0,
+      "signalCode": null,
+      "killed": false
+    },
+    {
+      "name": "resident-final",
+      "pid": 40448,
+      "exitCode": null,
+      "signalCode": "SIGTERM",
+      "killed": true
+    },
+    {
+      "name": "measure-final",
+      "pid": 44080,
+      "exitCode": 0,
+      "signalCode": null,
+      "killed": false
+    }
+  ]
+}

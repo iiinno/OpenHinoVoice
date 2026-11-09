@@ -116,9 +116,9 @@ The settings file is `%APPDATA%\OpenHinoVoice\config.toml`.
 cargo build --release
 ```
 
-The executable is `target\release\openhinovoice.exe`. Run the tests with `cargo test`; tests that need a real microphone or API are `#[ignore]`d.
+The executable is `target\release\openhinovoice.exe`. Use `pwsh -NoProfile -File scripts/verify.ps1 -Mode Fast` during development and `-Mode Full` before integration. The script isolates application data and records JSON results and logs. Full runs formatting, clippy, normal tests, and a release build. See the [verification guide](docs/verification.md) for live tests; tests that need a real microphone or API are `#[ignore]`d.
 
-Windows CI runs `cargo fmt --all -- --check`, `cargo check --all-targets --locked`, `cargo clippy --all-targets --locked -- -D warnings`, and `cargo test --all-targets --locked`. A release tag such as `v0.1.0` must match `Cargo.toml`'s `version`. The Windows executable embeds `FileVersion` and `ProductVersion` from that Cargo version and uses `OpenHinoVoice` as its `ProductName`. Existing releases are never overwritten.
+Windows CI uses the same Full workflow and retains its logs. A release tag such as `v0.1.0` must match `Cargo.toml`'s `version`. The Windows executable embeds `FileVersion` and `ProductVersion` from that Cargo version and uses `OpenHinoVoice` as its `ProductName`. Existing releases are never overwritten.
 
 ## Special thanks
 

@@ -1,0 +1,379 @@
+{
+  "schemaVersion": 1,
+  "processId": 40448,
+  "status": "passed",
+  "scope": "resident_process_only; speech engine and settings window excluded",
+  "requestedDurationSeconds": 60,
+  "intervalMs": 1000,
+  "startedAt": "2026-11-09T14:10:15.5347123Z",
+  "samples": [
+    {
+      "elapsedMs": 96,
+      "cpuMs": 0,
+      "privateBytes": 2088960,
+      "workingSetBytes": 18661376
+    },
+    {
+      "elapsedMs": 1585,
+      "cpuMs": 0,
+      "privateBytes": 2088960,
+      "workingSetBytes": 18661376
+    },
+    {
+      "elapsedMs": 2626,
+      "cpuMs": 0,
+      "privateBytes": 2088960,
+      "workingSetBytes": 18661376
+    },
+    {
+      "elapsedMs": 3668,
+      "cpuMs": 0,
+      "privateBytes": 2088960,
+      "workingSetBytes": 18661376
+    },
+    {
+      "elapsedMs": 4750,
+      "cpuMs": 0,
+      "privateBytes": 2088960,
+      "workingSetBytes": 18661376
+    },
+    {
+      "elapsedMs": 6090,
+      "cpuMs": 0,
+      "privateBytes": 2088960,
+      "workingSetBytes": 18661376
+    },
+    {
+      "elapsedMs": 7158,
+      "cpuMs": 0,
+      "privateBytes": 2088960,
+      "workingSetBytes": 18661376
+    },
+    {
+      "elapsedMs": 8210,
+      "cpuMs": 0,
+      "privateBytes": 2088960,
+      "workingSetBytes": 18661376
+    },
+    {
+      "elapsedMs": 9250,
+      "cpuMs": 0,
+      "privateBytes": 2088960,
+      "workingSetBytes": 18661376
+    },
+    {
+      "elapsedMs": 10281,
+      "cpuMs": 0,
+      "privateBytes": 2027520,
+      "workingSetBytes": 18624512
+    },
+    {
+      "elapsedMs": 11312,
+      "cpuMs": 0,
+      "privateBytes": 2027520,
+      "workingSetBytes": 18624512
+    },
+    {
+      "elapsedMs": 12338,
+      "cpuMs": 0,
+      "privateBytes": 2027520,
+      "workingSetBytes": 18624512
+    },
+    {
+      "elapsedMs": 13368,
+      "cpuMs": 0,
+      "privateBytes": 2027520,
+      "workingSetBytes": 18624512
+    },
+    {
+      "elapsedMs": 14404,
+      "cpuMs": 0,
+      "privateBytes": 2027520,
+      "workingSetBytes": 18624512
+    },
+    {
+      "elapsedMs": 15431,
+      "cpuMs": 0,
+      "privateBytes": 2027520,
+      "workingSetBytes": 18624512
+    },
+    {
+      "elapsedMs": 16462,
+      "cpuMs": 0,
+      "privateBytes": 2027520,
+      "workingSetBytes": 18624512
+    },
+    {
+      "elapsedMs": 17547,
+      "cpuMs": 0,
+      "privateBytes": 2027520,
+      "workingSetBytes": 18624512
+    },
+    {
+      "elapsedMs": 18588,
+      "cpuMs": 0,
+      "privateBytes": 2027520,
+      "workingSetBytes": 18624512
+    },
+    {
+      "elapsedMs": 19621,
+      "cpuMs": 0,
+      "privateBytes": 2027520,
+      "workingSetBytes": 18624512
+    },
+    {
+      "elapsedMs": 20653,
+      "cpuMs": 0,
+      "privateBytes": 2027520,
+      "workingSetBytes": 18624512
+    },
+    {
+      "elapsedMs": 21681,
+      "cpuMs": 0,
+      "privateBytes": 2027520,
+      "workingSetBytes": 18624512
+    },
+    {
+      "elapsedMs": 22711,
+      "cpuMs": 0,
+      "privateBytes": 2027520,
+      "workingSetBytes": 18624512
+    },
+    {
+      "elapsedMs": 23739,
+      "cpuMs": 0,
+      "privateBytes": 2027520,
+      "workingSetBytes": 18624512
+    },
+    {
+      "elapsedMs": 24784,
+      "cpuMs": 0,
+      "privateBytes": 2027520,
+      "workingSetBytes": 18624512
+    },
+    {
+      "elapsedMs": 25823,
+      "cpuMs": 0,
+      "privateBytes": 2027520,
+      "workingSetBytes": 18624512
+    },
+    {
+      "elapsedMs": 26853,
+      "cpuMs": 0,
+      "privateBytes": 2027520,
+      "workingSetBytes": 18624512
+    },
+    {
+      "elapsedMs": 27886,
+      "cpuMs": 0,
+      "privateBytes": 2027520,
+      "workingSetBytes": 18624512
+    },
+    {
+      "elapsedMs": 28919,
+      "cpuMs": 0,
+      "privateBytes": 2027520,
+      "workingSetBytes": 18624512
+    },
+    {
+      "elapsedMs": 29959,
+      "cpuMs": 0,
+      "privateBytes": 2027520,
+      "workingSetBytes": 18624512
+    },
+    {
+      "elapsedMs": 30993,
+      "cpuMs": 0,
+      "privateBytes": 2027520,
+      "workingSetBytes": 18624512
+    },
+    {
+      "elapsedMs": 32024,
+      "cpuMs": 0,
+      "privateBytes": 2027520,
+      "workingSetBytes": 18624512
+    },
+    {
+      "elapsedMs": 33053,
+      "cpuMs": 0,
+      "privateBytes": 2027520,
+      "workingSetBytes": 18624512
+    },
+    {
+      "elapsedMs": 34080,
+      "cpuMs": 0,
+      "privateBytes": 2027520,
+      "workingSetBytes": 18624512
+    },
+    {
+      "elapsedMs": 35117,
+      "cpuMs": 0,
+      "privateBytes": 2027520,
+      "workingSetBytes": 18624512
+    },
+    {
+      "elapsedMs": 36139,
+      "cpuMs": 0,
+      "privateBytes": 2027520,
+      "workingSetBytes": 18624512
+    },
+    {
+      "elapsedMs": 37179,
+      "cpuMs": 0,
+      "privateBytes": 2027520,
+      "workingSetBytes": 18624512
+    },
+    {
+      "elapsedMs": 38205,
+      "cpuMs": 0,
+      "privateBytes": 2027520,
+      "workingSetBytes": 18624512
+    },
+    {
+      "elapsedMs": 39236,
+      "cpuMs": 0,
+      "privateBytes": 2027520,
+      "workingSetBytes": 18624512
+    },
+    {
+      "elapsedMs": 40272,
+      "cpuMs": 0,
+      "privateBytes": 1990656,
+      "workingSetBytes": 18604032
+    },
+    {
+      "elapsedMs": 41305,
+      "cpuMs": 0,
+      "privateBytes": 1990656,
+      "workingSetBytes": 18604032
+    },
+    {
+      "elapsedMs": 42344,
+      "cpuMs": 0,
+      "privateBytes": 1990656,
+      "workingSetBytes": 18604032
+    },
+    {
+      "elapsedMs": 43373,
+      "cpuMs": 0,
+      "privateBytes": 1990656,
+      "workingSetBytes": 18604032
+    },
+    {
+      "elapsedMs": 44407,
+      "cpuMs": 0,
+      "privateBytes": 1990656,
+      "workingSetBytes": 18604032
+    },
+    {
+      "elapsedMs": 45435,
+      "cpuMs": 0,
+      "privateBytes": 1990656,
+      "workingSetBytes": 18604032
+    },
+    {
+      "elapsedMs": 46477,
+      "cpuMs": 0,
+      "privateBytes": 1990656,
+      "workingSetBytes": 18604032
+    },
+    {
+      "elapsedMs": 47517,
+      "cpuMs": 0,
+      "privateBytes": 1990656,
+      "workingSetBytes": 18604032
+    },
+    {
+      "elapsedMs": 48553,
+      "cpuMs": 0,
+      "privateBytes": 1990656,
+      "workingSetBytes": 18604032
+    },
+    {
+      "elapsedMs": 49603,
+      "cpuMs": 0,
+      "privateBytes": 1990656,
+      "workingSetBytes": 18604032
+    },
+    {
+      "elapsedMs": 50664,
+      "cpuMs": 0,
+      "privateBytes": 1990656,
+      "workingSetBytes": 18604032
+    },
+    {
+      "elapsedMs": 51700,
+      "cpuMs": 0,
+      "privateBytes": 1990656,
+      "workingSetBytes": 18604032
+    },
+    {
+      "elapsedMs": 52762,
+      "cpuMs": 0,
+      "privateBytes": 1990656,
+      "workingSetBytes": 18604032
+    },
+    {
+      "elapsedMs": 53887,
+      "cpuMs": 0,
+      "privateBytes": 1990656,
+      "workingSetBytes": 18604032
+    },
+    {
+      "elapsedMs": 54980,
+      "cpuMs": 0,
+      "privateBytes": 1990656,
+      "workingSetBytes": 18604032
+    },
+    {
+      "elapsedMs": 56031,
+      "cpuMs": 0,
+      "privateBytes": 1990656,
+      "workingSetBytes": 18604032
+    },
+    {
+      "elapsedMs": 57073,
+      "cpuMs": 0,
+      "privateBytes": 1990656,
+      "workingSetBytes": 18604032
+    },
+    {
+      "elapsedMs": 58116,
+      "cpuMs": 0,
+      "privateBytes": 1990656,
+      "workingSetBytes": 18604032
+    },
+    {
+      "elapsedMs": 59160,
+      "cpuMs": 0,
+      "privateBytes": 1990656,
+      "workingSetBytes": 18604032
+    },
+    {
+      "elapsedMs": 60016,
+      "cpuMs": 0,
+      "privateBytes": 1990656,
+      "workingSetBytes": 18604032
+    }
+  ],
+  "processStartedAt": "2026-11-09T14:09:55.3950977Z",
+  "processName": "openhinovoice",
+  "exeBytes": 7781376,
+  "elapsedMs": 60044,
+  "cpuMs": 0,
+  "cpuSecondsPerMinute": 0,
+  "peakPrivateBytes": 2088960,
+  "peakWorkingSetBytes": 18661376,
+  "finishedAt": "2026-11-09T14:11:15.9451479Z",
+  "sourceSha256": "9B387345580EB290B134763636CC0A4A38EEDD44EB1F937E522EBA3DE159430E",
+  "exeSha256": "c255a7870696c7d5964a89c16ab0a2b7f30311f24c6f42d2394183a49be27194",
+  "conditions": {
+    "offline": true,
+    "apiKeys": false,
+    "keptWorker": false,
+    "microphoneActive": false,
+    "settingsWindow": false,
+    "recoveryHistory": false,
+    "backgroundLoadControlled": false
+  }
+}

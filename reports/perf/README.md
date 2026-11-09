@@ -1,88 +1,40 @@
 # 性能の測り方
 
-版ごとに同じ手順で測り、`reports/perf/` の下に結果を残す。数値が予算
-(Plan.md 4.5 の表)を超えた版は出さない。
+測定の入口は `scripts/verify.ps1 -Mode Live`。開発時の通常検証は [docs/verification.md](../../docs/verification.md) を参照する。過去の記録は当時のコードと手順の値であり、現行版の性能保証として扱わない。
 
-## 測るものと予算
+```powershell
+pwsh -NoProfile -File scripts/verify.ps1 -Mode Live -LiveTest Segmented `
+  -SpeechExe 'C:\path\speech.exe' -ModelPath 'C:\path\Haas.gguf' `
+  -Corpus short -CorpusDir tests/corpus
+```
 
-| 項目 | 測り方 | 予算 |
+`Corpus` は `short`、`1min`、`5min`、`30min` から選ぶ。PowerShellから直接スクリプトを呼ぶ場合は `-Corpus short,1min` と複数指定できる。別worktreeに音声を複製する必要はなく、`CorpusDir` に既存コーパスの場所を指定できる。モデルも取得済みのローカルファイルを渡す。モデルやコーパスがなければ失敗し、欠けた条件を飛ばして成功扱いにしない。
+
+結果は `target/qa/<実行ID>/result.json` と `perf/` のJSON・Markdownに残る。版、HEAD、dirty状態、入力とモデルのSHA-256、CPU情報、測定区間と除外範囲を記録する。長文の実テキストやAPIキーは測定結果へ書かない。
+
+| 測定 | 含むもの | 含まないもの |
 |---|---|---|
-| 準備時間(worker 起動から ready まで) | `tests/perf_live.rs` | 記録して比較する |
-| Enter から認識結果まで | `tests/perf_live.rs` の「認識」 | P1 で録音の長さによらずほぼ一定にする |
-| 文字誤り率(CER) | `tests/perf_live.rs` | 1 分の音声を基準にする |
-| 常駐メモリ(待機中) | この文書の手順 A | 0.1.2 の基準値から増やさない |
-| 待機中の CPU 時間 | この文書の手順 B | 記録して増やさない |
-| exe のサイズ | この文書の手順 C | 記録して増やさない |
+| 準備1回目 | workerの起動要求からreadyまで | 終了処理。OSキャッシュは消していない |
+| 再起動準備 | 同じ実行内の次の起動からreadyまで | 終了処理。保持workerの再利用とは異なる |
+| Workerの認識 | transcribe要求から終端応答まで | 事前のPCM送信 |
+| Segmentedの認識 | 全音声を事前分割した後の逐次送信と認識 | 実時間の音声到着、仮認識、録音中の待ち行列 |
+| 最後の区間 | 最後のtranscribe要求から終端応答まで | Enterから貼り付け完了までの全経路 |
 
-## 音声認識の測定(perf_live)
+文字誤り率（CER）は空白を除いた値と、さらに句読点を除いた値を併記する。未完了の認識があれば診断JSONを残してテストを失敗させる。CERの許容値はコーパスと用途に依存するため、診断の正常終了だけで精度合格とは扱わない。
 
-```powershell
-cargo run --release --example gen_corpus   # 初回だけ。30 分音声の合成に時間がかかる
-cargo test --release --test perf_live -- --ignored --nocapture
-```
+実時間の認識経路は `-LiveTest Realtime` で測る。同じ明示モデルとcorpusを渡し、25msずつ音声を供給する。本番のSession、仮認識、確定区間の優先送信、Enter時の残り音声処理、AsrDoneの状態遷移を使う。独立したASR処理や事前の区間分割は使わない。
 
-結果は `reports/perf/perf-live-<エポック秒>.md` に書かれる。CER は厳密
-(空白を除く)と緩和(句読点も除く)の 2 種類を出す。緩和の値は、Haas が
-句読点を出力するかどうかを確かめるためのものである。
+Realtimeは最初の非空partial結果、未認識PCM量（開いている区間と未完了の確定区間）、EnterからASR完了まで、全体時間、CERをJSONへ記録する。PCM量は音声の未処理量であり、プロセスの使用メモリではない。音声供給の最大遅延も記録する。起動待ちと音声供給は重ね、OSキャッシュは消去しない。partial結果の時刻に画面描画は含まれず、partialが出ない場合はnullになる。
 
-## 手順 A: 常駐プロセスのメモリ
-
-利用者の config.toml を触らないよう、`APPDATA` を一時フォルダに差し替えて
-測定用の exe を起動する。利用者の openhinovoice.exe が動いているときは、
-単一インスタンスの仕組みで 2 つ目がすぐ終わるため、測定の前に終了してもらう。
+プロセス資源は、測定対象のPIDを明示する。
 
 ```powershell
-# 1. 利用者のインスタンスが動いていれば終了する(測定後にもう一度起動して戻す)
-Get-Process openhinovoice -ErrorAction SilentlyContinue
-
-# 2. 測定用の起動。設定は一時フォルダに作られ、本物の config.toml は変わらない
-cargo build --release
-$measure = "$env:TEMP\ohv-perf-measure"
-New-Item -ItemType Directory -Force $measure | Out-Null
-$realAppData = $env:APPDATA
-$env:APPDATA = $measure
-Start-Process "$PWD\target\release\openhinovoice.exe"
-Start-Sleep -Seconds 20   # トレイ常駐が落ち着くまで待つ
-
-# 3. メモリの 3 回測定(Private Bytes と Working Set)
-1..3 | ForEach-Object {
-    $p = Get-Process openhinovoice
-    "{0:N0} KB private, {1:N0} KB workingset" -f ($p.PrivateMemorySize64/1KB), ($p.WorkingSet64/1KB)
-    Start-Sleep -Seconds 5
-}
-
-# 4. 後片付け。終了メニューはトレイから行うか、プロセスを止める
-Stop-Process -Name openhinovoice -ErrorAction SilentlyContinue
-$env:APPDATA = $realAppData
-Remove-Item -Recurse -Force $measure
+pwsh -NoProfile -File scripts/measure-process.ps1 -ProcessId 12345 `
+  -DurationSeconds 60 -IntervalMs 1000
 ```
 
-録音中の増加(speech.exe を含む)はマイクの実機確認が必要なので、手順としては
-`Get-Process openhinovoice, speech` を録音中に実行して記録する。数字は
-reports/qa/manual-*.md の確認項目に載せる。
+このスクリプトはプロセスを起動・終了しない。指定した一つのプロセスについて、CPU時間の差分、Private Bytes、Working Set、exeサイズをJSONへ保存する。途中終了は失敗で、PIDが再利用されても別プロセスへ測定を引き継がない。speech.exeを含む合計が必要な場合は、対象の子PIDも別々に記録して測定範囲を併記する。名前による `Stop-Process` は使わない。
 
-## 手順 B: 待機中 1 分あたりの CPU 時間
+変更前後は同じ端末、モデル、コーパス、電源設定、ビルド設定で交互に複数回測る。初回起動とモデル保持後、待機中・録音中・仮字幕・設定画面を混ぜない。中央値を基本にし、p95には十分な標本数を確保する。メモリの比較ではPrivate BytesとWorking Setを区別する。
 
-手順 A の 2 までを実行した状態で、何も操作せず 60 秒置いたときの
-TotalProcessorTime の増分を測る。
-
-```powershell
-$p = Get-Process openhinovoice
-$t0 = $p.TotalProcessorTime
-Start-Sleep -Seconds 60
-$p.Refresh()
-$t1 = $p.TotalProcessorTime
-"CPU 時間: {0:N2} 秒/分" -f ($t1 - $t0).TotalSeconds
-```
-
-## 手順 C: exe のサイズ
-
-```powershell
-"{0:N1} MB" -f ((Get-Item "$PWD\target\release\openhinovoice.exe").Length/1MB)
-```
-
-## 結果の残し方
-
-- 版の基準値は `reports/perf/baseline-<版>.md` に、測定日時・手順・数値をそえて書く
-- 版ごとの継続測定は `reports/perf/` に `perf-live-<エポック秒>.md` として残る
-- 比較は必ず同じ corpus、同じモデル、同じ手順で行う
+録音から対象アプリの本文更新までの評価には、実時間の音声供給、Enter時点の未処理区間、字幕時刻、AI整形、貼り付け先の本文読み戻しが必要である。この診断試験だけで「長時間でも一定」「欠落なし」「実機の全経路合格」と結論しない。Plan.mdの予算達成と実機試験が未確認なら、未確認として残す。

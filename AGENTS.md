@@ -1,5 +1,15 @@
 # AGENTS.md: OpenHinoVoice を導入するコーディング AI への手順
 
+## 開発・検証する場合
+
+- 通常の修正は `pwsh -NoProfile -File scripts/verify.ps1 -Mode Fast`、統合後は `-Mode Full` を使う。詳細と実機試験は [docs/verification.md](docs/verification.md) を参照する。
+- 検証は専用の APPDATA・LOCALAPPDATA と `OHV_TEST_NAMESPACE` を使う。利用者の設定、API キー、自動起動、稼働中のプロセスを検証用に変更しない。
+- コマンドは非表示で実行する。Windows では `CreateNoWindow` / `windowsHide: true` と直接の実行ファイル・引数を使い、検証のたびにターミナルを開かない。起動した子プロセスだけを回収する。
+- 担当ファイルを分け、既存の未コミット変更と他担当の変更を保持する。単体テストは共通ライブラリを使い、`#[path]` で実装を再取り込みしない。
+- 非同期処理の完了を固定のsleepで推定しない。送信された要求や完了通知を期限付きで待ち、失敗時は観測内容を残す。
+- `result.json` の成功・失敗・未実施を確認する。テスト0件、欠損コーパス、モデル未指定を成功扱いしない。実マイク、対象アプリへの貼り付け、外部 API の検証は通常テストと区別して記録する。
+- 性能の数値には対象経路と条件を併記する。逐次区間の認識時間を、実際の Enter から入力までの時間として扱わない。
+
 この文書は、利用者から「OpenHinoVoice を導入して」と頼まれた AI(Claude Code、Codex など)向けの手順です。Windows 11 の PC に、管理者の権限なしで導入します。
 
 ## 守ること
