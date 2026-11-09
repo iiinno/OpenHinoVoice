@@ -10,6 +10,7 @@ pub mod audio;
 pub(crate) mod chatgpt;
 pub mod config;
 pub mod context;
+pub mod feedback;
 pub mod format;
 pub(crate) mod history;
 pub(crate) mod hook;

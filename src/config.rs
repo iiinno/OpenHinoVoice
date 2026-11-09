@@ -53,6 +53,12 @@ recovery_history = true
 # 録音開始、確定、エラーで効果音を鳴らすか、とその音量(0〜100)
 sounds = true
 volume = 70
+# 音と表示は別々に選べる。起動音は個別に有効化する
+sound_set = "classic"
+hud_style = "standard"
+feedback_motion = "system"
+startup_sound = false
+sound_events = { start = true, stop = true, done = true, warning = true, error = true, cancel = false }
 
 # リアルタイム表示。話している途中の文字と区間の確定を画面の上の帯に出す。
 # 入力欄には何も書かず、Enter を押したあとの最終的な文だけが入る
@@ -210,6 +216,17 @@ pub struct Config {
     /// 効果音の音量(0〜100)
     #[serde(default = "default_volume")]
     pub volume: u8,
+    // 未知の選択も保存時に失わないよう、設定では識別子を保持し、利用時に型へ変換する。
+    #[serde(default = "default_sound_set")]
+    pub sound_set: String,
+    #[serde(default)]
+    pub sound_events: crate::feedback::SoundEvents,
+    #[serde(default)]
+    pub startup_sound: bool,
+    #[serde(default = "default_hud_style")]
+    pub hud_style: String,
+    #[serde(default = "default_feedback_motion")]
+    pub feedback_motion: String,
     /// リアルタイム表示。区間の確定と、話している途中の仮の文字を画面の上に出す
     #[serde(default = "default_true")]
     pub live_caption: bool,
@@ -246,6 +263,15 @@ fn default_true() -> bool {
 }
 fn default_volume() -> u8 {
     70
+}
+fn default_sound_set() -> String {
+    crate::feedback::SoundSet::Classic.id().into()
+}
+fn default_hud_style() -> String {
+    crate::feedback::HudStyle::Standard.id().into()
+}
+fn default_feedback_motion() -> String {
+    crate::feedback::FeedbackMotion::System.id().into()
 }
 fn default_theme() -> String {
     "hinomaru".to_string()
@@ -497,13 +523,13 @@ pub fn set_values(
             .to_string()
             .parse::<toml_edit::Value>()
             .map_err(|e| format!("設定値 {key} の形式が不正です: {e}"))?;
-        let table = match section {
+        let table: &mut dyn toml_edit::TableLike = match section {
             Some(section) => {
                 if !doc.as_table().contains_key(section) {
                     doc[section] = toml_edit::Item::Table(toml_edit::Table::new());
                 }
                 doc[section]
-                    .as_table_mut()
+                    .as_table_like_mut()
                     .ok_or_else(|| format!("設定セクション [{section}] が表ではありません"))?
             }
             None => doc.as_table_mut(),
@@ -527,7 +553,7 @@ pub fn set_values(
             *old = new_value;
             *old.decor_mut() = decor;
         } else {
-            table[key] = toml_edit::Item::Value(new_value);
+            table.insert(key, toml_edit::Item::Value(new_value));
         }
     }
     Ok(doc.to_string())
