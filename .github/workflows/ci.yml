@@ -20,7 +20,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
+  group: ci-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}-${{ ((github.event_name == 'push' && contains(github.event.head_commit.message, '[perf-check]')) || (github.event_name == 'workflow_dispatch' && inputs.perf_check)) && 'perf' || 'checks' }}
   cancel-in-progress: true
 
 jobs:

@@ -928,7 +928,7 @@ impl eframe::App for Settings {
                 ] {
                     let selected = self.page == page;
                     let text = if selected {
-                        RichText::new(label).strong()
+                        RichText::new(label).strong().color(Color32::WHITE)
                     } else {
                         RichText::new(label)
                     };

@@ -426,14 +426,73 @@ internal static class HiddenUiProbe
     {
         return FindControl(window, name, false) != null;
     }
-    static void Invoke(IntPtr window, string name)
+    static void ActivateControl(IntPtr window, string name, bool select, Dictionary<string, object> check)
     {
+        check["controlName"] = name;
+        check["intent"] = select ? "select" : "invoke";
+        check["chosenPattern"] = null;
+        check["supportedPatterns"] = new List<object>();
         AutomationElement control = FindControl(window, name, true);
-        if (control == null || !control.Current.IsEnabled) throw new InvalidOperationException("UIA button unavailable: " + name);
+        if (control == null) throw new InvalidOperationException("UIA button unavailable: " + name);
+        var current = control.Current;
+        check["controlRole"] = current.ControlType.ProgrammaticName;
+        check["controlEnabled"] = current.IsEnabled;
+        check["supportedPatterns"] = control.GetSupportedPatterns().Select(pattern =>
+            (object)Map("id", pattern.Id, "name", pattern.ProgrammaticName)).ToList();
+        Save("worker-result.json", Report);
+        if (!current.IsEnabled) throw new InvalidOperationException("UIA button disabled: " + name);
         object pattern;
+        if (select)
+        {
+            if (control.TryGetCurrentPattern(SelectionItemPattern.Pattern, out pattern))
+            {
+                var selection = (SelectionItemPattern)pattern;
+                bool selected = selection.Current.IsSelected;
+                check["chosenPattern"] = "SelectionItemPattern";
+                check["stateBefore"] = selected;
+                check["actionSent"] = !selected;
+                Save("worker-result.json", Report);
+                if (!selected) selection.Select();
+                return;
+            }
+            // Egui 0.37's selected Button publishes toggled state. AccessKit
+            // 0.35.2 deliberately exposes TogglePattern instead of Invoke.
+            if (control.TryGetCurrentPattern(TogglePattern.Pattern, out pattern))
+            {
+                var toggle = (TogglePattern)pattern;
+                ToggleState state = toggle.Current.ToggleState;
+                check["chosenPattern"] = "TogglePattern";
+                check["stateBefore"] = state.ToString();
+                check["actionSent"] = state == ToggleState.Off;
+                Save("worker-result.json", Report);
+                if (state == ToggleState.Indeterminate)
+                    throw new InvalidOperationException("Selectable button has indeterminate state: " + name);
+                // Selecting an already selected preset/page must not turn it off.
+                if (state == ToggleState.Off) toggle.Toggle();
+                return;
+            }
+            throw new InvalidOperationException("No UIA SelectionItemPattern or TogglePattern for selectable button: " + name);
+        }
         if (!control.TryGetCurrentPattern(InvokePattern.Pattern, out pattern))
-            throw new InvalidOperationException("UIA InvokePattern unavailable: " + name);
+            throw new InvalidOperationException("UIA InvokePattern unavailable for action button: " + name);
+        check["chosenPattern"] = "InvokePattern";
+        check["actionSent"] = true;
+        Save("worker-result.json", Report);
         ((InvokePattern)pattern).Invoke();
+    }
+    static bool SelectionReached(IntPtr window, Dictionary<string, object> check)
+    {
+        if ((string)check["intent"] != "select") return true;
+        AutomationElement control = FindControl(window, (string)check["controlName"], true);
+        if (control == null) return false;
+        object pattern;
+        if ((string)check["chosenPattern"] == "SelectionItemPattern"
+            && control.TryGetCurrentPattern(SelectionItemPattern.Pattern, out pattern))
+            return ((SelectionItemPattern)pattern).Current.IsSelected;
+        if ((string)check["chosenPattern"] == "TogglePattern"
+            && control.TryGetCurrentPattern(TogglePattern.Pattern, out pattern))
+            return ((TogglePattern)pattern).Current.ToggleState == ToggleState.On;
+        return false;
     }
     static void ExerciseControls(IntPtr window, string directory, string captureDirectory, string label, string configPath, Dictionary<string, object> result)
     {
@@ -441,15 +500,20 @@ internal static class HiddenUiProbe
         var actions = new List<object>();
         result["actions"] = actions;
         int token = 1;
-        Action<string, Action, Func<bool>> step = delegate(string name, Action action, Func<bool> expected)
+        Action<string, Action<Dictionary<string, object>>, Func<bool>> step = delegate(string name, Action<Dictionary<string, object>> action, Func<bool> expected)
         {
             var check = Map("name", name, "status", "running");
             actions.Add(check);
             Phase(label + ":action:" + name);
             try
             {
-                action();
-                if (!Until(expected, 3000)) throw new InvalidOperationException("Expected UI state was not observed before its deadline.");
+                action(check);
+                if (!Until(delegate {
+                    try { return expected() && SelectionReached(window, check); }
+                    catch (ElementNotAvailableException) { return false; }
+                }, 3000))
+                    throw new InvalidOperationException("Expected UI state/selection was not observed before its deadline.");
+                check["expectedStateObserved"] = true;
                 int colors;
                 string path = Path.Combine(directory, "action-" + name + ".png");
                 if (!CaptureFramebuffer(window, captureDirectory, path, ++token, out colors))
@@ -461,19 +525,19 @@ internal static class HiddenUiProbe
             }
             catch (Exception error) { check["status"] = "failed"; check["error"] = error.ToString(); throw; }
         };
-        step("preset-soft", delegate { Invoke(window, "ソフト"); },
+        step("preset-soft", delegate(Dictionary<string, object> check) { ActivateControl(window, "ソフト", true, check); },
             delegate { return HasText(window, "未保存の変更があります"); });
-        step("restore", delegate { Invoke(window, "音と表示を保存済みに戻す"); },
+        step("restore", delegate(Dictionary<string, object> check) { ActivateControl(window, "音と表示を保存済みに戻す", false, check); },
             delegate { return !HasText(window, "未保存の変更があります") && HasText(window, "保存済み") && HasText(window, "無音"); });
-        step("preview-start", delegate { Invoke(window, "試す"); },
+        step("preview-start", delegate(Dictionary<string, object> check) { ActivateControl(window, "試す", false, check); },
             delegate { return FindControl(window, "プレビューを停止", true) != null; });
-        step("preview-stop", delegate { Invoke(window, "プレビューを停止"); },
+        step("preview-stop", delegate(Dictionary<string, object> check) { ActivateControl(window, "プレビューを停止", false, check); },
             delegate { return FindControl(window, "試す", true) != null; });
-        step("preview-before-navigation", delegate { Invoke(window, "試す"); },
+        step("preview-before-navigation", delegate(Dictionary<string, object> check) { ActivateControl(window, "試す", false, check); },
             delegate { return FindControl(window, "プレビューを停止", true) != null; });
-        step("leave-display", delegate { Invoke(window, "入力"); },
+        step("leave-display", delegate(Dictionary<string, object> check) { ActivateControl(window, "入力", true, check); },
             delegate { return HasText(window, "録音開始キー"); });
-        step("return-display", delegate { Invoke(window, "音と表示"); },
+        step("return-display", delegate(Dictionary<string, object> check) { ActivateControl(window, "音と表示", true, check); },
             delegate { return FindControl(window, "試す", true) != null && FindControl(window, "プレビューを停止", true) == null; });
         bool unchanged = originalConfig.SequenceEqual(File.ReadAllBytes(configPath));
         result["configUnchangedByPreview"] = unchanged;
@@ -489,7 +553,7 @@ internal static class HiddenUiProbe
             "audioRequested", false, "microphoneRequested", false, "globalInputSent", false,
             "limitations", new[] { "Capture success requires human inspection; nonblank is only a transport check.",
                 "Native DPI is the existing Windows value; no user display settings are changed.",
-                "UIA Invoke tests presets, restore, silent preview start/stop and page exit. Keyboard shortcuts, audio, ASR, paste and external APIs remain untested." });
+                "UIA semantic control patterns test presets, restore, silent preview start/stop and page exit. Keyboard shortcuts, audio, ASR, paste and external APIs remain untested." });
         Report["perMonitorV2DpiAwarenessSet"] = perMonitorDpi;
         Report["dpiAwarenessWin32Error"] = dpiError;
         Phase("starting");
