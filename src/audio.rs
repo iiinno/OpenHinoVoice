@@ -37,7 +37,7 @@ pub fn samples_to_pcm_le(samples: &[f32]) -> Vec<u8> {
 }
 
 pub struct Recorder {
-    _stream: cpal::Stream,
+    _stream: Option<cpal::Stream>,
     buffer: Arc<Mutex<CaptureBuffer>>,
     device_name: String,
     fallback_notice: Option<String>,
@@ -81,6 +81,22 @@ impl CaptureBuffer {
 }
 
 impl Recorder {
+    #[cfg(test)]
+    pub(crate) fn fixture(sample_rate: u32, samples: Vec<f32>) -> Self {
+        Self {
+            _stream: None,
+            buffer: Arc::new(Mutex::new(CaptureBuffer {
+                samples,
+                limit: sample_rate as usize * 2,
+                error: None,
+            })),
+            device_name: "CI PCM fixture".into(),
+            fallback_notice: None,
+            sample_rate,
+            channels: 1,
+        }
+    }
+
     #[allow(dead_code)] // Kept for standalone integrations that use the default device.
     pub fn start() -> Result<Recorder, String> {
         Self::start_with_device(None)
@@ -134,7 +150,7 @@ impl Recorder {
             .play()
             .map_err(|e| format!("録音を開始できません: {e}"))?;
         Ok(Recorder {
-            _stream: stream,
+            _stream: Some(stream),
             buffer,
             device_name,
             fallback_notice: None,

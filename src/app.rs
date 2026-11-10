@@ -416,6 +416,8 @@ fn retire_worker(mut worker: Worker) {
 }
 
 struct App {
+    #[cfg(test)]
+    fixture_recorder: Option<Recorder>,
     replay: Option<Box<ReplayCapture>>,
     cfg: Config,
     state: State,
@@ -466,6 +468,8 @@ impl App {
         let (format_tx, format_rx) = channel();
         Self {
             replay: None,
+            #[cfg(test)]
+            fixture_recorder: None,
             session: Session::new(&cfg),
             cfg,
             state: State::Idle,
@@ -482,6 +486,14 @@ impl App {
             start_requested: false,
             paste_notice: None,
         }
+    }
+
+    fn start_recorder(&mut self) -> Result<Recorder, String> {
+        #[cfg(test)]
+        if let Some(recorder) = self.fixture_recorder.take() {
+            return Ok(recorder);
+        }
+        Recorder::start_with_device(Some(self.cfg.microphone.as_str()))
     }
 
     fn retire_worker(&mut self, mut worker: Worker) {
@@ -719,7 +731,7 @@ impl App {
                     self.session.segmenter = segment::Segmenter::new(replay.sample_rate);
                 } else {
                     sound::stop();
-                    match Recorder::start_with_device(Some(self.cfg.microphone.as_str())) {
+                    match self.start_recorder() {
                         Ok(recorder) => {
                             if let Some(notice) = recorder.fallback_notice() {
                                 self.session.microphone_notice = Some(notice.to_string());
@@ -3528,3 +3540,6 @@ mod flow_tests {
         assert!(app.session.recorder.is_none());
     }
 }
+
+#[cfg(test)]
+mod core_e2e;

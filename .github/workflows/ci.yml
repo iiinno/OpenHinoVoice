@@ -60,6 +60,18 @@ jobs:
           cargo test --lib paste::tests::clipboard_write_tracks_the_published_sequence --locked --offline -- --ignored --exact --nocapture --test-threads=1 2>&1 | Tee-Object -FilePath target/qa/ci/clipboard-contract.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if ((Get-Content target/qa/ci/clipboard-contract.log -Raw) -notmatch 'test result: ok\. 1 passed; 0 failed') { throw 'The required clipboard regression did not run.' }
+      - name: Verify recording through actual text insertion
+        id: core-e2e
+        timeout-minutes: 10
+        run: |
+          $sandbox = Join-Path $env:GITHUB_WORKSPACE 'target/qa/core-e2e'
+          $env:APPDATA = Join-Path $sandbox 'appdata'
+          $env:LOCALAPPDATA = Join-Path $sandbox 'localappdata'
+          $env:OHV_TEST_NAMESPACE = "core-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          New-Item -ItemType Directory -Force -Path $env:APPDATA, $env:LOCALAPPDATA | Out-Null
+          cargo test --lib app::core_e2e::record_enter_pastes_once_and_restores_clipboard --locked --offline -- --ignored --exact --nocapture --test-threads=1 2>&1 | Tee-Object -FilePath target/qa/ci/core-e2e.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ((Get-Content target/qa/ci/core-e2e.log -Raw) -notmatch 'test result: ok\. 1 passed; 0 failed') { throw 'The required end-to-end insertion regression did not run.' }
       - name: Verify in isolated application directories
         id: verify
         run: ./scripts/verify.ps1 -Mode Full -OutputDir target/qa/ci
@@ -89,6 +101,8 @@ jobs:
             profile = 'release'
             features = 'default'
             verification = 'scripts/verify.ps1 -Mode Full'
+            coreClipboardVerified = $true
+            coreTextInsertionVerified = $true
             desktopUiVerified = $false
             liveAudioOrModelTestsExecuted = $false
           } | ConvertTo-Json | Set-Content -LiteralPath "$destination/build.json" -Encoding utf8NoBOM
@@ -102,6 +116,8 @@ jobs:
       - name: Record CI step outcomes
         if: always()
         env:
+          CLIPBOARD_RESULT: ${{ steps.clipboard.outcome }}
+          CORE_E2E_RESULT: ${{ steps.core-e2e.outcome }}
           HARNESSES_RESULT: ${{ steps.harnesses.outcome }}
           DEPENDENCIES_RESULT: ${{ steps.dependencies.outcome }}
           VERIFY_RESULT: ${{ steps.verify.outcome }}
@@ -111,6 +127,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path target/qa/ci | Out-Null
           [ordered]@{
             revision = $env:GITHUB_SHA
+            clipboardContract = $env:CLIPBOARD_RESULT
+            coreTextInsertion = $env:CORE_E2E_RESULT
             helperCompilation = $env:HARNESSES_RESULT
             dependencies = $env:DEPENDENCIES_RESULT
             verify = $env:VERIFY_RESULT
