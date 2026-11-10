@@ -31,6 +31,8 @@ extern "system" {
     fn EmptyClipboard() -> i32;
     fn SetClipboardData(format: u32, mem: *mut c_void) -> *mut c_void;
     fn GetClipboardSequenceNumber() -> u32;
+    fn GetClipboardOwner() -> *mut c_void;
+    fn GetClipboardData(format: u32) -> *mut c_void;
 }
 
 #[link(name = "kernel32")]
@@ -39,6 +41,7 @@ extern "system" {
     fn GlobalLock(mem: *mut c_void) -> *mut c_void;
     fn GlobalUnlock(mem: *mut c_void) -> i32;
     fn GlobalFree(mem: *mut c_void) -> *mut c_void;
+    fn GlobalSize(mem: *mut c_void) -> usize;
 }
 
 struct AllocatedClipboardMemory(*mut c_void);
@@ -54,6 +57,18 @@ impl Drop for AllocatedClipboardMemory {
 }
 
 struct OpenedClipboard;
+
+impl OpenedClipboard {
+    fn open(owner: HWND) -> Result<Self, String> {
+        for _ in 0..5 {
+            if unsafe { OpenClipboard(owner.0) } != 0 {
+                return Ok(Self);
+            }
+            thread::sleep(Duration::from_millis(30));
+        }
+        Err("クリップボードが使用中のためコピーできません".into())
+    }
+}
 
 impl Drop for OpenedClipboard {
     fn drop(&mut self) {
@@ -99,18 +114,7 @@ fn copy_text_to_clipboard_checked(
         std::ptr::copy_nonoverlapping(utf16.as_ptr(), ptr, utf16.len());
         GlobalUnlock(mem.0);
 
-        let mut opened = false;
-        for _ in 0..5 {
-            if OpenClipboard(owner.0) != 0 {
-                opened = true;
-                break;
-            }
-            thread::sleep(Duration::from_millis(30));
-        }
-        if !opened {
-            return Err("クリップボードが使用中のためコピーできません".into());
-        }
-        let _clipboard = OpenedClipboard;
+        let _clipboard = OpenedClipboard::open(owner)?;
         if expected_sequence.is_some_and(|sequence| sequence != GetClipboardSequenceNumber()) {
             return Err("クリップボードが他のアプリで更新されました".into());
         }
@@ -128,7 +132,34 @@ fn copy_text_to_clipboard_checked(
         // Windows now owns the moveable memory handle; never free it in this process.
         mem.0 = std::ptr::null_mut();
     }
+    // Closing a text write can publish Windows-synthesized formats and advance
+    // the sequence. Reopen read-only and prove ownership before accepting it.
+    *owned_sequence = 0;
+    *owned_sequence = published_clipboard_sequence(owner, &utf16)?;
     Ok(())
+}
+
+fn published_clipboard_sequence(owner: HWND, expected: &[u16]) -> Result<u32, String> {
+    let _clipboard = OpenedClipboard::open(owner)?;
+    unsafe {
+        if GetClipboardOwner() != owner.0 {
+            return Err("クリップボードが他のアプリで更新されました".into());
+        }
+        let mem = GetClipboardData(CF_UNICODETEXT);
+        if mem.is_null() || GlobalSize(mem) / std::mem::size_of::<u16>() < expected.len() {
+            return Err("クリップボードのテキストが変更されました".into());
+        }
+        let ptr = GlobalLock(mem) as *const u16;
+        if ptr.is_null() {
+            return Err("クリップボードのテキストを確認できません".into());
+        }
+        let matches = std::slice::from_raw_parts(ptr, expected.len()) == expected;
+        GlobalUnlock(mem);
+        if !matches {
+            return Err("クリップボードのテキストが変更されました".into());
+        }
+        Ok(GetClipboardSequenceNumber())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -449,23 +480,26 @@ mod tests {
                 }
             }
         }
-        let owner = Owner(unsafe {
-            CreateWindowExW(
-                WS_EX_TOOLWINDOW,
-                windows::core::w!("STATIC"),
-                windows::core::w!("OpenHinoVoice clipboard regression"),
-                WS_POPUP,
-                0,
-                0,
-                1,
-                1,
-                None,
-                None,
-                HINSTANCE::default(),
-                None,
-            )
-            .expect("create hidden clipboard owner")
-        });
+        fn make_owner() -> Owner {
+            Owner(unsafe {
+                CreateWindowExW(
+                    WS_EX_TOOLWINDOW,
+                    windows::core::w!("STATIC"),
+                    windows::core::w!("OpenHinoVoice clipboard regression"),
+                    WS_POPUP,
+                    0,
+                    0,
+                    1,
+                    1,
+                    None,
+                    None,
+                    HINSTANCE::default(),
+                    None,
+                )
+                .expect("create hidden clipboard owner")
+            })
+        }
+        let owner = make_owner();
         copy_text_to_clipboard("CI previous clipboard", owner.0).unwrap();
         let before = unsafe { GetClipboardSequenceNumber() };
         let mut owned_sequence = 0;
@@ -485,6 +519,18 @@ mod tests {
             owned_sequence, published_sequence,
             "closing our own clipboard write must not look like another application's change"
         );
+
+        let expected = clipboard_utf16("録音開始から Enter で貼り付け 😀");
+        let foreign_owner = make_owner();
+        copy_text_to_clipboard("録音開始から Enter で貼り付け 😀", foreign_owner.0).unwrap();
+        let foreign_sequence = unsafe { GetClipboardSequenceNumber() };
+        assert!(published_clipboard_sequence(owner.0, &expected).is_err());
+        assert_eq!(foreign_sequence, unsafe { GetClipboardSequenceNumber() });
+
+        copy_text_to_clipboard("newer copy from our owner", owner.0).unwrap();
+        let newer_sequence = unsafe { GetClipboardSequenceNumber() };
+        assert!(published_clipboard_sequence(owner.0, &expected).is_err());
+        assert_eq!(newer_sequence, unsafe { GetClipboardSequenceNumber() });
     }
 
     #[test]
