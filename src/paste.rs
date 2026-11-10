@@ -8,7 +8,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
-use windows::Win32::Graphics::Gdi::{BITMAP, METAFILEPICT};
+use windows::Win32::Graphics::Gdi::BITMAP;
+use windows::Win32::System::DataExchange::METAFILEPICT;
 use windows::Win32::System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
