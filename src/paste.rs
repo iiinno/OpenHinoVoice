@@ -1,5 +1,5 @@
 //! Paste the final text at once, instead of simulating typing through the IME.
-//! Retain the previous clipboard data object and restore it after Ctrl+V.
+//! Snapshot native clipboard formats and restore them after Ctrl+V.
 
 use std::ffi::c_void;
 use std::marker::PhantomData;
@@ -8,10 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
-use windows::Win32::System::Com::IDataObject;
-use windows::Win32::System::Ole::{
-    OleGetClipboard, OleInitialize, OleSetClipboard, OleUninitialize,
-};
+use windows::Win32::Graphics::Gdi::{BITMAP, METAFILEPICT};
 use windows::Win32::System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
@@ -33,6 +30,8 @@ extern "system" {
     fn GetClipboardSequenceNumber() -> u32;
     fn GetClipboardOwner() -> *mut c_void;
     fn GetClipboardData(format: u32) -> *mut c_void;
+    fn EnumClipboardFormats(format: u32) -> u32;
+    fn GetClipboardFormatNameW(format: u32, name: *mut u16, capacity: i32) -> i32;
 }
 
 #[link(name = "kernel32")]
@@ -42,6 +41,260 @@ extern "system" {
     fn GlobalUnlock(mem: *mut c_void) -> i32;
     fn GlobalFree(mem: *mut c_void) -> *mut c_void;
     fn GlobalSize(mem: *mut c_void) -> usize;
+    fn SetLastError(error: u32);
+    fn GetLastError() -> u32;
+}
+
+#[link(name = "ole32")]
+extern "system" {
+    fn OleDuplicateData(source: *mut c_void, format: u16, flags: u32) -> *mut c_void;
+}
+
+#[link(name = "gdi32")]
+extern "system" {
+    fn GetObjectW(object: *mut c_void, bytes: i32, output: *mut c_void) -> i32;
+    fn GetPaletteEntries(palette: *mut c_void, start: u32, count: u32, entries: *mut c_void) -> u32;
+    fn GetMetaFileBitsEx(metafile: *mut c_void, bytes: u32, output: *mut c_void) -> u32;
+    fn GetEnhMetaFileBits(metafile: *mut c_void, bytes: u32, output: *mut c_void) -> u32;
+    fn CopyEnhMetaFileW(metafile: *mut c_void, file: *const u16) -> *mut c_void;
+    fn DeleteObject(object: *mut c_void) -> i32;
+    fn DeleteMetaFile(metafile: *mut c_void) -> i32;
+    fn DeleteEnhMetaFile(metafile: *mut c_void) -> i32;
+}
+
+const SNAPSHOT_MAX_BYTES: usize = 64 * 1024 * 1024;
+const SNAPSHOT_MAX_FORMATS: usize = 256;
+
+#[derive(Clone, Copy)]
+enum ClipboardFormatKind {
+    Global,
+    Bitmap,
+    Palette,
+    MetafilePicture,
+    EnhancedMetafile,
+}
+
+impl ClipboardFormatKind {
+    fn from_format(format: u32) -> Result<Self, String> {
+        match format {
+            2 | 0x82 => Ok(Self::Bitmap),
+            9 => Ok(Self::Palette),
+            3 | 0x83 => Ok(Self::MetafilePicture),
+            14 | 0x8e => Ok(Self::EnhancedMetafile),
+            1 | 4..=8 | 10..=13 | 15..=17 | 0x81 | 0xc000..=0xffff => Ok(Self::Global),
+            _ => Err(format!(
+                "元のクリップボード形式 {format} を安全に保持できないため、貼り付けを中止しました"
+            )),
+        }
+    }
+}
+
+struct OwnedClipboardFormat {
+    format: u32,
+    handle: *mut c_void,
+    kind: ClipboardFormatKind,
+    nested_metafile: *mut c_void,
+}
+
+impl Drop for OwnedClipboardFormat {
+    fn drop(&mut self) {
+        if self.handle.is_null() {
+            return;
+        }
+        unsafe {
+            match self.kind {
+                ClipboardFormatKind::Global => {
+                    GlobalFree(self.handle);
+                }
+                ClipboardFormatKind::Bitmap | ClipboardFormatKind::Palette => {
+                    DeleteObject(self.handle);
+                }
+                ClipboardFormatKind::MetafilePicture => {
+                    DeleteMetaFile(self.nested_metafile);
+                    GlobalFree(self.handle);
+                }
+                ClipboardFormatKind::EnhancedMetafile => {
+                    DeleteEnhMetaFile(self.handle);
+                }
+            }
+        }
+    }
+}
+
+fn metafile_picture(handle: *mut c_void) -> Result<METAFILEPICT, String> {
+    unsafe {
+        if GlobalSize(handle) < std::mem::size_of::<METAFILEPICT>() {
+            return Err("元のクリップボードのメタファイルが不正です".into());
+        }
+        let pointer = GlobalLock(handle) as *const METAFILEPICT;
+        if pointer.is_null() {
+            return Err("元のクリップボードのメタファイルを読み取れません".into());
+        }
+        let picture = pointer.read();
+        GlobalUnlock(handle);
+        Ok(picture)
+    }
+}
+
+impl OwnedClipboardFormat {
+    fn duplicate(
+        format: u32,
+        source: *mut c_void,
+        remaining: usize,
+    ) -> Result<(Self, usize), String> {
+        let kind = ClipboardFormatKind::from_format(format)?;
+        let bytes = unsafe {
+            match kind {
+                ClipboardFormatKind::Global => GlobalSize(source),
+                ClipboardFormatKind::Bitmap => {
+                    let mut bitmap = BITMAP::default();
+                    if GetObjectW(
+                        source,
+                        std::mem::size_of_val(&bitmap) as i32,
+                        &mut bitmap as *mut _ as *mut c_void,
+                    ) != std::mem::size_of_val(&bitmap) as i32
+                    {
+                        return Err("元のクリップボードの画像を確認できません".into());
+                    }
+                    (bitmap.bmWidthBytes.unsigned_abs() as usize)
+                        .checked_mul(bitmap.bmHeight.unsigned_abs() as usize)
+                        .and_then(|bytes| bytes.checked_mul(bitmap.bmPlanes as usize))
+                        .ok_or("元のクリップボードの画像が大きすぎます")?
+                }
+                ClipboardFormatKind::Palette => {
+                    GetPaletteEntries(source, 0, 0, std::ptr::null_mut()) as usize * 4
+                }
+                ClipboardFormatKind::MetafilePicture => {
+                    let picture = metafile_picture(source)?;
+                    let size = GetMetaFileBitsEx(picture.hMF.0, 0, std::ptr::null_mut()) as usize;
+                    if size == 0 {
+                        return Err("元のクリップボードのメタファイルを確認できません".into());
+                    }
+                    size.checked_add(std::mem::size_of_val(&picture))
+                        .ok_or("元のクリップボードのメタファイルが大きすぎます")?
+                }
+                ClipboardFormatKind::EnhancedMetafile => {
+                    GetEnhMetaFileBits(source, 0, std::ptr::null_mut()) as usize
+                }
+            }
+        };
+        if bytes == 0 || bytes > remaining {
+            return Err("元のクリップボードを保持できません（無効な形式、または64 MiBを超過）".into());
+        }
+        let handle = unsafe {
+            match kind {
+                ClipboardFormatKind::EnhancedMetafile => CopyEnhMetaFileW(source, std::ptr::null()),
+                ClipboardFormatKind::Bitmap => OleDuplicateData(source, 2, GMEM_MOVEABLE),
+                ClipboardFormatKind::Palette => OleDuplicateData(source, 9, GMEM_MOVEABLE),
+                ClipboardFormatKind::MetafilePicture => OleDuplicateData(source, 3, GMEM_MOVEABLE),
+                ClipboardFormatKind::Global => {
+                    OleDuplicateData(source, format as u16, GMEM_MOVEABLE)
+                }
+            }
+        };
+        if handle.is_null() {
+            return Err("元のクリップボードを複製できません".into());
+        }
+        let mut owned = Self {
+            format,
+            handle,
+            kind,
+            nested_metafile: std::ptr::null_mut(),
+        };
+        if matches!(kind, ClipboardFormatKind::MetafilePicture) {
+            owned.nested_metafile = metafile_picture(handle)?.hMF.0;
+        }
+        Ok((owned, bytes))
+    }
+}
+
+fn is_ole_transport(format: u32) -> Result<bool, String> {
+    if format < 0xc000 {
+        return Ok(false);
+    }
+    let mut name = [0u16; 256];
+    let length = unsafe { GetClipboardFormatNameW(format, name.as_mut_ptr(), name.len() as i32) };
+    if length == 0 {
+        return Err("元のクリップボードの形式名を取得できません".into());
+    }
+    let name = String::from_utf16_lossy(&name[..length as usize]);
+    // These formats identify the old OLE publisher, not transferable document data.
+    Ok(["DataObject", "Ole Private Data", "Wine Marshalled DataObject"]
+        .iter()
+        .any(|transport| name.eq_ignore_ascii_case(transport)))
+}
+
+struct ClipboardSnapshot {
+    sequence: u32,
+    formats: Vec<OwnedClipboardFormat>,
+}
+
+impl ClipboardSnapshot {
+    fn capture_locked(_clipboard: &OpenedClipboard) -> Result<Self, String> {
+        let mut formats = Vec::new();
+        let mut used_bytes = 0;
+        let mut format = 0;
+        loop {
+            unsafe { SetLastError(0) };
+            format = unsafe { EnumClipboardFormats(format) };
+            if format == 0 {
+                if unsafe { GetLastError() } != 0 {
+                    return Err("元のクリップボードの形式一覧を取得できません".into());
+                }
+                break;
+            }
+            if is_ole_transport(format)? {
+                continue;
+            }
+            if formats.len() == SNAPSHOT_MAX_FORMATS {
+                return Err("元のクリップボードの形式が256件を超えています".into());
+            }
+            ClipboardFormatKind::from_format(format)?;
+            let source = unsafe { GetClipboardData(format) };
+            if source.is_null() {
+                return Err(format!("元のクリップボード形式 {format} を読み取れません"));
+            }
+            let (duplicate, bytes) =
+                OwnedClipboardFormat::duplicate(format, source, SNAPSHOT_MAX_BYTES - used_bytes)?;
+            used_bytes += bytes;
+            formats.push(duplicate);
+        }
+        Ok(Self {
+            sequence: unsafe { GetClipboardSequenceNumber() },
+            formats,
+        })
+    }
+
+    fn restore(mut self, owner: HWND, our_sequence: u32) -> Result<(), String> {
+        if our_sequence == 0 {
+            return Ok(());
+        }
+        let _clipboard = OpenedClipboard::open(owner)?;
+        if !should_restore(self.sequence, our_sequence, unsafe {
+            GetClipboardSequenceNumber()
+        }) || unsafe { GetClipboardOwner() } != owner.0
+        {
+            return Ok(());
+        }
+        if unsafe { EmptyClipboard() } == 0 {
+            return Err("元のクリップボードを復元する準備ができません".into());
+        }
+        let mut failed = false;
+        for format in &mut self.formats {
+            if unsafe { SetClipboardData(format.format, format.handle) }.is_null() {
+                failed = true;
+            } else {
+                // SetClipboardData transfers ownership, including a METAFILEPICT's nested handle.
+                format.handle = std::ptr::null_mut();
+                format.nested_metafile = std::ptr::null_mut();
+            }
+        }
+        if failed {
+            Err("入力は送信済みですが、元のクリップボードの一部を復元できませんでした".into())
+        } else {
+            Ok(())
+        }
+    }
 }
 
 struct AllocatedClipboardMemory(*mut c_void);
@@ -94,6 +347,16 @@ fn copy_text_to_clipboard_checked(
     expected_sequence: Option<u32>,
     owned_sequence: &mut u32,
 ) -> Result<(), String> {
+    replace_clipboard_text(text, owner, expected_sequence, owned_sequence, None)
+}
+
+fn replace_clipboard_text(
+    text: &str,
+    owner: HWND,
+    expected_sequence: Option<u32>,
+    owned_sequence: &mut u32,
+    snapshot: Option<&mut Option<ClipboardSnapshot>>,
+) -> Result<(), String> {
     if owner.0.is_null() {
         return Err("クリップボードの所有者ウィンドウがありません".into());
     }
@@ -114,9 +377,12 @@ fn copy_text_to_clipboard_checked(
         std::ptr::copy_nonoverlapping(utf16.as_ptr(), ptr, utf16.len());
         GlobalUnlock(mem.0);
 
-        let _clipboard = OpenedClipboard::open(owner)?;
+        let clipboard = OpenedClipboard::open(owner)?;
         if expected_sequence.is_some_and(|sequence| sequence != GetClipboardSequenceNumber()) {
             return Err("クリップボードが他のアプリで更新されました".into());
+        }
+        if let Some(snapshot) = snapshot {
+            *snapshot = Some(ClipboardSnapshot::capture_locked(&clipboard)?);
         }
         if EmptyClipboard() == 0 {
             return Err("クリップボードを空にできません".into());
@@ -265,13 +531,6 @@ fn validate_injected_count(expected: usize, inserted: u32) -> Result<(), String>
     }
 }
 
-struct OleScope;
-impl Drop for OleScope {
-    fn drop(&mut self) {
-        unsafe { OleUninitialize() }
-    }
-}
-
 static PASTE_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 struct ProcessLease;
 impl ProcessLease {
@@ -323,13 +582,12 @@ fn should_restore(before: u32, ours: u32, current: u32) -> bool {
     ours != 0 && ours != before && ours == current
 }
 
-/// 同じ STA が旧データを保持し、期限後に復元する。別スレッドへは移せない。
+/// 元の各形式を所有し、期限後に復元する。排他mutexは取得したスレッドで解放する。
 pub struct PasteTransaction {
-    previous: Option<IDataObject>,
-    before: u32,
+    previous: Option<ClipboardSnapshot>,
+    owner: HWND,
     our_sequence: u32,
     deadline: Instant,
-    _ole: OleScope,
     _lease: PasteLease,
     _same_thread: PhantomData<Rc<()>>,
 }
@@ -352,30 +610,20 @@ impl PasteTransaction {
             return Err("修飾キーが押されているため、文字入力を中止しました".into());
         }
         let lease = PasteLease::acquire()?;
-        unsafe { OleInitialize(None) }
-            .map_err(|e| format!("クリップボードの初期化に失敗しました: {e}"))?;
-        let ole = OleScope;
-        let before = unsafe { GetClipboardSequenceNumber() };
-        let previous = unsafe { OleGetClipboard() }
-            .map_err(|e| format!("既存のクリップボードを保持できません: {e}"))?;
-        if before != unsafe { GetClipboardSequenceNumber() } {
-            return Err("既存のクリップボードの取得中に内容が更新されました".into());
-        }
-        check_target(target)?;
-        if !no_modifiers_pressed() {
-            return Err("修飾キーが押されているため、貼り付けを中止しました".into());
-        }
-        if before != unsafe { GetClipboardSequenceNumber() } {
-            return Err("クリップボードが他のアプリで更新されました".into());
-        }
+        let mut previous = None;
         let mut our_sequence = 0;
-        let result = copy_text_to_clipboard_checked(text, owner, Some(before), &mut our_sequence);
+        let result = replace_clipboard_text(
+            text,
+            owner,
+            None,
+            &mut our_sequence,
+            Some(&mut previous),
+        );
         let mut transaction = Self {
-            previous: Some(previous),
-            before,
+            previous,
+            owner,
             our_sequence,
             deadline: now,
-            _ole: ole,
             _lease: lease,
             _same_thread: PhantomData,
         };
@@ -393,7 +641,7 @@ impl PasteTransaction {
             let _ = unsafe { SendInput(&keys[3..], std::mem::size_of::<INPUT>() as i32) };
         }
         validate_injected_count(keys.len(), inserted)?;
-        // 転送前の COM 待ちが長くても、送信後の猶予は必ず確保する。
+        // クリップボードの保持に時間がかかっても、送信後の猶予は確保する。
         transaction.deadline = Instant::now() + Duration::from_millis(250);
         Ok(transaction)
     }
@@ -410,14 +658,7 @@ impl PasteTransaction {
         let Some(previous) = self.previous.take() else {
             return Ok(());
         };
-        if should_restore(self.before, self.our_sequence, unsafe {
-            GetClipboardSequenceNumber()
-        }) {
-            unsafe { OleSetClipboard(&previous) }.map_err(|e| {
-                format!("入力は送信済みですが、元のクリップボードを復元できませんでした: {e}")
-            })?;
-        }
-        Ok(())
+        previous.restore(self.owner, self.our_sequence)
     }
 }
 
@@ -520,6 +761,20 @@ mod tests {
             "closing our own clipboard write must not look like another application's change"
         );
 
+        {
+            let _clipboard = OpenedClipboard::open(owner.0).unwrap();
+            assert!(
+                !unsafe { GetClipboardData(1) }.is_null(),
+                "a consumer can request Windows-synthesized CF_TEXT"
+            );
+        }
+        let after_consumer_read = unsafe { GetClipboardSequenceNumber() };
+        eprintln!("clipboard sequence after CF_TEXT read: {after_consumer_read}");
+        assert_eq!(
+            owned_sequence, after_consumer_read,
+            "reading a synthesized format must not invalidate our publication"
+        );
+
         let expected = clipboard_utf16("録音開始から Enter で貼り付け 😀");
         let foreign_owner = make_owner();
         copy_text_to_clipboard("録音開始から Enter で貼り付け 😀", foreign_owner.0).unwrap();
@@ -531,6 +786,104 @@ mod tests {
         let newer_sequence = unsafe { GetClipboardSequenceNumber() };
         assert!(published_clipboard_sequence(owner.0, &expected).is_err());
         assert_eq!(newer_sequence, unsafe { GetClipboardSequenceNumber() });
+
+        #[link(name = "user32")]
+        extern "system" {
+            fn RegisterClipboardFormatW(name: *const u16) -> u32;
+        }
+        let format_name = windows::core::w!("OpenHinoVoice.NativeSnapshotRegression");
+        let registered = unsafe { RegisterClipboardFormatW(format_name.as_ptr()) };
+        assert!(registered >= 0xc000);
+        let transports = [
+            windows::core::w!("DataObject"),
+            windows::core::w!("Ole Private Data"),
+            windows::core::w!("Wine Marshalled DataObject"),
+        ]
+        .map(|name| unsafe { RegisterClipboardFormatW(name.as_ptr()) });
+        assert!(transports.iter().all(|format| *format >= 0xc000));
+        let original = "元のクリップボード 😀";
+        copy_text_to_clipboard(original, owner.0).unwrap();
+        let payload = b"registered clipboard payload 123";
+        unsafe {
+            let _clipboard = OpenedClipboard::open(owner.0).unwrap();
+            for format in std::iter::once(registered).chain(transports) {
+                let mut memory =
+                    AllocatedClipboardMemory(GlobalAlloc(GMEM_MOVEABLE, payload.len()));
+                assert!(!memory.0.is_null());
+                let pointer = GlobalLock(memory.0) as *mut u8;
+                assert!(!pointer.is_null());
+                std::ptr::copy_nonoverlapping(payload.as_ptr(), pointer, payload.len());
+                GlobalUnlock(memory.0);
+                assert!(!SetClipboardData(format, memory.0).is_null());
+                memory.0 = std::ptr::null_mut();
+            }
+        }
+        let mut snapshot = None;
+        let mut ours = 0;
+        replace_clipboard_text(
+            "transient dictation",
+            owner.0,
+            None,
+            &mut ours,
+            Some(&mut snapshot),
+        )
+        .unwrap();
+        snapshot.unwrap().restore(owner.0, ours).unwrap();
+        let original_utf16 = clipboard_utf16(original);
+        assert!(published_clipboard_sequence(owner.0, &original_utf16).is_ok());
+        unsafe {
+            let _clipboard = OpenedClipboard::open(owner.0).unwrap();
+            let handle = GetClipboardData(registered);
+            assert!(!handle.is_null(), "registered clipboard data must survive");
+            assert!(GlobalSize(handle) >= payload.len());
+            let pointer = GlobalLock(handle) as *const u8;
+            assert!(!pointer.is_null());
+            let restored = std::slice::from_raw_parts(pointer, payload.len()).to_vec();
+            GlobalUnlock(handle);
+            assert_eq!(restored, payload);
+            for transport in transports {
+                assert!(
+                    GetClipboardData(transport).is_null(),
+                    "old OLE transport references must not be republished"
+                );
+            }
+        }
+
+        let mut snapshot = None;
+        replace_clipboard_text(
+            "second dictation",
+            owner.0,
+            None,
+            &mut ours,
+            Some(&mut snapshot),
+        )
+        .unwrap();
+        copy_text_to_clipboard("new user copy", foreign_owner.0).unwrap();
+        let foreign_sequence = unsafe { GetClipboardSequenceNumber() };
+        snapshot.unwrap().restore(owner.0, ours).unwrap();
+        assert_eq!(foreign_sequence, unsafe { GetClipboardSequenceNumber() });
+        assert!(published_clipboard_sequence(
+            foreign_owner.0,
+            &clipboard_utf16("new user copy")
+        )
+        .is_ok());
+
+        {
+            let _clipboard = OpenedClipboard::open(owner.0).unwrap();
+            assert_ne!(unsafe { EmptyClipboard() }, 0);
+        }
+        let mut snapshot = None;
+        replace_clipboard_text(
+            "dictation over an empty clipboard",
+            owner.0,
+            None,
+            &mut ours,
+            Some(&mut snapshot),
+        )
+        .unwrap();
+        snapshot.unwrap().restore(owner.0, ours).unwrap();
+        let _clipboard = OpenedClipboard::open(owner.0).unwrap();
+        assert_eq!(unsafe { EnumClipboardFormats(0) }, 0);
     }
 
     #[test]

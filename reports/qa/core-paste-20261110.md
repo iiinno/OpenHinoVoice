@@ -16,3 +16,11 @@
 4. Actionsの通常CIとrelease artifact生成に必須ゲートとして組込み。テスト0件・環境不足は合格にしない。ローカルビルドなし。
 
 並列の担当はpaste実装と実clipboard回帰、App/PCM/入力先を結ぶE2E、親のCI/実機診断。共有ファイルを分ける。失敗先行のCIを確認してから修正をpushし、成功後のみ導入版を更新する。実マイク/実モデルの品質と個々のアプリ固有入力方式は、この合成音声・ASR境界の試験とは区別する。
+
+## 再現した2つの欠陥
+
+03632f1の[Actions42790499734](https://github.com/iiinno/OpenHinoVoice/actions/runs/42790499734)で、更新番号が書込み直後7、CloseClipboard後10になり、自己更新を他アプリ更新と誤判定することを再現。19c2e88で当該回帰は成功した。
+
+24697daの[Actions42792327208](https://github.com/iiinno/OpenHinoVoice/actions/runs/42792327208)では、別プロセスのEDIT本文へ正確に一度だけ入った後、クリップボード復元完了時のCF_UNICODETEXTが消失して失敗した。OleGetClipboardの参照保持とOleSetClipboard後の解放だけでは元データの維持を証明できない。native形式を保持し、復元判定と書戻しを同じロック内で実施する修正対象とした。
+
+途中のa70d82dはテスト用初期化の追加漏れでcompile失敗、42d13e7はテスト用キャレット位置の誤りで失敗した。これらを製品不具合の再現成功としては数えない。

@@ -1,0 +1,19 @@
+2026-11-10T09:39:54.4646125Z 
+2026-11-10T09:39:54.4647851Z running 1 test
+2026-11-10T09:39:54.7087401Z test app::core_e2e::record_enter_pastes_once_and_restores_clipboard ... core_e2e: target PID 5756 differs from app PID 5436
+2026-11-10T09:39:55.4710496Z [31;1m[0m
+2026-11-10T09:39:55.4721701Z [31;1mthread 'app::core_e2e::record_enter_pastes_once_and_restores_clipboard' (5636) panicked at src\app\core_e2e.rs:428:13:[0m
+2026-11-10T09:39:55.4735963Z [31;1mClipboard must contain the seeded Unicode text[0m
+2026-11-10T09:39:55.4754021Z [31;1mnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace[0m
+2026-11-10T09:39:55.5064417Z FAILED
+2026-11-10T09:39:55.5066687Z 
+2026-11-10T09:39:55.5083528Z failures:
+2026-11-10T09:39:55.5083949Z 
+2026-11-10T09:39:55.5084236Z failures:
+2026-11-10T09:39:55.5085514Z     app::core_e2e::record_enter_pastes_once_and_restores_clipboard
+2026-11-10T09:39:55.5086631Z 
+2026-11-10T09:39:55.5090545Z test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 287 filtered out; finished in 1.13s
+2026-11-10T09:39:55.5091711Z 
+2026-11-10T09:39:55.5139989Z [31;1m[1m[91merror[0m: test failed, to rerun pass `--lib`[0m
+2026-11-10T09:39:55.5780953Z ##[error]Process completed with exit code 1.
+2026-11-10T09:39:55.5945465Z ##[group]Run New-Item -ItemType Directory -Force -Path target/qa/ci | Out-Null
