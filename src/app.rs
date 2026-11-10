@@ -3271,6 +3271,7 @@ mod flow_tests {
         let mut session = Session::new(&cfg);
         session.recovery_id = Some(recoveries.reserve(false).unwrap());
         App {
+            fixture_recorder: None,
             replay: None,
             session,
             cfg,

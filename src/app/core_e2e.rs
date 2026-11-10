@@ -1,6 +1,8 @@
 use super::*;
 use std::ffi::c_void;
-use std::thread::JoinHandle;
+use std::os::windows::process::CommandExt;
+use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
 use windows::core::w;
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -10,7 +12,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DestroyWindow, DispatchMessageW, GetForegroundWindow, GetMessageW,
-    PeekMessageW, PostThreadMessageW, SendMessageTimeoutW, SendMessageW, SetForegroundWindow,
+    GetWindowThreadProcessId, PeekMessageW, PostThreadMessageW, SendMessageTimeoutW, SendMessageW,
+    SetForegroundWindow,
     TranslateMessage, MSG, PM_REMOVE, SMTO_ABORTIFHUNG, WINDOW_EX_STYLE, WINDOW_STYLE,
     WM_GETTEXT, WM_QUIT, WS_CHILD, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_VISIBLE,
@@ -115,67 +118,82 @@ impl Drop for OwnerWindow {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct EditReady {
+    pid: u32,
+    thread_id: u32,
+    top: isize,
+    edit: isize,
+}
+
 struct EditTarget {
     top: HWND,
     edit: HWND,
     thread_id: u32,
-    thread: Option<JoinHandle<()>>,
+    child: Child,
 }
 impl EditTarget {
     fn new() -> Self {
-        let (ready, received) = channel();
-        let thread = std::thread::spawn(move || unsafe {
-            let instance = HINSTANCE(GetModuleHandleW(None).unwrap().0);
-            let top = CreateWindowExW(
-                WINDOW_EX_STYLE::default(),
-                w!("STATIC"),
-                w!("OpenHinoVoice CI input target"),
-                WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-                100,
-                100,
-                640,
-                240,
-                None,
-                None,
-                instance,
-                None,
-            )
+        let directory = PathBuf::from(std::env::var_os("APPDATA").unwrap())
+            .join(format!("core-edit-target-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let ready_path = directory.join("ready.json");
+        let log = std::fs::File::create(directory.join("child.log")).unwrap();
+        let child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "app::core_e2e::edit_target_fixture",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("OHV_CORE_EDIT_READY", &ready_path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(log.try_clone().unwrap()))
+            .stderr(Stdio::from(log))
+            .creation_flags(0x0800_0000)
+            .spawn()
             .unwrap();
-            let edit = CreateWindowExW(
-                WINDOW_EX_STYLE::default(),
-                w!("EDIT"),
-                w!("前置き:"),
-                WS_CHILD | WS_VISIBLE | WINDOW_STYLE(0x0004 | 0x0040 | 0x0080),
-                8,
-                8,
-                600,
-                180,
-                top,
-                None,
-                instance,
-                None,
-            )
-            .unwrap();
-            assert!(SetForegroundWindow(top).as_bool());
-            let _ = SetFocus(edit);
-            SendMessageW(edit, 0x00B1, WPARAM(usize::MAX), LPARAM(-1));
-            ready
-                .send((top.0 as isize, edit.0 as isize, GetCurrentThreadId()))
-                .unwrap();
-            let mut message = MSG::default();
-            while GetMessageW(&mut message, None, 0, 0).0 > 0 {
-                let _ = TranslateMessage(&message);
-                DispatchMessageW(&message);
+        let mut target = Self {
+            top: HWND::default(),
+            edit: HWND::default(),
+            thread_id: 0,
+            child,
+        };
+        assert_ne!(target.child.id(), std::process::id());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let ready: EditReady = loop {
+            if let Some(status) = target.child.try_wait().unwrap() {
+                panic!(
+                    "EDIT fixture exited before readiness: {status}; {}",
+                    std::fs::read_to_string(directory.join("child.log")).unwrap_or_default()
+                );
             }
-            let _ = DestroyWindow(top);
-        });
-        let (top, edit, thread_id) = received.recv_timeout(Duration::from_secs(5)).unwrap();
-        Self {
-            top: HWND(top as *mut c_void),
-            edit: HWND(edit as *mut c_void),
-            thread_id,
-            thread: Some(thread),
+            match std::fs::read(&ready_path) {
+                Ok(bytes) => break serde_json::from_slice(&bytes).unwrap(),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => panic!("Cannot read EDIT readiness: {error}"),
+            }
+            assert!(Instant::now() < deadline, "EDIT fixture readiness timed out");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(ready.pid, target.child.id());
+        target.top = HWND(ready.top as *mut c_void);
+        target.edit = HWND(ready.edit as *mut c_void);
+        target.thread_id = ready.thread_id;
+        for window in [target.top, target.edit] {
+            let mut actual_pid = 0;
+            let actual_thread = unsafe { GetWindowThreadProcessId(window, Some(&mut actual_pid)) };
+            assert_eq!(actual_pid, target.child.id());
+            assert_eq!(actual_thread, ready.thread_id);
         }
+        assert_eq!(unsafe { GetForegroundWindow() }, target.top);
+        println!(
+            "core_e2e: target PID {} differs from app PID {}",
+            target.child.id(),
+            std::process::id()
+        );
+        target
     }
 
     fn text(&self) -> String {
@@ -196,12 +214,120 @@ impl EditTarget {
         assert!(length < text.len());
         String::from_utf16(&text[..length]).unwrap()
     }
+
+    fn close(&mut self) -> Result<(), String> {
+        if let Some(status) = self.child.try_wait().map_err(|error| error.to_string())? {
+            return if status.success() {
+                Ok(())
+            } else {
+                Err(format!("EDIT fixture exited: {status}"))
+            };
+        }
+        if self.thread_id == 0 {
+            return Err("EDIT fixture did not provide a message-loop thread".into());
+        }
+        let mut actual_pid = 0;
+        let actual_thread = unsafe { GetWindowThreadProcessId(self.top, Some(&mut actual_pid)) };
+        if actual_pid != self.child.id() || actual_thread != self.thread_id {
+            return Err("EDIT fixture window identity changed before shutdown".into());
+        }
+        unsafe { PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0)) }
+            .map_err(|error| error.to_string())?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(status) = self.child.try_wait().map_err(|error| error.to_string())? {
+                return if status.success() {
+                    Ok(())
+                } else {
+                    Err(format!("EDIT fixture exited: {status}"))
+                };
+            }
+            if Instant::now() >= deadline {
+                return Err("EDIT fixture failed to exit before its deadline".into());
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
 }
 impl Drop for EditTarget {
     fn drop(&mut self) {
-        let _ = unsafe { PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0)) };
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+        if let Err(error) = self.close() {
+            eprintln!("{error}; cleaning up only the owned fixture process");
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+}
+
+#[test]
+#[ignore = "child fixture launched only by the mandatory core E2E test"]
+fn edit_target_fixture() {
+    require_hosted_input_desktop();
+    let ready_path = PathBuf::from(std::env::var_os("OHV_CORE_EDIT_READY").unwrap());
+    let app_data = PathBuf::from(std::env::var_os("APPDATA").unwrap());
+    assert!(ready_path.is_absolute());
+    assert!(ready_path
+        .parent()
+        .unwrap()
+        .canonicalize()
+        .unwrap()
+        .starts_with(app_data.canonicalize().unwrap()));
+    assert!(!ready_path.exists());
+    unsafe {
+        let instance = HINSTANCE(GetModuleHandleW(None).unwrap().0);
+        let top = OwnerWindow(
+            CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                w!("STATIC"),
+                w!("OpenHinoVoice CI input target"),
+                WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                100,
+                100,
+                640,
+                240,
+                None,
+                None,
+                instance,
+                None,
+            )
+            .unwrap(),
+        );
+        let edit = CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            w!("EDIT"),
+            w!("前置き:"),
+            WS_CHILD | WS_VISIBLE | WINDOW_STYLE(0x0004 | 0x0040 | 0x0080),
+            8,
+            8,
+            600,
+            180,
+            top.0,
+            None,
+            instance,
+            None,
+        )
+        .unwrap();
+        assert!(SetForegroundWindow(top.0).as_bool());
+        let _ = SetFocus(edit);
+        SendMessageW(edit, 0x00B1, WPARAM(usize::MAX), LPARAM(-1));
+        let ready = EditReady {
+            pid: std::process::id(),
+            thread_id: GetCurrentThreadId(),
+            top: top.0 .0 as isize,
+            edit: edit.0 as isize,
+        };
+        let pending = ready_path.with_extension("tmp");
+        std::fs::write(&pending, serde_json::to_vec(&ready).unwrap()).unwrap();
+        std::fs::rename(pending, ready_path).unwrap();
+        let mut message = MSG::default();
+        loop {
+            let result = GetMessageW(&mut message, None, 0, 0).0;
+            assert_ne!(result, -1, "EDIT fixture message loop failed");
+            if result == 0 {
+                break;
+            }
+            let _ = TranslateMessage(&message);
+            DispatchMessageW(&message);
         }
     }
 }
@@ -218,7 +344,7 @@ impl Drop for RunningApp {
     fn drop(&mut self) {
         self.0.paste_transaction.take();
         self.0.teardown_session();
-        if let Some(mut kept) = self.0.kept_worker.take() {
+        if let Some(kept) = self.0.kept_worker.take() {
             kept.worker.shutdown();
         }
     }
@@ -321,7 +447,7 @@ fn record_enter_pastes_once_and_restores_clipboard() {
     require_hosted_input_desktop();
     let owner = OwnerWindow::new();
     let _owner_binding = overlay::test_owner(owner.0);
-    let target = EditTarget::new();
+    let mut target = EditTarget::new();
     let (key_tx, key_rx) = channel();
     hook::install(key_tx, config::Hotkey { mods: 0, vk: 0x77 }).unwrap();
     let _hook = InstalledHook;
@@ -356,6 +482,8 @@ fn record_enter_pastes_once_and_restores_clipboard() {
         paste::copy_text_to_clipboard(&seeded_clipboard, owner.0).unwrap();
         assert_eq!(unsafe { GetForegroundWindow() }, target.top);
         let captured = paste::capture_target().unwrap();
+        assert_eq!(captured.process_id(), target.child.id());
+        assert_ne!(captured.process_id(), std::process::id());
         let samples = [vec![0.0; 3200], vec![0.3; 6400]].concat();
         app.fixture_recorder = Some(Recorder::fixture(16000, samples));
         key_press(0x77);
@@ -429,4 +557,8 @@ fn record_enter_pastes_once_and_restores_clipboard() {
             }
         );
     }
+    target
+        .close()
+        .expect("The owned EDIT process must exit cleanly");
+    println!("core_e2e: separate target process exited successfully");
 }
