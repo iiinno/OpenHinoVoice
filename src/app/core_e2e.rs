@@ -309,7 +309,8 @@ fn edit_target_fixture() {
         .unwrap();
         assert!(SetForegroundWindow(top.0).as_bool());
         let _ = SetFocus(edit);
-        SendMessageW(edit, 0x00B1, WPARAM(usize::MAX), LPARAM(-1));
+        let caret = "前置き:".encode_utf16().count();
+        SendMessageW(edit, 0x00B1, WPARAM(caret), LPARAM(caret as isize));
         let ready = EditReady {
             pid: std::process::id(),
             thread_id: GetCurrentThreadId(),
