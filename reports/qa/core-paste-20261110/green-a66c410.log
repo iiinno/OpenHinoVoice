@@ -1,0 +1,14 @@
+Source: a66c410dd1b8eefefc9b565a270001e0c467157c
+Run: https://github.com/iiinno/OpenHinoVoice/actions/runs/42796362130
+2026-11-10T10:08:31.4689998Z clipboard sequence: before=5, recorded=10, after_close=10
+2026-11-10T10:08:31.4703185Z clipboard sequence after CF_TEXT read: 10
+2026-11-10T10:08:31.4708089Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 287 filtered out; finished in 0.01s
+2026-11-10T10:08:32.7348173Z test app::core_e2e::record_enter_pastes_once_and_restores_clipboard ... core_e2e: target PID 5152 differs from app PID 2428
+2026-11-10T10:08:33.1290256Z core_e2e: cycle 1 passed; actual EDIT text matched; clipboard restored
+2026-11-10T10:08:33.3985078Z core_e2e: cycle 2 passed; actual EDIT text matched; clipboard preserved newer copy
+2026-11-10T10:08:33.4382596Z core_e2e: separate target process exited successfully
+2026-11-10T10:08:33.4427227Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 287 filtered out; finished in 1.08s
+2026-11-10T10:08:36.0100379Z format: passed (1607 ms)
+2026-11-10T10:08:42.1814909Z clippy: passed (6166 ms)
+2026-11-10T10:09:04.9640786Z tests: passed (22779 ms)
+2026-11-10T10:10:55.2507120Z release: passed (110283 ms)

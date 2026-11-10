@@ -34,14 +34,34 @@ jobs:
           if ($env:RELEASE_TAG -cne "v$($package.version)") {
             throw "Release tag $env:RELEASE_TAG does not match Cargo version $($package.version)"
           }
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-      - name: Lint
-        run: cargo clippy --all-targets --locked -- -D warnings
-      - name: Test
-        run: cargo test --all-targets --locked
-      - name: Build
-        run: cargo build --release --locked
+      - name: Prepare locked dependencies
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path target/qa/ci | Out-Null
+          cargo fetch --locked 2>&1 | Tee-Object -FilePath target/qa/ci/fetch.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify the real Windows clipboard contract
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          cargo test --lib paste::tests::clipboard_write_tracks_the_published_sequence --locked --offline -- --ignored --exact --nocapture --test-threads=1 2>&1 | Tee-Object -FilePath target/qa/ci/clipboard-contract.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ((Get-Content target/qa/ci/clipboard-contract.log -Raw) -notmatch 'test result: ok\. 1 passed; 0 failed') { throw 'The required clipboard regression did not run.' }
+      - name: Verify recording through actual text insertion
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          $sandbox = Join-Path $env:GITHUB_WORKSPACE 'target/qa/core-e2e'
+          $env:APPDATA = Join-Path $sandbox 'appdata'
+          $env:LOCALAPPDATA = Join-Path $sandbox 'localappdata'
+          $env:OHV_TEST_NAMESPACE = "core-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          New-Item -ItemType Directory -Force -Path $env:APPDATA, $env:LOCALAPPDATA | Out-Null
+          cargo test --lib app::core_e2e::record_enter_pastes_once_and_restores_clipboard --locked --offline -- --ignored --exact --nocapture --test-threads=1 2>&1 | Tee-Object -FilePath target/qa/ci/core-e2e.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ((Get-Content target/qa/ci/core-e2e.log -Raw) -notmatch 'test result: ok\. 1 passed; 0 failed') { throw 'The required end-to-end insertion regression did not run.' }
+      - name: Verify in isolated application directories
+        shell: pwsh
+        run: ./scripts/verify.ps1 -Mode Full -OutputDir target/qa/ci
       - name: Validate EXE version and create checksum
         shell: pwsh
         run: |
@@ -69,3 +89,13 @@ jobs:
         run: |
           # gh release create fails if a release already exists. Never upload --clobber.
           gh release create "$env:GITHUB_REF_NAME" target/release/openhinovoice.exe LICENSE THIRD_PARTY_LICENSES.txt SHA256SUMS.txt --verify-tag --title "OpenHinoVoice $env:GITHUB_REF_NAME" --notes "Windows x64 用のビルド済み exe（コード署名なし）です。導入の手順は README を参照してください。LICENSE と THIRD_PARTY_LICENSES.txt を同梱しています。SHA256SUMS.txt で exe の SHA-256 を検証できます。"
+      - name: Keep release verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-verification-${{ github.sha }}
+          path: |
+            target/qa/ci/*.json
+            target/qa/ci/*.log
+          if-no-files-found: error
+          retention-days: 14

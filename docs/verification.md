@@ -111,4 +111,4 @@ Settings測定のDurationSecondsはUIA前後の合計で、30秒指定なら各1
 
 ## 必須の録音から貼付までの検証
 
-通常CIはFullの前に実Windowsクリップボード回帰と `app::core_e2e::record_enter_pastes_once_and_restores_clipboard` を各1件、独立したtest processで実行する。成功0件・環境不足・不一致は失敗とし、release artifactは生成しない。コアE2Eでは通常Appを使い、PCM供給とASR応答だけをfixtureへ置換する。実マイクとモデル品質の試験とは区別し、貼付・フォーカス・復元処理は本番コードを通す。合格は専用Win32 EDITの本文で判定し、APIの送信成功だけでは判定しない。実クリップボードと入力desktopを使うためGitHub-hosted Windows以外では起動前に止める。
+通常CIとタグ公開用ReleaseはFullの前に実Windowsクリップボード回帰と `app::core_e2e::record_enter_pastes_once_and_restores_clipboard` を各1件、独立したtest processで実行する。成功0件・環境不足・不一致は失敗とし、release artifactの生成・GitHub Releaseの公開へ進まない。コアE2Eでは通常Appを使い、PCM供給とASR応答だけをfixtureへ置換する。実マイクとモデル品質の試験とは区別し、貼付・フォーカス・復元処理は本番コードを通す。合格は専用Win32 EDITの本文で判定し、APIの送信成功だけでは判定しない。実クリップボードと入力desktopを使うためGitHub-hosted Windows以外では起動前に止める。
