@@ -13,9 +13,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DestroyWindow, DispatchMessageW, GetForegroundWindow, GetMessageW,
     GetWindowThreadProcessId, PeekMessageW, PostThreadMessageW, SendMessageTimeoutW, SendMessageW,
-    SetForegroundWindow,
-    TranslateMessage, MSG, PM_REMOVE, SMTO_ABORTIFHUNG, WINDOW_EX_STYLE, WINDOW_STYLE,
-    WM_GETTEXT, WM_QUIT, WS_CHILD, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    SetForegroundWindow, TranslateMessage, MSG, PM_REMOVE, SMTO_ABORTIFHUNG, WINDOW_EX_STYLE,
+    WINDOW_STYLE, WM_GETTEXT, WM_QUIT, WS_CHILD, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_VISIBLE,
 };
 
@@ -174,7 +173,10 @@ impl EditTarget {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => panic!("Cannot read EDIT readiness: {error}"),
             }
-            assert!(Instant::now() < deadline, "EDIT fixture readiness timed out");
+            assert!(
+                Instant::now() < deadline,
+                "EDIT fixture readiness timed out"
+            );
             std::thread::sleep(Duration::from_millis(5));
         };
         assert_eq!(ready.pid, target.child.id());

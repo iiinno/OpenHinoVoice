@@ -54,7 +54,8 @@ extern "system" {
 #[link(name = "gdi32")]
 extern "system" {
     fn GetObjectW(object: *mut c_void, bytes: i32, output: *mut c_void) -> i32;
-    fn GetPaletteEntries(palette: *mut c_void, start: u32, count: u32, entries: *mut c_void) -> u32;
+    fn GetPaletteEntries(palette: *mut c_void, start: u32, count: u32, entries: *mut c_void)
+        -> u32;
     fn GetMetaFileBitsEx(metafile: *mut c_void, bytes: u32, output: *mut c_void) -> u32;
     fn GetEnhMetaFileBits(metafile: *mut c_void, bytes: u32, output: *mut c_void) -> u32;
     fn CopyEnhMetaFileW(metafile: *mut c_void, file: *const u16) -> *mut c_void;
@@ -180,7 +181,9 @@ impl OwnedClipboardFormat {
             }
         };
         if bytes == 0 || bytes > remaining {
-            return Err("元のクリップボードを保持できません（無効な形式、または64 MiBを超過）".into());
+            return Err(
+                "元のクリップボードを保持できません（無効な形式、または64 MiBを超過）".into(),
+            );
         }
         let handle = unsafe {
             match kind {
@@ -220,9 +223,13 @@ fn is_ole_transport(format: u32) -> Result<bool, String> {
     }
     let name = String::from_utf16_lossy(&name[..length as usize]);
     // These formats identify the old OLE publisher, not transferable document data.
-    Ok(["DataObject", "Ole Private Data", "Wine Marshalled DataObject"]
-        .iter()
-        .any(|transport| name.eq_ignore_ascii_case(transport)))
+    Ok([
+        "DataObject",
+        "Ole Private Data",
+        "Wine Marshalled DataObject",
+    ]
+    .iter()
+    .any(|transport| name.eq_ignore_ascii_case(transport)))
 }
 
 struct ClipboardSnapshot {
@@ -613,13 +620,8 @@ impl PasteTransaction {
         let lease = PasteLease::acquire()?;
         let mut previous = None;
         let mut our_sequence = 0;
-        let result = replace_clipboard_text(
-            text,
-            owner,
-            None,
-            &mut our_sequence,
-            Some(&mut previous),
-        );
+        let result =
+            replace_clipboard_text(text, owner, None, &mut our_sequence, Some(&mut previous));
         let mut transaction = Self {
             previous,
             owner,
@@ -863,11 +865,10 @@ mod tests {
         let foreign_sequence = unsafe { GetClipboardSequenceNumber() };
         snapshot.unwrap().restore(owner.0, ours).unwrap();
         assert_eq!(foreign_sequence, unsafe { GetClipboardSequenceNumber() });
-        assert!(published_clipboard_sequence(
-            foreign_owner.0,
-            &clipboard_utf16("new user copy")
-        )
-        .is_ok());
+        assert!(
+            published_clipboard_sequence(foreign_owner.0, &clipboard_utf16("new user copy"))
+                .is_ok()
+        );
 
         {
             let _clipboard = OpenedClipboard::open(owner.0).unwrap();
