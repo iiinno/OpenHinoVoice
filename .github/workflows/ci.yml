@@ -53,6 +53,13 @@ jobs:
           New-Item -ItemType Directory -Force -Path target/qa/ci | Out-Null
           cargo fetch --locked 2>&1 | Tee-Object -FilePath target/qa/ci/fetch.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify the real Windows clipboard contract
+        id: clipboard
+        timeout-minutes: 10
+        run: |
+          cargo test --lib paste::tests::clipboard_write_tracks_the_published_sequence --locked --offline -- --ignored --exact --nocapture --test-threads=1 2>&1 | Tee-Object -FilePath target/qa/ci/clipboard-contract.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ((Get-Content target/qa/ci/clipboard-contract.log -Raw) -notmatch 'test result: ok\. 1 passed; 0 failed') { throw 'The required clipboard regression did not run.' }
       - name: Verify in isolated application directories
         id: verify
         run: ./scripts/verify.ps1 -Mode Full -OutputDir target/qa/ci

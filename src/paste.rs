@@ -429,6 +429,65 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "uses the real clipboard; run explicitly on a GitHub-hosted Windows runner"]
+    fn clipboard_write_tracks_the_published_sequence() {
+        use windows::Win32::Foundation::HINSTANCE;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, WS_EX_TOOLWINDOW, WS_POPUP,
+        };
+
+        assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
+        assert_eq!(
+            std::env::var("RUNNER_ENVIRONMENT").as_deref(),
+            Ok("github-hosted")
+        );
+        struct Owner(HWND);
+        impl Drop for Owner {
+            fn drop(&mut self) {
+                unsafe {
+                    let _ = DestroyWindow(self.0);
+                }
+            }
+        }
+        let owner = Owner(unsafe {
+            CreateWindowExW(
+                WS_EX_TOOLWINDOW,
+                windows::core::w!("STATIC"),
+                windows::core::w!("OpenHinoVoice clipboard regression"),
+                WS_POPUP,
+                0,
+                0,
+                1,
+                1,
+                None,
+                None,
+                HINSTANCE::default(),
+                None,
+            )
+            .expect("create hidden clipboard owner")
+        });
+        copy_text_to_clipboard("CI previous clipboard", owner.0).unwrap();
+        let before = unsafe { GetClipboardSequenceNumber() };
+        let mut owned_sequence = 0;
+        copy_text_to_clipboard_checked(
+            "録音開始から Enter で貼り付け 😀",
+            owner.0,
+            Some(before),
+            &mut owned_sequence,
+        )
+        .expect("publish dictation text");
+        let published_sequence = unsafe { GetClipboardSequenceNumber() };
+        eprintln!(
+            "clipboard sequence: before={before}, recorded={owned_sequence}, after_close={published_sequence}"
+        );
+        assert_ne!(published_sequence, before);
+        assert_eq!(
+            owned_sequence, published_sequence,
+            "closing our own clipboard write must not look like another application's change"
+        );
+    }
+
+    #[test]
     fn a_second_transaction_is_rejected_even_on_the_same_thread() {
         let first = ProcessLease::acquire().unwrap();
         assert!(ProcessLease::acquire().is_err());
