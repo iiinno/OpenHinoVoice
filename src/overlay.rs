@@ -2202,6 +2202,27 @@ unsafe extern "system" fn wnd_proc(
 }
 
 #[cfg(test)]
+pub(crate) struct TestOwner {
+    previous: isize,
+}
+
+#[cfg(test)]
+pub(crate) fn test_owner(window: HWND) -> TestOwner {
+    let mut state = lock();
+    let previous = state.hwnd;
+    state.hwnd = window.0 as isize;
+    TestOwner { previous }
+}
+
+#[cfg(test)]
+impl Drop for TestOwner {
+    fn drop(&mut self) {
+        hide();
+        lock().hwnd = self.previous;
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -2799,26 +2820,5 @@ mod tests {
         assert_eq!(retry.ready(now + Duration::from_secs(60)), None);
         retry.invalidate(false, false);
         assert_eq!(retry.ready(now), Some((true, false)));
-    }
-}
-
-#[cfg(test)]
-pub(crate) struct TestOwner {
-    previous: isize,
-}
-
-#[cfg(test)]
-pub(crate) fn test_owner(window: HWND) -> TestOwner {
-    let mut state = lock();
-    let previous = state.hwnd;
-    state.hwnd = window.0 as isize;
-    TestOwner { previous }
-}
-
-#[cfg(test)]
-impl Drop for TestOwner {
-    fn drop(&mut self) {
-        hide();
-        lock().hwnd = self.previous;
     }
 }
