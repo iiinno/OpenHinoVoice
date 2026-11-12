@@ -947,7 +947,10 @@ pub(crate) struct ClipboardReadLockForTest {
 impl ClipboardReadLockForTest {
     pub(crate) fn acquire() -> Self {
         assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
-        assert_eq!(std::env::var("RUNNER_ENVIRONMENT").as_deref(), Ok("github-hosted"));
+        assert_eq!(
+            std::env::var("RUNNER_ENVIRONMENT").as_deref(),
+            Ok("github-hosted")
+        );
         let (ready, acquired) = std::sync::mpsc::channel();
         let (release, released) = std::sync::mpsc::channel();
         let reader = std::thread::spawn(move || {

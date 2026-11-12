@@ -560,18 +560,33 @@ fn record_enter_pastes_once_and_restores_clipboard() {
     app.session.recovery_id = Some(id);
     app.session.paste_target = Some(paste::capture_target().unwrap());
     assert!(app.execute(Action::Paste { text: text.into() }));
-    wait_for(app, &key_rx, "failed delivery retains restoration ownership", |app| {
-        app.paste_transaction.is_some()
-    });
-    assert!(app.paste_transaction.as_ref().unwrap().delivery_error().is_some());
+    wait_for(
+        app,
+        &key_rx,
+        "failed delivery retains restoration ownership",
+        |app| app.paste_transaction.is_some(),
+    );
+    assert!(app
+        .paste_transaction
+        .as_ref()
+        .unwrap()
+        .delivery_error()
+        .is_some());
     assert_eq!(target.text(), expected, "Failed publication must not paste");
     assert_eq!(app.recoveries.first_text(), Some((id, text)));
     drop(held_reader.borrow_mut().take());
-    wait_for(app, &key_rx, "original clipboard restored after reader release", |app| {
-        app.paste_transaction.is_none()
-    });
+    wait_for(
+        app,
+        &key_rx,
+        "original clipboard restored after reader release",
+        |app| app.paste_transaction.is_none(),
+    );
     assert_eq!(clipboard_text(owner.0), seeded_clipboard);
-    assert_eq!(target.text(), expected, "Restoration must not retry delivery");
+    assert_eq!(
+        target.text(),
+        expected,
+        "Restoration must not retry delivery"
+    );
     assert_eq!(app.recoveries.first_text(), Some((id, text)));
     app.copy_failed_text();
     assert_eq!(clipboard_text(owner.0), text);
