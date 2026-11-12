@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
+    branches: ["**"]
   pull_request:
+  workflow_call:
   workflow_dispatch:
     inputs:
       ui_check:
@@ -20,7 +22,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}-${{ ((github.event_name == 'push' && contains(github.event.head_commit.message, '[perf-check]')) || (github.event_name == 'workflow_dispatch' && inputs.perf_check)) && 'perf' || 'checks' }}
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}-${{ ((github.event_name == 'push' && contains(github.event.head_commit.message, '[perf-check]')) || (github.event_name == 'workflow_dispatch' && inputs.perf_check)) && 'perf' || 'checks' }}
   cancel-in-progress: true
 
 jobs:
@@ -83,6 +85,19 @@ jobs:
       - name: Prepare release artifacts and checksums
         id: package
         run: |
+          $package = (cargo metadata --no-deps --locked --offline --format-version 1 | ConvertFrom-Json).packages |
+            Where-Object { $_.name -eq 'openhinovoice' }
+          if ($LASTEXITCODE -ne 0 -or @($package).Count -ne 1) { throw 'パッケージの版を確認できません。' }
+          $version = $package.version
+          $info = (Get-Item 'target/release/openhinovoice.exe').VersionInfo
+          $numericVersion = "$($info.FileMajorPart).$($info.FileMinorPart).$($info.FileBuildPart)"
+          if ($numericVersion -cne ($version -split '[-+]')[0] -or $info.FileVersion -cne $version -or $info.ProductVersion -cne $version -or $info.ProductName -cne 'OpenHinoVoice') {
+            throw 'exeの版または製品名がCargo.tomlと一致しません。'
+          }
+          $verification = Get-Content -LiteralPath target/qa/ci/result.json -Raw | ConvertFrom-Json
+          if ($verification.revision -cne $env:GITHUB_SHA -or $verification.status -cne 'passed' -or $verification.scope -cne 'full' -or $verification.tests.passed -le 0 -or $verification.tests.failed -ne 0) {
+            throw 'このコミットのFull検証が成功していません。'
+          }
           $destination = 'target/ci-artifacts'
           New-Item -ItemType Directory -Force -Path $destination | Out-Null
           Copy-Item -LiteralPath target/release/openhinovoice.exe -Destination "$destination/openhinovoice.exe"
@@ -92,8 +107,11 @@ jobs:
             '{0} *{1}' -f $hash.Hash.ToLowerInvariant(), $name
           }
           $checksums | Set-Content -LiteralPath "$destination/SHA256SUMS.txt" -Encoding utf8NoBOM
+          Copy-Item -LiteralPath target/qa/ci/result.json -Destination "$destination/verification.json"
           [ordered]@{
             revision = $env:GITHUB_SHA
+            version = $version
+            sourceSha256 = $verification.sourceSha256
             runId = $env:GITHUB_RUN_ID
             runAttempt = $env:GITHUB_RUN_ATTEMPT
             target = 'x86_64-pc-windows-msvc'

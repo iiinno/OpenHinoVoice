@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// 設定の usage_log を受け取る。起動時と設定の再読み込みのときに更新する
-pub static ENABLED: AtomicBool = AtomicBool::new(true);
+pub static ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// 記録の追記を直列化する。複数のスレッドから書かれるため
 static WRITE_LOCK: Mutex<()> = Mutex::new(());

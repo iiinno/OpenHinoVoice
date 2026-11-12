@@ -99,7 +99,7 @@ offline = false
 edit_prompt = ""
 # この PC での動き(区間の長さ、待ち時間、失敗)を usage-log.jsonl に記録する。
 # 音声は含めず、外にも送らない
-usage_log = true
+usage_log = false
 
 # リクエスト本体に混ぜる項目。deepseek-v4.1-flash は推論を止めないと応答が倍近く遅くなる
 [format.extra_body]
@@ -144,8 +144,8 @@ pub struct FormatConfig {
     #[serde(default)]
     pub edit_prompt: String,
     /// この PC での動き(区間の長さ、待ち時間、失敗)を、音声を含めず
-    /// usage-log.jsonl に記録する。外には送らない。調査のための初期値オン
-    #[serde(default = "default_true")]
+    /// usage-log.jsonl に記録する。外には送らない。利用者が有効にした場合だけ記録する
+    #[serde(default)]
     pub usage_log: bool,
 }
 
@@ -182,7 +182,7 @@ impl Default for FormatConfig {
             fast: false,
             offline: false,
             edit_prompt: String::new(),
-            usage_log: true,
+            usage_log: false,
         }
     }
 }
@@ -732,6 +732,14 @@ mod tests {
         atomic_replace(&path, b"replacement").unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"replacement");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn usage_logging_requires_explicit_opt_in() {
+        assert!(!FormatConfig::default().usage_log);
+        assert!(!parse("").unwrap().format.usage_log);
+        assert!(!parse(EXAMPLE_TOML).unwrap().format.usage_log);
+        assert!(parse("[format]\nusage_log = true").unwrap().format.usage_log);
     }
 
     #[test]

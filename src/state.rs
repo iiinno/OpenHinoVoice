@@ -588,6 +588,28 @@ mod tests {
     }
 
     #[test]
+    fn edit_recognizing_done_updates_the_formatting_status() {
+        let (next, actions) = step(
+            edit_recog(),
+            Event::AsrDone {
+                text: "丁寧にして".into(),
+                has_api_key: true,
+            },
+        );
+        assert_eq!(next, edit_fmt());
+        assert_eq!(
+            actions,
+            vec![
+                Action::CallEditFormat {
+                    selection: "選んだ文".into(),
+                    instruction: "丁寧にして".into(),
+                },
+                Action::ShowOverlay(OverlayKind::Formatting),
+            ]
+        );
+    }
+
+    #[test]
     fn edit_format_done_replaces_the_selection() {
         let (s, a) = step(
             edit_fmt(),
