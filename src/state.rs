@@ -253,10 +253,13 @@ pub fn step(state: State, event: Event) -> (State, Vec<Action>) {
                     selection: selection.clone(),
                     instruction: text.clone(),
                 },
-                vec![Action::CallEditFormat {
-                    selection,
-                    instruction: text,
-                }],
+                vec![
+                    Action::CallEditFormat {
+                        selection,
+                        instruction: text,
+                    },
+                    Action::ShowOverlay(OverlayKind::Formatting),
+                ],
             ),
             Event::AsrError { message } => (
                 State::Idle,

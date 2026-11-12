@@ -464,6 +464,25 @@ fn mirror_of(state: &State) -> u8 {
     }
 }
 
+fn formatting_mode(state: &State, retry: Option<u32>) -> Mode {
+    let (label, shortcut) = if matches!(state, State::EditFormatting { .. }) {
+        ("編集中", "Esc で取り消し")
+    } else {
+        ("整形中", "Enter で生テキスト")
+    };
+    let hint = match retry {
+        Some(attempt) => format!(
+            "再試行 {attempt}/{} · {shortcut}",
+            format::MAX_ATTEMPTS - 1
+        ),
+        None => shortcut.to_string(),
+    };
+    Mode::Busy {
+        label: label.into(),
+        hint: Some(hint),
+    }
+}
+
 impl App {
     fn new(cfg: Config) -> Self {
         let (format_tx, format_rx) = channel();
@@ -545,6 +564,70 @@ impl App {
                 mirror_of(&self.state)
             },
         );
+    }
+
+    fn request_recording(&mut self, probe: impl FnOnce(Duration) -> uia::SelectionProbe) {
+        if self.quit_started.is_some() {
+            return;
+        }
+        let edit_event = if self.cfg.edit_mode
+            && matches!(self.state, State::Idle)
+            && self.pending_paste.is_none()
+            && self.paste_transaction.is_none()
+        {
+            match probe(Duration::from_millis(100)) {
+                uia::SelectionProbe::Selected(text) => {
+                    usage::log(
+                        "edit_probe",
+                        serde_json::json!({
+                            "result": "selected",
+                            "chars": text.chars().count(),
+                        }),
+                    );
+                    if text.chars().count() > uia::MAX_SELECTION_CHARS {
+                        Some(Event::EditNotice {
+                            message: "選択が長すぎるため Edit を使えません".into(),
+                        })
+                    } else if self.cfg.has_api_key() {
+                        Some(Event::EditModeStarted { selection: text })
+                    } else {
+                        Some(Event::EditNotice {
+                            message: "Edit には整形(AI)の接続先が必要です".into(),
+                        })
+                    }
+                }
+                uia::SelectionProbe::Unavailable => {
+                    usage::log("edit_probe", serde_json::json!({"result": "unavailable"}));
+                    Some(Event::EditNotice {
+                        message: "このアプリでは Edit を使えません".into(),
+                    })
+                }
+                uia::SelectionProbe::TimedOut => Some(Event::EditNotice {
+                    message: "選択の確認が時間内に終わらなかったため、通常の録音を始めます".into(),
+                }),
+                uia::SelectionProbe::None => {
+                    usage::log("edit_probe", serde_json::json!({"result": "none"}));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        self.dispatch(Event::F8);
+        if let Some(event) = edit_event {
+            self.dispatch(event);
+        }
+    }
+
+    fn resume_requested_recording(&mut self, probe: impl FnOnce(Duration) -> uia::SelectionProbe) {
+        if self.start_requested
+            && self.pending_paste.is_none()
+            && self.paste_transaction.is_none()
+            && self.quit_started.is_none()
+        {
+            self.start_requested = false;
+            self.request_recording(probe);
+        }
     }
 
     fn dispatch(&mut self, event: Event) {
@@ -1081,14 +1164,7 @@ impl App {
                 overlay::set_caption(&text, "");
             }
         }
-        if self.start_requested
-            && self.pending_paste.is_none()
-            && self.paste_transaction.is_none()
-            && self.quit_started.is_none()
-        {
-            self.start_requested = false;
-            self.dispatch(Event::F8);
-        }
+        self.resume_requested_recording(uia::probe_selected_text);
         self.sync_mirror();
     }
 
@@ -1201,10 +1277,7 @@ impl App {
             }
             OverlayKind::Formatting => {
                 self.transient_until = None;
-                overlay::show(Mode::Busy {
-                    label: "整形中".into(),
-                    hint: Some("Enter で生テキスト".into()),
-                });
+                overlay::show(formatting_mode(&self.state, None));
             }
             OverlayKind::FormatSkipped { reason } => {
                 overlay::show(Mode::Notice {
@@ -1729,13 +1802,9 @@ impl App {
             }
             FormatOutcome::EditDone { text, .. } => self.dispatch(Event::EditFormatDone { text }),
             FormatOutcome::Failed { reason, .. } => self.dispatch(Event::FormatFailed { reason }),
-            FormatOutcome::Retrying { attempt, .. } => overlay::show(Mode::Busy {
-                label: "整形中".into(),
-                hint: Some(format!(
-                    "再試行 {attempt}/{} · Enter で生テキスト",
-                    format::MAX_ATTEMPTS - 1
-                )),
-            }),
+            FormatOutcome::Retrying { attempt, .. } => {
+                overlay::show(formatting_mode(&self.state, Some(attempt)));
+            }
         }
     }
 }
@@ -2489,69 +2558,9 @@ pub fn run() {
 
         while let Ok(key) = key_rx.try_recv() {
             match key {
-                hook::KeyEvent::Hotkey if app.quit_started.is_some() => {
-                    hook::acknowledge_hotkey();
-                }
                 hook::KeyEvent::Hotkey => {
-                    // Edit モード。文を選んだ状態でいつもの録音開始キーを押すと
-                    // Edit になる。選択の確認は録音の開始を遅らせるので、
-                    // 100 ミリ秒で打ち切る。読めなければ通常の音声入力になる
-                    let edit_selection = if app.cfg.edit_mode
-                        && matches!(app.state, State::Idle)
-                        && app.pending_paste.is_none()
-                        && app.paste_transaction.is_none()
-                    {
-                        match uia::probe_selected_text(Duration::from_millis(100)) {
-                            uia::SelectionProbe::Selected(text) => {
-                                usage::log(
-                                    "edit_probe",
-                                    serde_json::json!({
-                                        "result": "selected",
-                                        "chars": text.chars().count(),
-                                    }),
-                                );
-                                if text.chars().count() > uia::MAX_SELECTION_CHARS {
-                                    Some(Err("選択が長すぎるため Edit を使えません".into()))
-                                } else {
-                                    Some(Ok(text))
-                                }
-                            }
-                            uia::SelectionProbe::Unavailable => {
-                                usage::log(
-                                    "edit_probe",
-                                    serde_json::json!({"result": "unavailable"}),
-                                );
-                                Some(Err("このアプリでは Edit を使えません".into()))
-                            }
-                            uia::SelectionProbe::TimedOut => Some(Err(
-                                "選択の確認が時間内に終わらなかったため、通常の録音を始めます"
-                                    .into(),
-                            )),
-                            uia::SelectionProbe::None => {
-                                usage::log("edit_probe", serde_json::json!({"result": "none"}));
-                                None
-                            }
-                        }
-                    } else {
-                        None
-                    };
-                    app.dispatch(Event::F8);
+                    app.request_recording(uia::probe_selected_text);
                     hook::acknowledge_hotkey();
-                    match edit_selection {
-                        Some(Ok(text)) => {
-                            if app.cfg.has_api_key() {
-                                app.dispatch(Event::EditModeStarted { selection: text });
-                            } else {
-                                app.dispatch(Event::EditNotice {
-                                    message: "Edit には整形(AI)の接続先が必要です".into(),
-                                });
-                            }
-                        }
-                        Some(Err(message)) => {
-                            app.dispatch(Event::EditNotice { message });
-                        }
-                        None => {}
-                    }
                 }
                 hook::KeyEvent::Enter => app.dispatch(Event::Enter),
                 hook::KeyEvent::Esc => app.dispatch(Event::Esc),
@@ -3312,6 +3321,183 @@ mod flow_tests {
             quit_started: None,
             start_requested: false,
             paste_notice: None,
+        }
+    }
+
+    fn recording_request_app() -> App {
+        let mut app = test_app();
+        app.replay = Some(Box::new(ReplayCapture {
+            sample_rate: 16_000,
+            ..ReplayCapture::default()
+        }));
+        app.cfg.edit_mode = true;
+        app.cfg.model = std::env::current_exe().unwrap().to_str().unwrap().into();
+        app.cfg.format.provider = "openai".into();
+        app.cfg.format.openai_api_key = "test-key".into();
+        app.cfg.format.offline = true;
+        let (_tx, rx) = channel();
+        app.kept_worker = Some(KeptWorker {
+            worker: asr::test_worker(rx, false),
+            key: WorkerKey::for_config(&app.cfg),
+            expires: Instant::now() + Duration::from_secs(60),
+        });
+        app
+    }
+
+    fn queue_recording_request(app: &mut App) {
+        app.pending_paste = Some(PendingPaste {
+            text: "previous output".into(),
+            target: None,
+            recovery_id: 0,
+            deadline: Instant::now() + Duration::from_secs(5),
+        });
+        for _ in 0..2 {
+            app.request_recording(|_| panic!("selection must wait for the previous output"));
+        }
+        assert!(app.start_requested);
+        app.resume_requested_recording(|_| panic!("pending output must block the next start"));
+        assert_eq!(app.state, State::Idle);
+        assert!(app.start_requested);
+    }
+
+    #[test]
+    fn immediate_and_queued_recording_start_classify_the_current_selection() {
+        for deferred in [false, true] {
+            let mut app = recording_request_app();
+            let probes = std::cell::Cell::new(0);
+            let probe = |timeout| {
+                assert_eq!(timeout, Duration::from_millis(100));
+                probes.set(probes.get() + 1);
+                uia::SelectionProbe::Selected("選んだ文".into())
+            };
+            if deferred {
+                queue_recording_request(&mut app);
+                app.pending_paste = None;
+                app.resume_requested_recording(probe);
+            } else {
+                app.request_recording(probe);
+            }
+            assert_eq!(probes.get(), 1);
+            assert_eq!(
+                app.state,
+                State::Editing {
+                    selection: "選んだ文".into()
+                }
+            );
+            assert!(!app.start_requested);
+            assert!(app.session.recorder.is_none());
+            assert!(app.pending_paste.is_none());
+            app.resume_requested_recording(|_| panic!("one request must start only once"));
+            app.request_recording(|_| panic!("an active recording must not probe again"));
+            assert_eq!(probes.get(), 1);
+            app.teardown_session();
+        }
+    }
+
+    #[test]
+    fn queued_recording_start_keeps_selection_fallbacks_and_edit_opt_out() {
+        let cases = [
+            (true, true, uia::SelectionProbe::None),
+            (true, true, uia::SelectionProbe::Unavailable),
+            (true, true, uia::SelectionProbe::TimedOut),
+            (
+                true,
+                true,
+                uia::SelectionProbe::Selected("あ".repeat(uia::MAX_SELECTION_CHARS + 1)),
+            ),
+            (true, false, uia::SelectionProbe::Selected("選んだ文".into())),
+            (false, true, uia::SelectionProbe::Selected("選んだ文".into())),
+        ];
+        for (edit_enabled, has_key, selection) in cases {
+            let mut app = recording_request_app();
+            app.cfg.edit_mode = edit_enabled;
+            if !has_key {
+                app.cfg.format.openai_api_key.clear();
+            }
+            queue_recording_request(&mut app);
+            app.pending_paste = None;
+            let mut probes = 0;
+            app.resume_requested_recording(|_| {
+                assert!(edit_enabled, "Edit opt-out must skip selection probing");
+                probes += 1;
+                selection
+            });
+            assert_eq!(probes, usize::from(edit_enabled));
+            assert_eq!(app.state, State::Recording);
+            assert!(!app.start_requested);
+            assert!(app.pending_paste.is_none());
+            app.teardown_session();
+        }
+    }
+
+    #[test]
+    fn queued_recording_start_respects_escape_and_shutdown() {
+        let mut app = recording_request_app();
+        queue_recording_request(&mut app);
+        app.dispatch(Event::Esc);
+        assert!(!app.start_requested);
+        assert!(app.pending_paste.is_none());
+        app.resume_requested_recording(|_| panic!("Escape must cancel the queued start"));
+        assert_eq!(app.state, State::Idle);
+
+        queue_recording_request(&mut app);
+        app.pending_paste = None;
+        assert!(app.exit_ready(Instant::now()));
+        assert!(!app.start_requested);
+        app.resume_requested_recording(|_| panic!("shutdown must cancel the queued start"));
+        app.request_recording(|_| panic!("shutdown must reject a new recording"));
+        assert_eq!(app.state, State::Idle);
+        if let Some(kept) = app.kept_worker.take() {
+            kept.worker.shutdown();
+        }
+    }
+
+    #[test]
+    fn failed_recording_start_cannot_enter_edit_mode() {
+        let mut app = recording_request_app();
+        app.kept_worker.take().unwrap().worker.shutdown();
+        app.request_recording(|_| uia::SelectionProbe::Selected("選んだ文".into()));
+        assert_eq!(app.state, State::Idle);
+        assert!(matches!(app.replay.as_ref().unwrap().outcome, Some(Err(_))));
+        assert!(app.session.worker.is_none());
+        assert!(app.pending_paste.is_none());
+    }
+
+    #[test]
+    fn edit_formatting_status_only_advertises_cancellation() {
+        let state = State::EditFormatting {
+            selection: "選んだ文".into(),
+            instruction: "丁寧にして".into(),
+        };
+        for (retry, hint) in [
+            (None, "Esc で取り消し"),
+            (Some(1), "再試行 1/2 · Esc で取り消し"),
+        ] {
+            assert_eq!(
+                formatting_mode(&state, retry),
+                Mode::Busy {
+                    label: "編集中".into(),
+                    hint: Some(hint.into()),
+                }
+            );
+            assert_eq!(state::step(state.clone(), Event::Enter), (state.clone(), vec![]));
+        }
+    }
+
+    #[test]
+    fn dictation_formatting_status_retains_the_raw_text_shortcut() {
+        let state = State::Formatting { raw: "原文".into() };
+        for (retry, hint) in [
+            (None, "Enter で生テキスト"),
+            (Some(1), "再試行 1/2 · Enter で生テキスト"),
+        ] {
+            assert_eq!(
+                formatting_mode(&state, retry),
+                Mode::Busy {
+                    label: "整形中".into(),
+                    hint: Some(hint.into()),
+                }
+            );
         }
     }
 
