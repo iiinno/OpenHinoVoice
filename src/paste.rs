@@ -13,10 +13,11 @@ use windows::Win32::System::DataExchange::METAFILEPICT;
 use windows::Win32::System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
-    VIRTUAL_KEY, VK_CONTROL, VK_V,
+    VIRTUAL_KEY, VK_LCONTROL, VK_V,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId, GUITHREADINFO,
+    GetClassNameW, GetForegroundWindow, GetGUIThreadInfo, GetWindowLongW, GetWindowThreadProcessId,
+    SendMessageTimeoutW, GUITHREADINFO, GWL_STYLE, SMTO_ABORTIFHUNG, SMTO_BLOCK, WM_PASTE,
 };
 
 const CF_UNICODETEXT: u32 = 13;
@@ -522,11 +523,73 @@ fn paste_shortcut() -> [INPUT; 4] {
         },
     };
     [
-        key(VK_CONTROL, false),
+        // Use an explicit left Ctrl instead of the generic Ctrl virtual key.
+        // Keyboard remappers can treat the two differently.
+        key(VK_LCONTROL, false),
         key(VK_V, false),
         key(VK_V, true),
-        key(VK_CONTROL, true),
+        key(VK_LCONTROL, true),
     ]
+}
+
+/// Native Windows text fields support a paste *command* rather than a keyboard shortcut.
+/// Restrict this to known edit classes: arbitrary apps may ignore WM_PASTE or interpret it
+/// differently. Never send both WM_PASTE and Ctrl+V to the same target (duplicate insertion).
+fn supports_native_paste_class(class: &str) -> bool {
+    matches!(
+        class.to_ascii_lowercase().as_str(),
+        "edit" | "richedit20a" | "richedit20w" | "richedit50w"
+    )
+}
+
+fn is_native_edit_target(target: PasteTarget) -> bool {
+    let window = HWND(target.focused as *mut c_void);
+    let mut class = [0u16; 128];
+    let len = unsafe { GetClassNameW(window, &mut class) };
+    len > 0 && supports_native_paste_class(&String::from_utf16_lossy(&class[..len as usize]))
+}
+
+fn send_paste_command(target: PasteTarget) -> Result<Duration, String> {
+    if is_native_edit_target(target) {
+        let window = HWND(target.focused as *mut c_void);
+        // A disabled/read-only native control silently ignores WM_PASTE, so don't
+        // claim the text was inserted and never attempt a second shortcut.
+        const ES_READONLY: u32 = 0x0800;
+        const WS_DISABLED: u32 = 0x0800_0000;
+        let style = unsafe { GetWindowLongW(window, GWL_STYLE) } as u32;
+        if style & (ES_READONLY | WS_DISABLED) != 0 {
+            return Err("入力先の編集欄は無効か読み取り専用です。復旧テキストを保持します".into());
+        }
+        // WM_PASTE is synchronous for Win32 edit controls and avoids layout/remap handling.
+        // A timeout is an ambiguous outcome, so never retry by injecting Ctrl+V.
+        let delivered = unsafe {
+            SendMessageTimeoutW(
+                window,
+                WM_PASTE,
+                None,
+                None,
+                SMTO_ABORTIFHUNG | SMTO_BLOCK,
+                500,
+                None,
+            )
+        };
+        if delivered.0 == 0 {
+            return Err("入力先の応答を確認できませんでした。貼り付いた可能性もあるため再送せず、復旧テキストを保持します".into());
+        }
+        return Ok(Duration::ZERO);
+    }
+
+    // Browsers, Electron apps and custom text fields do not have a universal WM_PASTE.
+    // VK_V means the logical V key, independent of US/JIS physical key placement.
+    let keys = paste_shortcut();
+    let inserted = unsafe { SendInput(&keys, std::mem::size_of::<INPUT>() as i32) };
+    // Release the modifier even if the OS accepted only part of the sequence.
+    if inserted != keys.len() as u32 {
+        let _ = unsafe { SendInput(&keys[3..], std::mem::size_of::<INPUT>() as i32) };
+    }
+    validate_injected_count(keys.len(), inserted)?;
+    // SendInput confirms injection only; the destination still needs time to read the clipboard.
+    Ok(Duration::from_millis(250))
 }
 
 fn validate_injected_count(expected: usize, inserted: u32) -> Result<(), String> {
@@ -638,14 +701,9 @@ impl PasteTransaction {
         if our_sequence != 0 && our_sequence != unsafe { GetClipboardSequenceNumber() } {
             return Err("貼り付け前にクリップボードが別のアプリで変更されました".into());
         }
-        let keys = paste_shortcut();
-        let inserted = unsafe { SendInput(&keys, std::mem::size_of::<INPUT>() as i32) };
-        if inserted != keys.len() as u32 {
-            let _ = unsafe { SendInput(&keys[3..], std::mem::size_of::<INPUT>() as i32) };
-        }
-        validate_injected_count(keys.len(), inserted)?;
+        let clipboard_hold = send_paste_command(target)?;
         // クリップボードの保持に時間がかかっても、送信後の猶予は確保する。
-        transaction.deadline = Instant::now() + Duration::from_millis(250);
+        transaction.deadline = Instant::now() + clipboard_hold;
         Ok(transaction)
     }
 
@@ -939,8 +997,24 @@ mod tests {
             .iter()
             .map(|key| unsafe { key.Anonymous.ki.wVk })
             .collect();
-        assert_eq!(vkeys, vec![VK_CONTROL, VK_V, VK_V, VK_CONTROL]);
+        assert_eq!(vkeys, vec![VK_LCONTROL, VK_V, VK_V, VK_LCONTROL]);
         assert_eq!(keys.len(), 4);
+    }
+
+    #[test]
+    fn native_paste_only_for_known_edit_controls() {
+        for name in ["Edit", "EDIT", "RichEdit20A", "RichEdit20W", "RICHEDIT50W"] {
+            assert!(supports_native_paste_class(name), "{name}");
+        }
+        for name in [
+            "",
+            "Chrome_RenderWidgetHostHWND",
+            "Notepad",
+            "Button",
+            "CustomEdit",
+        ] {
+            assert!(!supports_native_paste_class(name), "{name}");
+        }
     }
 
     #[test]

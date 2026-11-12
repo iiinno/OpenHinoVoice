@@ -29,7 +29,8 @@ fn session_id() -> &'static str {
 pub enum FormatError {
     MissingApiKey,
     MissingModel,
-    Http(u16),
+    /// 第2要素はサーバーが返したエラー本文の要点。APIキーなどの秘密は除く
+    Http(u16, Option<String>),
     Timeout,
     Network(String),
     BadResponse(String),
@@ -43,7 +44,7 @@ impl FormatError {
     pub fn retryable(&self) -> bool {
         match self {
             FormatError::Timeout | FormatError::Network(_) | FormatError::Busy(_) => true,
-            FormatError::Http(code) => *code == 408 || *code == 429 || *code >= 500,
+            FormatError::Http(code, _) => *code == 408 || *code == 429 || *code >= 500,
             _ => false,
         }
     }
@@ -54,7 +55,8 @@ impl fmt::Display for FormatError {
         match self {
             FormatError::MissingApiKey => write!(f, "APIキー未設定"),
             FormatError::MissingModel => write!(f, "整形モデル未設定"),
-            FormatError::Http(code) => write!(f, "整形APIエラー HTTP {code}"),
+            FormatError::Http(code, None) => write!(f, "整形APIエラー HTTP {code}"),
+            FormatError::Http(code, Some(d)) => write!(f, "整形APIエラー HTTP {code}: {d}"),
             FormatError::Timeout => write!(f, "整形が時間切れ"),
             FormatError::Network(e) => write!(f, "整形APIに接続できません: {e}"),
             FormatError::BadResponse(e) => write!(f, "整形APIの応答が不正です: {e}"),
@@ -572,6 +574,81 @@ pub fn format_with_deltas(
     }
     Ok(text.to_string())
 }
+
+/// HTTP エラーに、サーバーが返した本文の要点を添える。本文は先頭 4KB までしか読まない
+pub(crate) fn http_error(code: u16, resp: ureq::Response, api_key: &str) -> FormatError {
+    let mut body = String::new();
+    let _ = resp.into_reader().take(4096).read_to_string(&mut body);
+    FormatError::Http(code, error_summary(&body, api_key))
+}
+
+/// サーバーのエラー本文から、記録と画面に見せられる要点を 1 つ取る。
+/// JSON なら error.message → message → error → detail の順に探し、どれもなければ最初の 1 行。
+/// 秘密(APIキー、Bearer トークン)は必ず取り除く
+fn error_summary(body: &str, api_key: &str) -> Option<String> {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let message = match serde_json::from_str::<serde_json::Value>(trimmed) {
+        // JSON に要点がなければ、本文そのもの(「{}」など)より「なし」を選ぶ
+        Ok(v) => [
+            v["error"]["message"].as_str(),
+            v["message"].as_str(),
+            v["error"].as_str(),
+            v["detail"].as_str(),
+        ]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|s| !s.is_empty())
+        .map(str::to_string),
+        // JSONでなければ、最初の 1 行をそのまま見せる
+        Err(_) => trimmed.lines().next().map(str::trim).map(str::to_string),
+    };
+    let message = message?;
+    // 切る前に秘密を取り除く。切った後だと鍵が境界を跨いで断片が残る
+    let scrubbed = scrub_secrets(&message, api_key);
+    Some(scrubbed.chars().take(300).collect())
+}
+
+/// 文面から API キーと Bearer トークンを取り除く。記録ファイルは平文なので漏らさない
+fn scrub_secrets(text: &str, api_key: &str) -> String {
+    let key = api_key.trim();
+    // 短い文字列を置換すると本文を壊すので、鍵らしい長さのときだけ
+    let out = if key.chars().count() >= 8 {
+        text.replace(key, "***")
+    } else {
+        text.to_string()
+    };
+    // "Bearer <値>" の値は、キーと一致しない文字列でも取り除く
+    let lower = out.to_ascii_lowercase();
+    let mut scrubbed = String::with_capacity(out.len());
+    let mut i = 0;
+    while i < out.len() {
+        if lower[i..].starts_with("bearer") {
+            let mut j = i + "bearer".len();
+            while lower[j..].starts_with([' ', '\t']) {
+                j += 1;
+            }
+            let token_end = lower[j..]
+                .find(|c: char| c.is_whitespace() || matches!(c, '"' | ',' | '}' | ']'))
+                .map_or(out.len(), |p| j + p);
+            if token_end > j {
+                scrubbed.push_str(&out[i..i + "bearer".len()]);
+                scrubbed.push_str(" ***");
+                i = token_end;
+                continue;
+            }
+        }
+        let ch = out[i..].chars().next().unwrap_or('\u{fffd}');
+        scrubbed.push(ch);
+        i += ch.len_utf8();
+    }
+    scrubbed
+}
+
+/// API キーと文字起こしを任意の平文 HTTP サーバーへ送らない。
 /// ローカル推論サーバーだけは HTTP を許可する。
 pub fn validate_base_url(raw: &str) -> Result<(), FormatError> {
     let url =
@@ -723,7 +800,7 @@ fn anthropic_messages(
         .send_json(body);
     let resp = match resp {
         Ok(r) => r,
-        Err(ureq::Error::Status(code, _)) => return Err(FormatError::Http(code)),
+        Err(ureq::Error::Status(code, r)) => return Err(http_error(code, r, api_key)),
         Err(ureq::Error::Transport(t)) => return Err(transport_error(&t)),
     };
     read_anthropic_stream(resp.into_reader(), started, on_delta)
@@ -828,7 +905,7 @@ fn chat_completions(
         .send_json(body);
     let resp = match resp {
         Ok(r) => r,
-        Err(ureq::Error::Status(code, _)) => return Err(FormatError::Http(code)),
+        Err(ureq::Error::Status(code, r)) => return Err(http_error(code, r, api_key)),
         Err(ureq::Error::Transport(t)) => return Err(transport_error(&t)),
     };
     if resp.content_type() == "text/event-stream" {
@@ -931,9 +1008,13 @@ pub fn list_models(cfg: &FormatConfig) -> Result<Vec<(String, String)>, String> 
             request.set("Authorization", &format!("Bearer {key}"))
         };
     }
-    let resp = request
-        .call()
-        .map_err(|e| format!("モデル一覧を取得できません: {e}"))?;
+    let resp = request.call().map_err(|e| match e {
+        ureq::Error::Status(code, r) => {
+            let detail = http_error(code, r, key);
+            format!("モデル一覧を取得できません: {detail}")
+        }
+        e => format!("モデル一覧を取得できません: {e}"),
+    })?;
     let v: serde_json::Value = resp.into_json().map_err(|e| e.to_string())?;
     let mut ids: Vec<String> = v["data"]
         .as_array()
@@ -1388,14 +1469,156 @@ mod tests {
     fn http_401_is_error() {
         let url = serve_once(|_| (401, r#"{"error":"unauthorized"}"#.to_string()));
         let cfg = cfg_for(url);
-        assert_eq!(format(&cfg, "hello"), Err(FormatError::Http(401)));
+        assert_eq!(
+            format(&cfg, "hello"),
+            Err(FormatError::Http(401, Some("unauthorized".into())))
+        );
     }
 
     #[test]
     fn http_500_is_error() {
         let url = serve_once(|_| (500, r#"{"error":"boom"}"#.to_string()));
         let cfg = cfg_for(url);
-        assert_eq!(format(&cfg, "hello"), Err(FormatError::Http(500)));
+        assert_eq!(
+            format(&cfg, "hello"),
+            Err(FormatError::Http(500, Some("boom".into())))
+        );
+    }
+
+    #[test]
+    fn groq_style_error_body_is_surfaced() {
+        let url = serve_once(|_| {
+            (
+                400,
+                r#"{"error":{"message":"The model `openai/gpt-oss-20b` does not exist","type":"invalid_request_error"}}"#.to_string(),
+            )
+        });
+        let cfg = cfg_for(url);
+        match format(&cfg, "hello") {
+            Err(FormatError::Http(400, Some(detail))) => {
+                assert!(detail.contains("does not exist"), "{detail}");
+                assert!(!detail.contains("invalid_request_error"), "{detail}");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn error_detail_never_carries_the_api_key() {
+        // エラー本文に鍵が現れても、記録(平文)に漏らさない
+        let url = serve_once(|_| {
+            (
+                401,
+                "Incorrect API key provided: test-key. You can find your key at https://example.test"
+                    .to_string(),
+            )
+        });
+        let cfg = cfg_for(url);
+        match format(&cfg, "hello") {
+            Err(FormatError::Http(401, Some(detail))) => {
+                assert!(!detail.contains("test-key"), "{detail}");
+                assert!(detail.contains("***"), "{detail}");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn error_detail_never_carries_a_bearer_token() {
+        let url = serve_once(|_| (401, "denied: Bearer eyJhbGciOi.abc123, retry".to_string()));
+        let cfg = cfg_for(url);
+        match format(&cfg, "hello") {
+            Err(FormatError::Http(401, Some(detail))) => {
+                assert!(!detail.contains("eyJ"), "{detail}");
+                assert!(detail.contains("Bearer ***"), "{detail}");
+                assert!(detail.contains("retry"), "{detail}");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unicode_http_error_details_preserve_text_and_scrub_secrets() {
+        for prefix in ["İx", "Kx"] {
+            for json in [false, true] {
+                let message = format!("{prefix}: test-key BeArEr other-token, retry");
+                let body = if json {
+                    serde_json::json!({"error": {"message": message}}).to_string()
+                } else {
+                    message
+                };
+                let url = serve_once(move |_| (401, body));
+                let error = format(&cfg_for(url), "hello").unwrap_err();
+                assert_eq!(
+                    error,
+                    FormatError::Http(401, Some(format!("{prefix}: *** BeArEr ***, retry")))
+                );
+                assert_eq!(
+                    error.to_string(),
+                    format!("整形APIエラー HTTP 401: {prefix}: *** BeArEr ***, retry")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn http_error_detail_scrubs_before_the_300_character_limit() {
+        let body = format!("{}test-key tail\nignored", "あ".repeat(295));
+        let url = serve_once(move |_| (401, body));
+        assert_eq!(
+            format(&cfg_for(url), "hello"),
+            Err(FormatError::Http(
+                401,
+                Some(format!("{}*** t", "あ".repeat(295)))
+            ))
+        );
+    }
+
+    #[test]
+    fn anthropic_http_error_details_are_surfaced_and_scrubbed() {
+        let url = serve_once(|request| {
+            assert!(request.starts_with("POST /messages "), "{request}");
+            assert!(request.to_ascii_lowercase().contains("x-api-key: test-key"));
+            (
+                401,
+                r#"{"error":{"message":"invalid test-key, retry"}}"#.into(),
+            )
+        });
+        let mut cfg = cfg_for(url);
+        cfg.provider = "anthropic".into();
+        assert_eq!(
+            format(&cfg, "hello"),
+            Err(FormatError::Http(401, Some("invalid ***, retry".into())))
+        );
+    }
+
+    #[test]
+    fn model_listing_http_error_details_are_surfaced_and_scrubbed() {
+        for provider in ["custom", "anthropic"] {
+            let url = serve_once(|request| {
+                assert!(request.starts_with("GET /models "), "{request}");
+                (
+                    401,
+                    r#"{"error":{"message":"denied test-key BeArEr other-token, retry"}}"#
+                        .into(),
+                )
+            });
+            let mut cfg = cfg_for(url);
+            cfg.provider = provider.into();
+            assert_eq!(
+                list_models(&cfg).unwrap_err(),
+                "モデル一覧を取得できません: 整形APIエラー HTTP 401: denied *** BeArEr ***, retry"
+            );
+        }
+    }
+
+    #[test]
+    fn http_error_display_carries_the_server_detail() {
+        // オーバーレイと記録で読む文面が、サーバー応答の要点を欠かないこと
+        let e = FormatError::Http(400, Some("The model does not exist".into()));
+        let text = e.to_string();
+        assert!(text.contains("整形APIエラー HTTP 400"), "{text}");
+        assert!(text.contains("The model does not exist"), "{text}");
     }
 
     #[test]
@@ -1765,7 +1988,7 @@ Connection: close
         let result = format_with_retry(&cfg, "明日の会議です。", &|| false, |_| {
             panic!("401 must not be retried")
         });
-        assert_eq!(result, Err(FormatError::Http(401)));
+        assert_eq!(result, Err(FormatError::Http(401, None)));
         thread::sleep(Duration::from_millis(100));
         assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
@@ -1782,7 +2005,7 @@ Connection: close
             &|| cancelled.load(std::sync::atomic::Ordering::SeqCst),
             |_| cancelled.store(true, std::sync::atomic::Ordering::SeqCst),
         );
-        assert_eq!(result, Err(FormatError::Http(503)));
+        assert_eq!(result, Err(FormatError::Http(503, None)));
         thread::sleep(Duration::from_millis(100));
         assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
     }

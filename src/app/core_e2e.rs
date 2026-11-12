@@ -559,6 +559,13 @@ fn record_enter_pastes_once_and_restores_clipboard() {
                 "preserved newer copy"
             }
         );
+        app.copy_last_text();
+        assert_eq!(
+            clipboard_text(owner.0),
+            text,
+            "Successful insertion must leave the latest transcript available without history"
+        );
+        assert_eq!(target.text(), expected, "Copying must not insert again");
     }
     target
         .close()

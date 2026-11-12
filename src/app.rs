@@ -430,6 +430,7 @@ struct App {
     format_generation: FormatGeneration,
     transient_until: Option<Instant>,
     recoveries: recovery::Recoveries,
+    last_paste_text: Option<String>,
     pending_paste: Option<PendingPaste>,
     paste_transaction: Option<paste::PasteTransaction>,
     latest_delta: Arc<Mutex<Option<(u64, String)>>>,
@@ -479,6 +480,7 @@ impl App {
             format_generation: FormatGeneration::default(),
             transient_until: None,
             recoveries: recovery::Recoveries::default(),
+            last_paste_text: None,
             pending_paste: None,
             paste_transaction: None,
             latest_delta: Arc::new(Mutex::new(None)),
@@ -920,6 +922,8 @@ impl App {
             Action::Paste { text } => {
                 overlay::clear_caption();
                 let text = lexicon::replace_explicit(&text, &self.session.cfg.terms);
+                self.last_paste_text = Some(text.clone());
+                overlay::set_last_text_available(true);
                 let id = match self.session.recovery_id {
                     Some(id) => id,
                     None => match self.recoveries.reserve(self.cfg.recovery_history) {
@@ -988,6 +992,22 @@ impl App {
                 });
                 self.transient_until = Some(Instant::now() + Duration::from_millis(2500));
             }
+            Err(error) => self.show_overlay(OverlayKind::Error {
+                message: format!("コピーできませんでした（{error}）。トレイから再試行できます"),
+            }),
+        }
+    }
+
+    fn copy_last_text(&mut self) {
+        let Some(text) = self.last_paste_text.as_ref() else {
+            return;
+        };
+        match paste::copy_text_to_clipboard(text, overlay::hwnd()) {
+            Ok(()) => self.show_notice(
+                Tone::Warn,
+                "直近の認識テキストをコピーしました".into(),
+                Duration::from_millis(2500),
+            ),
             Err(error) => self.show_overlay(OverlayKind::Error {
                 message: format!("コピーできませんでした（{error}）。トレイから再試行できます"),
             }),
@@ -2439,6 +2459,9 @@ pub fn run() {
         if overlay::take_recovery_request() {
             app.copy_failed_text();
         }
+        if app.paste_transaction.is_none() && overlay::take_last_text_request() {
+            app.copy_last_text();
+        }
         // 残していた worker の時間が来たら殺す
         if let Some(kept) = app.kept_worker.take() {
             if Instant::now() < kept.expires {
@@ -3282,6 +3305,7 @@ mod flow_tests {
             format_generation: FormatGeneration::default(),
             transient_until: None,
             recoveries,
+            last_paste_text: None,
             pending_paste: None,
             paste_transaction: None,
             latest_delta: Arc::new(Mutex::new(None)),
