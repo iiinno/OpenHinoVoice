@@ -547,6 +547,37 @@ fn record_enter_pastes_once_and_restores_clipboard() {
         );
         assert_eq!(target.text(), expected, "Copying must not insert again");
     }
+    let text = "publication lock must not deliver this text";
+    let seeded_clipboard = "original clipboard before publication lock";
+    paste::copy_text_to_clipboard(seeded_clipboard, owner.0).unwrap();
+    let held_reader = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let reader_slot = held_reader.clone();
+    paste::after_next_clipboard_write_for_test(move || {
+        *reader_slot.borrow_mut() = Some(paste::ClipboardReadLockForTest::acquire());
+    });
+    let id = app.recoveries.reserve(false).unwrap();
+    app.recoveries.update_raw(id, text.into());
+    app.session.recovery_id = Some(id);
+    app.session.paste_target = Some(paste::capture_target().unwrap());
+    assert!(app.execute(Action::Paste { text: text.into() }));
+    wait_for(app, &key_rx, "failed delivery retains restoration ownership", |app| {
+        app.paste_transaction.is_some()
+    });
+    assert!(app.paste_transaction.as_ref().unwrap().delivery_error().is_some());
+    assert_eq!(target.text(), expected, "Failed publication must not paste");
+    assert_eq!(app.recoveries.first_text(), Some((id, text)));
+    drop(held_reader.borrow_mut().take());
+    wait_for(app, &key_rx, "original clipboard restored after reader release", |app| {
+        app.paste_transaction.is_none()
+    });
+    assert_eq!(clipboard_text(owner.0), seeded_clipboard);
+    assert_eq!(target.text(), expected, "Restoration must not retry delivery");
+    assert_eq!(app.recoveries.first_text(), Some((id, text)));
+    app.copy_failed_text();
+    assert_eq!(clipboard_text(owner.0), text);
+    assert_eq!(app.recoveries.count(), 0);
+    println!("core_e2e: blocked publication retained the original clipboard and recoverable text without insertion");
+
     for quit in [false, true] {
         let cancellation = if quit { "WM_QUIT" } else { "Esc" };
         let text = format!("must not paste before {cancellation}");

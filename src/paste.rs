@@ -243,9 +243,9 @@ struct ClipboardMarker {
 impl ClipboardMarker {
     fn allocate() -> Result<(Self, AllocatedClipboardMemory), String> {
         let format = unsafe {
-            windows::Win32::System::DataExchange::RegisterClipboardFormatW(
-                windows::core::w!("OpenHinoVoice.PasteOwnership"),
-            )
+            windows::Win32::System::DataExchange::RegisterClipboardFormatW(windows::core::w!(
+                "OpenHinoVoice.PasteOwnership"
+            ))
         };
         if format == 0 {
             return Err("クリップボードの所有権を確認する形式を登録できません".into());
@@ -281,7 +281,9 @@ impl ClipboardOwnership {
                 GetClipboardSequenceNumber()
             })),
             Self::Marker(marker) => unsafe {
-                if windows::Win32::System::DataExchange::IsClipboardFormatAvailable(marker.format).is_err() {
+                if windows::Win32::System::DataExchange::IsClipboardFormatAvailable(marker.format)
+                    .is_err()
+                {
                     return Ok(false);
                 }
                 let handle = GetClipboardData(marker.format);
@@ -295,7 +297,8 @@ impl ClipboardOwnership {
                 if pointer.is_null() {
                     return Err("クリップボードの所有権を確認できません".into());
                 }
-                let matches = std::slice::from_raw_parts(pointer, marker.nonce.len()) == marker.nonce;
+                let matches =
+                    std::slice::from_raw_parts(pointer, marker.nonce.len()) == marker.nonce;
                 GlobalUnlock(handle);
                 Ok(matches)
             },
@@ -400,7 +403,11 @@ struct OpenedClipboard;
 
 impl OpenedClipboard {
     fn try_open(owner: HWND) -> Option<Self> {
-        (unsafe { OpenClipboard(owner.0) } != 0).then(|| Self)
+        if unsafe { OpenClipboard(owner.0) } != 0 {
+            Some(Self)
+        } else {
+            None
+        }
     }
 
     fn open(owner: HWND) -> Result<Self, String> {
@@ -458,7 +465,11 @@ fn replace_clipboard_text(
         return Err("クリップボードの所有者ウィンドウがありません".into());
     }
     let retained = snapshot.is_some();
-    let mut marker = if retained { Some(ClipboardMarker::allocate()?) } else { None };
+    let mut marker = if retained {
+        Some(ClipboardMarker::allocate()?)
+    } else {
+        None
+    };
     let utf16 = clipboard_utf16(text);
     let bytes = utf16
         .len()
@@ -477,7 +488,8 @@ fn replace_clipboard_text(
         GlobalUnlock(mem.0);
 
         let clipboard = if retained {
-            OpenedClipboard::try_open(owner).ok_or("クリップボードが使用中のため入力を中止しました")?
+            OpenedClipboard::try_open(owner)
+                .ok_or("クリップボードが使用中のため入力を中止しました")?
         } else {
             OpenedClipboard::open(owner)?
         };
@@ -536,7 +548,11 @@ fn published_clipboard_sequence(owner: HWND, expected: &[u16]) -> Result<u32, St
     published_sequence_locked(owner, expected, &clipboard)
 }
 
-fn published_sequence_locked(owner: HWND, expected: &[u16], _clipboard: &OpenedClipboard) -> Result<u32, String> {
+fn published_sequence_locked(
+    owner: HWND,
+    expected: &[u16],
+    _clipboard: &OpenedClipboard,
+) -> Result<u32, String> {
     unsafe {
         if GetClipboardOwner() != owner.0 {
             return Err("クリップボードが他のアプリで更新されました".into());
@@ -796,7 +812,12 @@ pub enum RestoreProgress {
 }
 
 impl PasteTransaction {
-    pub fn begin(text: &str, target: PasteTarget, owner: HWND, now: Instant) -> Result<Self, String> {
+    pub fn begin(
+        text: &str,
+        target: PasteTarget,
+        owner: HWND,
+        now: Instant,
+    ) -> Result<Self, String> {
         if text.is_empty() {
             return Err("入力テキストが空です".into());
         }
@@ -810,10 +831,18 @@ impl PasteTransaction {
         let lease = PasteLease::acquire()?;
         let mut previous = None;
         let mut ownership = ClipboardOwnership::Unchanged;
-        let written = replace_clipboard_text(text, owner, None, &mut ownership, Some(&mut previous));
+        let written =
+            replace_clipboard_text(text, owner, None, &mut ownership, Some(&mut previous));
         let mut transaction = Self {
-            previous, owner, ownership, deadline: now, waiting_since: None, warned: false,
-            delivery_error: None, _lease: lease, _same_thread: PhantomData,
+            previous,
+            owner,
+            ownership,
+            deadline: now,
+            waiting_since: None,
+            warned: false,
+            delivery_error: None,
+            _lease: lease,
+            _same_thread: PhantomData,
         };
         let delivered = written.and_then(|()| {
             check_target(target)?;
@@ -822,7 +851,10 @@ impl PasteTransaction {
             }
             let clipboard = OpenedClipboard::try_open(owner)
                 .ok_or("クリップボードが使用中のため入力を中止しました")?;
-            let before = transaction.previous.as_ref().map_or(0, |snapshot| snapshot.sequence);
+            let before = transaction
+                .previous
+                .as_ref()
+                .map_or(0, |snapshot| snapshot.sequence);
             if !ownership.matches_locked(owner, before)? {
                 return Err("貼り付け前にクリップボードが別のアプリで変更されました".into());
             }
@@ -860,10 +892,12 @@ impl PasteTransaction {
             result => {
                 self.deadline = now + Duration::from_millis(50);
                 let started = *self.waiting_since.get_or_insert(now);
-                if !self.warned && now.saturating_duration_since(started) >= Duration::from_secs(2) {
+                if !self.warned && now.saturating_duration_since(started) >= Duration::from_secs(2)
+                {
                     self.warned = true;
-                    RestoreProgress::Waiting(result.err().unwrap_or_else(||
-                        "クリップボードが使用中です。元の内容を保持して復元を待っています".into()))
+                    RestoreProgress::Waiting(result.err().unwrap_or_else(|| {
+                        "クリップボードが使用中です。元の内容を保持して復元を待っています".into()
+                    }))
                 } else {
                     RestoreProgress::Pending
                 }
@@ -872,13 +906,20 @@ impl PasteTransaction {
     }
 
     fn restore_inner(&mut self) -> Result<bool, String> {
-        let Some(previous) = self.previous.as_ref() else { return Ok(true) };
+        let Some(previous) = self.previous.as_ref() else {
+            return Ok(true);
+        };
         if matches!(self.ownership, ClipboardOwnership::Unchanged) {
             self.previous = None;
             return Ok(true);
         }
-        let Some(clipboard) = OpenedClipboard::try_open(self.owner) else { return Ok(false) };
-        if !self.ownership.matches_locked(self.owner, previous.sequence)? {
+        let Some(clipboard) = OpenedClipboard::try_open(self.owner) else {
+            return Ok(false);
+        };
+        if !self
+            .ownership
+            .matches_locked(self.owner, previous.sequence)?
+        {
             self.previous = None;
             return Ok(true);
         }
@@ -898,6 +939,47 @@ impl Drop for PasteTransaction {
 }
 
 #[cfg(test)]
+pub(crate) struct ClipboardReadLockForTest {
+    release: std::sync::mpsc::Sender<()>,
+    reader: Option<std::thread::JoinHandle<()>>,
+}
+#[cfg(test)]
+impl ClipboardReadLockForTest {
+    pub(crate) fn acquire() -> Self {
+        assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
+        assert_eq!(std::env::var("RUNNER_ENVIRONMENT").as_deref(), Ok("github-hosted"));
+        let (ready, acquired) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let clipboard = OpenedClipboard::open(HWND::default()).unwrap();
+            ready.send(()).unwrap();
+            let result = released.recv_timeout(Duration::from_secs(5));
+            drop(clipboard);
+            result.expect("test must release its clipboard reader");
+        });
+        acquired.recv_timeout(Duration::from_secs(5)).unwrap();
+        Self {
+            release,
+            reader: Some(reader),
+        }
+    }
+}
+#[cfg(test)]
+impl Drop for ClipboardReadLockForTest {
+    fn drop(&mut self) {
+        let _ = self.release.send(());
+        if let Some(reader) = self.reader.take() {
+            reader.join().unwrap();
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn after_next_clipboard_write_for_test(hook: impl FnOnce() + 'static) {
+    AFTER_CLIPBOARD_WRITE.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+}
+
+#[cfg(test)]
 thread_local! {
     static AFTER_CLIPBOARD_WRITE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
@@ -907,10 +989,20 @@ thread_local! {
 mod tests {
     use super::*;
 
-    fn transaction_for_test(previous: Option<ClipboardSnapshot>, owner: HWND, ownership: ClipboardOwnership) -> PasteTransaction {
+    fn transaction_for_test(
+        previous: Option<ClipboardSnapshot>,
+        owner: HWND,
+        ownership: ClipboardOwnership,
+    ) -> PasteTransaction {
         PasteTransaction {
-            previous, owner, ownership, deadline: Instant::now(), waiting_since: None,
-            warned: false, delivery_error: None, _lease: PasteLease::acquire().unwrap(),
+            previous,
+            owner,
+            ownership,
+            deadline: Instant::now(),
+            waiting_since: None,
+            warned: false,
+            delivery_error: None,
+            _lease: PasteLease::acquire().unwrap(),
             _same_thread: PhantomData,
         }
     }
@@ -919,10 +1011,20 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
             match transaction.poll_restore(Instant::now()) {
-                RestoreProgress::Finished(result) => { result.unwrap(); return; }
+                RestoreProgress::Finished(result) => {
+                    result.unwrap();
+                    return;
+                }
                 RestoreProgress::Pending | RestoreProgress::Waiting(_) => {
-                    assert!(Instant::now() < deadline, "復元が期限内に完了しませんでした");
-                    thread::sleep(transaction.deadline().saturating_duration_since(Instant::now()));
+                    assert!(
+                        Instant::now() < deadline,
+                        "復元が期限内に完了しませんでした"
+                    );
+                    thread::sleep(
+                        transaction
+                            .deadline()
+                            .saturating_duration_since(Instant::now()),
+                    );
                 }
             }
         }
@@ -1123,36 +1225,6 @@ mod tests {
             assert_eq!(unsafe { EnumClipboardFormats(0) }, 0);
         }
 
-        struct ReaderLock {
-            release: std::sync::mpsc::Sender<()>,
-            reader: Option<std::thread::JoinHandle<()>>,
-        }
-        impl ReaderLock {
-            fn acquire() -> Self {
-                let (ready, acquired) = std::sync::mpsc::channel();
-                let (release, released) = std::sync::mpsc::channel();
-                let reader = std::thread::spawn(move || {
-                    let clipboard = OpenedClipboard::open(HWND::default()).unwrap();
-                    ready.send(()).unwrap();
-                    let result = released.recv_timeout(Duration::from_secs(5));
-                    drop(clipboard);
-                    result.expect("test must release its clipboard reader");
-                });
-                acquired.recv_timeout(Duration::from_secs(5)).unwrap();
-                Self {
-                    release,
-                    reader: Some(reader),
-                }
-            }
-        }
-        impl Drop for ReaderLock {
-            fn drop(&mut self) {
-                let _ = self.release.send(());
-                if let Some(reader) = self.reader.take() {
-                    reader.join().unwrap();
-                }
-            }
-        }
         let mut failures = Vec::new();
         for phase in ["publication", "restoration"] {
             copy_text_to_clipboard(original, owner.0).unwrap();
@@ -1161,7 +1233,7 @@ mod tests {
                 let held = reader.clone();
                 AFTER_CLIPBOARD_WRITE.with(|hook| {
                     *hook.borrow_mut() = Some(Box::new(move || {
-                        *held.borrow_mut() = Some(ReaderLock::acquire());
+                        *held.borrow_mut() = Some(ClipboardReadLockForTest::acquire());
                     }));
                 });
             }
@@ -1182,12 +1254,21 @@ mod tests {
                 );
             } else {
                 replaced.unwrap();
-                *reader.borrow_mut() = Some(ReaderLock::acquire());
+                *reader.borrow_mut() = Some(ClipboardReadLockForTest::acquire());
             }
             let now = Instant::now();
-            assert!(matches!(transaction.poll_restore(now), RestoreProgress::Pending));
-            assert!(transaction.previous.is_some(), "読み取りロック中も原内容を保持する");
-            assert!(transaction.deadline() > now, "再試行で待機ループを空回りさせない");
+            assert!(matches!(
+                transaction.poll_restore(now),
+                RestoreProgress::Pending
+            ));
+            assert!(
+                transaction.previous.is_some(),
+                "読み取りロック中も原内容を保持する"
+            );
+            assert!(
+                transaction.deadline() > now,
+                "再試行で待機ループを空回りさせない"
+            );
             drop(reader.borrow_mut().take());
             finish_restore(&mut transaction);
             if published_clipboard_sequence(owner.0, &clipboard_utf16(original)).is_err() {
@@ -1202,7 +1283,14 @@ mod tests {
         copy_text_to_clipboard(original, owner.0).unwrap();
         let mut snapshot = None;
         let mut ownership = ClipboardOwnership::Unchanged;
-        replace_clipboard_text("same text", owner.0, None, &mut ownership, Some(&mut snapshot)).unwrap();
+        replace_clipboard_text(
+            "same text",
+            owner.0,
+            None,
+            &mut ownership,
+            Some(&mut snapshot),
+        )
+        .unwrap();
         copy_text_to_clipboard("same text", owner.0).unwrap();
         let newer_sequence = unsafe { GetClipboardSequenceNumber() };
         finish_restore(&mut transaction_for_test(snapshot, owner.0, ownership));

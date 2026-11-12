@@ -1118,9 +1118,11 @@ impl App {
                 }
             }
         }
-        if self.paste_transaction.is_none() && self.pending_paste.as_ref().is_some_and(|pending| {
-            self.recoveries.ready(pending.recovery_id) || pending.deadline <= now
-        }) {
+        if self.paste_transaction.is_none()
+            && self.pending_paste.as_ref().is_some_and(|pending| {
+                self.recoveries.ready(pending.recovery_id) || pending.deadline <= now
+            })
+        {
             let pending = self.pending_paste.take().unwrap();
             if !self.recoveries.ready(pending.recovery_id) {
                 self.recoveries
@@ -1135,9 +1137,14 @@ impl App {
             let error = match &result {
                 Ok(transaction) => transaction.delivery_error(),
                 Err(message) => Some(message.as_str()),
-            }.map(str::to_owned);
-            self.recoveries.mark_paste(pending.recovery_id, error.is_none());
-            usage::log("paste", serde_json::json!({"ok": error.is_none(), "error": error}));
+            }
+            .map(str::to_owned);
+            self.recoveries
+                .mark_paste(pending.recovery_id, error.is_none());
+            usage::log(
+                "paste",
+                serde_json::json!({"ok": error.is_none(), "error": error}),
+            );
             let feedback = output_feedback(
                 error.as_deref(),
                 self.recoveries.volatile(pending.recovery_id),
@@ -1265,14 +1272,29 @@ impl App {
     }
 
     fn wait_duration(&self, now: Instant) -> Duration {
-        let mut wait = idle_sleep_duration(&self.state, false, overlay::needs_animation());
+        self.wait_duration_with_display(
+            now,
+            overlay::needs_animation(),
+            [crate::preview_ipc::deadline(), overlay::next_deadline()],
+        )
+    }
+
+    fn wait_duration_with_display(
+        &self,
+        now: Instant,
+        animated: bool,
+        display_deadlines: [Option<Instant>; 2],
+    ) -> Duration {
+        let mut wait = idle_sleep_duration(&self.state, false, animated);
         for deadline in [
             self.transient_until,
             self.pending_paste.as_ref().map(|p| p.deadline),
             self.paste_transaction.as_ref().map(|p| p.deadline()),
-            self.quit_started.map(|at| at + Duration::from_secs(5)),
-            crate::preview_ipc::deadline(),
-            overlay::next_deadline(),
+            self.quit_started
+                .map(|at| at + Duration::from_secs(5))
+                .filter(|deadline| *deadline > now),
+            display_deadlines[0],
+            display_deadlines[1],
         ]
         .into_iter()
         .flatten()
@@ -3700,6 +3722,18 @@ mod flow_tests {
         assert!(
             app.transient_until.is_none(),
             "replay does not show a native notice"
+        );
+    }
+
+    #[test]
+    fn expired_shutdown_timeout_does_not_override_live_update_deadlines() {
+        let mut app = test_app();
+        let now = Instant::now();
+        app.quit_started = Some(now - Duration::from_secs(6));
+        let next_update = now + Duration::from_millis(50);
+        assert_eq!(
+            app.wait_duration_with_display(now, false, [Some(next_update), None]),
+            Duration::from_millis(50)
         );
     }
 

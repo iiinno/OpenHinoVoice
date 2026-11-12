@@ -798,12 +798,20 @@ impl eframe::App for Settings {
         if let Some(mut transaction) = self.paste_transaction.take() {
             match transaction.poll_restore(Instant::now()) {
                 paste::RestoreProgress::Pending => {
-                    ui.ctx().request_repaint_after(transaction.deadline().saturating_duration_since(Instant::now()));
+                    ui.ctx().request_repaint_after(
+                        transaction
+                            .deadline()
+                            .saturating_duration_since(Instant::now()),
+                    );
                     self.paste_transaction = Some(transaction);
                 }
                 paste::RestoreProgress::Waiting(message) => {
                     self.history_message = Some(message);
-                    ui.ctx().request_repaint_after(transaction.deadline().saturating_duration_since(Instant::now()));
+                    ui.ctx().request_repaint_after(
+                        transaction
+                            .deadline()
+                            .saturating_duration_since(Instant::now()),
+                    );
                     self.paste_transaction = Some(transaction);
                 }
                 paste::RestoreProgress::Finished(result) => {
@@ -885,7 +893,9 @@ impl eframe::App for Settings {
                         tx.deadline().saturating_duration_since(Instant::now()),
                     );
                     self.history_message = Some(match tx.delivery_error() {
-                        Some(error) => format!("貼り直せませんでした: {error}。元のクリップボードの復元を待っています"),
+                        Some(error) => format!(
+                            "貼り直せませんでした: {error}。元のクリップボードの復元を待っています"
+                        ),
                         None => "入力を送信しました".into(),
                     });
                     self.paste_transaction = Some(tx);
