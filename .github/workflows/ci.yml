@@ -55,8 +55,12 @@ jobs:
           New-Item -ItemType Directory -Force -Path target/qa/ci | Out-Null
           cargo fetch --locked 2>&1 | Tee-Object -FilePath target/qa/ci/fetch.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify ordinary regressions before the desktop checks
+        id: fast
+        run: ./scripts/verify.ps1 -Mode Fast -OutputDir target/qa/ci/fast
       - name: Verify the real Windows clipboard contract
         id: clipboard
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
         timeout-minutes: 10
         run: |
           cargo test --lib paste::tests::clipboard_write_tracks_the_published_sequence --locked --offline -- --ignored --exact --nocapture --test-threads=1 2>&1 | Tee-Object -FilePath target/qa/ci/clipboard-contract.log
@@ -64,6 +68,7 @@ jobs:
           if ((Get-Content target/qa/ci/clipboard-contract.log -Raw) -notmatch 'test result: ok\. 1 passed; 0 failed') { throw 'The required clipboard regression did not run.' }
       - name: Verify recording through actual text insertion
         id: core-e2e
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
         timeout-minutes: 10
         run: |
           $sandbox = Join-Path $env:GITHUB_WORKSPACE 'target/qa/core-e2e'
@@ -138,6 +143,7 @@ jobs:
           CORE_E2E_RESULT: ${{ steps.core-e2e.outcome }}
           HARNESSES_RESULT: ${{ steps.harnesses.outcome }}
           DEPENDENCIES_RESULT: ${{ steps.dependencies.outcome }}
+          FAST_RESULT: ${{ steps.fast.outcome }}
           VERIFY_RESULT: ${{ steps.verify.outcome }}
           PREVIEW_BUILD_RESULT: ${{ steps.preview-build.outcome }}
           PACKAGE_RESULT: ${{ steps.package.outcome }}
@@ -149,6 +155,7 @@ jobs:
             coreTextInsertion = $env:CORE_E2E_RESULT
             helperCompilation = $env:HARNESSES_RESULT
             dependencies = $env:DEPENDENCIES_RESULT
+            ordinaryRegressions = $env:FAST_RESULT
             verify = $env:VERIFY_RESULT
             previewBuild = $env:PREVIEW_BUILD_RESULT
             package = $env:PACKAGE_RESULT
@@ -163,6 +170,8 @@ jobs:
           path: |
             target/qa/ci/*.json
             target/qa/ci/*.log
+            target/qa/ci/fast/*.json
+            target/qa/ci/fast/*.log
             target/qa/ci/ui-harness/*.json
             target/qa/ci/ui-harness/*.log
             target/qa/ci/perf-harness/*.json

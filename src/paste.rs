@@ -407,6 +407,12 @@ fn replace_clipboard_text(
         // Windows now owns the moveable memory handle; never free it in this process.
         mem.0 = std::ptr::null_mut();
     }
+    #[cfg(test)]
+    AFTER_CLIPBOARD_WRITE.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().take() {
+            hook();
+        }
+    });
     // Closing a text write can publish Windows-synthesized formats and advance
     // the sequence. Reopen read-only and prove ownership before accepting it.
     *owned_sequence = 0;
@@ -749,6 +755,12 @@ pub fn paste_text(text: &str, target: PasteTarget, owner: HWND) -> Result<(), St
 }
 
 #[cfg(test)]
+thread_local! {
+    static AFTER_CLIPBOARD_WRITE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -942,8 +954,88 @@ mod tests {
         )
         .unwrap();
         snapshot.unwrap().restore(owner.0, ours).unwrap();
-        let _clipboard = OpenedClipboard::open(owner.0).unwrap();
-        assert_eq!(unsafe { EnumClipboardFormats(0) }, 0);
+        {
+            let _clipboard = OpenedClipboard::open(owner.0).unwrap();
+            assert_eq!(unsafe { EnumClipboardFormats(0) }, 0);
+        }
+
+        struct ReaderLock {
+            release: std::sync::mpsc::Sender<()>,
+            reader: Option<std::thread::JoinHandle<()>>,
+        }
+        impl ReaderLock {
+            fn acquire() -> Self {
+                let (ready, acquired) = std::sync::mpsc::channel();
+                let (release, released) = std::sync::mpsc::channel();
+                let reader = std::thread::spawn(move || {
+                    let clipboard = OpenedClipboard::open(HWND::default()).unwrap();
+                    ready.send(()).unwrap();
+                    let result = released.recv_timeout(Duration::from_secs(5));
+                    drop(clipboard);
+                    result.expect("test must release its clipboard reader");
+                });
+                acquired.recv_timeout(Duration::from_secs(5)).unwrap();
+                Self {
+                    release,
+                    reader: Some(reader),
+                }
+            }
+        }
+        impl Drop for ReaderLock {
+            fn drop(&mut self) {
+                let _ = self.release.send(());
+                if let Some(reader) = self.reader.take() {
+                    reader.join().unwrap();
+                }
+            }
+        }
+        let make_transaction = |previous, our_sequence| PasteTransaction {
+            previous,
+            owner: owner.0,
+            our_sequence,
+            deadline: Instant::now(),
+            _lease: PasteLease::acquire().unwrap(),
+            _same_thread: PhantomData,
+        };
+        let mut failures = Vec::new();
+        for phase in ["publication", "restoration"] {
+            copy_text_to_clipboard(original, owner.0).unwrap();
+            let reader = Rc::new(std::cell::RefCell::new(None));
+            if phase == "publication" {
+                let held = reader.clone();
+                AFTER_CLIPBOARD_WRITE.with(|hook| {
+                    *hook.borrow_mut() = Some(Box::new(move || {
+                        *held.borrow_mut() = Some(ReaderLock::acquire());
+                    }));
+                });
+            }
+            let mut snapshot = None;
+            let mut sequence = 0;
+            let replaced = replace_clipboard_text(
+                "temporary dictation under contention",
+                owner.0,
+                None,
+                &mut sequence,
+                Some(&mut snapshot),
+            );
+            let mut transaction = make_transaction(snapshot, sequence);
+            if phase == "publication" {
+                assert!(replaced.is_err(), "publication must observe the reader lock");
+            } else {
+                replaced.unwrap();
+                *reader.borrow_mut() = Some(ReaderLock::acquire());
+                assert!(transaction.restore_inner().is_err());
+            }
+            drop(reader.borrow_mut().take());
+            transaction.restore_inner().unwrap();
+            if published_clipboard_sequence(owner.0, &clipboard_utf16(original)).is_err() {
+                failures.push(phase);
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "read-only clipboard contention discarded the original during {failures:?}"
+        );
     }
 
     #[test]

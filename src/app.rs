@@ -471,10 +471,7 @@ fn formatting_mode(state: &State, retry: Option<u32>) -> Mode {
         ("整形中", "Enter で生テキスト")
     };
     let hint = match retry {
-        Some(attempt) => format!(
-            "再試行 {attempt}/{} · {shortcut}",
-            format::MAX_ATTEMPTS - 1
-        ),
+        Some(attempt) => format!("再試行 {attempt}/{} · {shortcut}", format::MAX_ATTEMPTS - 1),
         None => shortcut.to_string(),
     };
     Mode::Busy {
@@ -1201,6 +1198,66 @@ impl App {
             return false;
         }
         true
+    }
+
+    fn resident_iteration(&mut self, keys: &Receiver<hook::KeyEvent>) -> bool {
+        if self.should_exit(
+            overlay::EXIT_REQUESTED.load(Ordering::SeqCst),
+            Instant::now(),
+        ) {
+            return true;
+        }
+        self.tick_output(Instant::now());
+
+        if overlay::take_recovery_request() {
+            self.copy_failed_text();
+        }
+        if self.paste_transaction.is_none() && overlay::take_last_text_request() {
+            self.copy_last_text();
+        }
+        if let Some(kept) = self.kept_worker.take() {
+            if Instant::now() < kept.expires {
+                self.kept_worker = Some(kept);
+            } else {
+                retire_worker(kept.worker);
+            }
+        }
+        unsafe {
+            let mut message = MSG::default();
+            while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
+                if message.message == WM_QUIT {
+                    overlay::EXIT_REQUESTED.store(true, Ordering::SeqCst);
+                    break;
+                }
+                let _ = TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+        }
+        if self.should_exit(
+            overlay::EXIT_REQUESTED.load(Ordering::SeqCst),
+            Instant::now(),
+        ) {
+            return true;
+        }
+        while let Ok(key) = keys.try_recv() {
+            match key {
+                hook::KeyEvent::Hotkey => {
+                    self.request_recording(uia::probe_selected_text);
+                    hook::acknowledge_hotkey();
+                }
+                hook::KeyEvent::Enter => self.dispatch(Event::Enter),
+                hook::KeyEvent::Esc => self.dispatch(Event::Esc),
+            }
+        }
+
+        self.sync_mirror();
+        crate::preview_ipc::tick(Instant::now());
+        while let Ok(outcome) = self.format_rx.try_recv() {
+            self.receive_format(outcome);
+        }
+        self.tick_session();
+        overlay::tick();
+        false
     }
 
     fn wait_duration(&self, now: Instant) -> Duration {
@@ -2514,68 +2571,10 @@ pub fn run() {
         eprintln!("認識モデルの取得状況を確認できません: {e}");
     }
 
-    let mut msg = MSG::default();
     loop {
-        // Cancellation must run before any queued input can be sent.
-        if app.should_exit(
-            overlay::EXIT_REQUESTED.load(Ordering::SeqCst),
-            Instant::now(),
-        ) {
+        if app.resident_iteration(&key_rx) {
             break;
         }
-        app.tick_output(Instant::now());
-
-        if overlay::take_recovery_request() {
-            app.copy_failed_text();
-        }
-        if app.paste_transaction.is_none() && overlay::take_last_text_request() {
-            app.copy_last_text();
-        }
-        // 残していた worker の時間が来たら殺す
-        if let Some(kept) = app.kept_worker.take() {
-            if Instant::now() < kept.expires {
-                app.kept_worker = Some(kept);
-            } else {
-                retire_worker(kept.worker);
-            }
-        }
-        unsafe {
-            while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
-                if msg.message == WM_QUIT {
-                    overlay::EXIT_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst);
-                    break;
-                }
-                let _ = TranslateMessage(&msg);
-                DispatchMessageW(&msg);
-            }
-        }
-        if app.should_exit(
-            overlay::EXIT_REQUESTED.load(Ordering::SeqCst),
-            Instant::now(),
-        ) {
-            break;
-        }
-
-        while let Ok(key) = key_rx.try_recv() {
-            match key {
-                hook::KeyEvent::Hotkey => {
-                    app.request_recording(uia::probe_selected_text);
-                    hook::acknowledge_hotkey();
-                }
-                hook::KeyEvent::Enter => app.dispatch(Event::Enter),
-                hook::KeyEvent::Esc => app.dispatch(Event::Esc),
-            }
-        }
-
-        app.sync_mirror();
-        crate::preview_ipc::tick(Instant::now());
-
-        while let Ok(outcome) = app.format_rx.try_recv() {
-            app.receive_format(outcome);
-        }
-
-        app.tick_session();
-        overlay::tick();
 
         // 設定ウィンドウで保存された変更を、起動し直さずに反映する
         if last_config_check.elapsed() >= Duration::from_secs(1) {
@@ -3405,8 +3404,16 @@ mod flow_tests {
                 true,
                 uia::SelectionProbe::Selected("あ".repeat(uia::MAX_SELECTION_CHARS + 1)),
             ),
-            (true, false, uia::SelectionProbe::Selected("選んだ文".into())),
-            (false, true, uia::SelectionProbe::Selected("選んだ文".into())),
+            (
+                true,
+                false,
+                uia::SelectionProbe::Selected("選んだ文".into()),
+            ),
+            (
+                false,
+                true,
+                uia::SelectionProbe::Selected("選んだ文".into()),
+            ),
         ];
         for (edit_enabled, has_key, selection) in cases {
             let mut app = recording_request_app();
@@ -3480,13 +3487,18 @@ mod flow_tests {
                     hint: Some(hint.into()),
                 }
             );
-            assert_eq!(state::step(state.clone(), Event::Enter), (state.clone(), vec![]));
+            assert_eq!(
+                state::step(state.clone(), Event::Enter),
+                (state.clone(), vec![])
+            );
         }
     }
 
     #[test]
     fn dictation_formatting_status_retains_the_raw_text_shortcut() {
-        let state = State::Formatting { raw: "原文".into() };
+        let state = State::Formatting {
+            raw: "原文".into()
+        };
         for (retry, hint) in [
             (None, "Enter で生テキスト"),
             (Some(1), "再試行 1/2 · Enter で生テキスト"),

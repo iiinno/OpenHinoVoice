@@ -12,10 +12,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DestroyWindow, DispatchMessageW, GetForegroundWindow, GetMessageW,
-    GetWindowThreadProcessId, PeekMessageW, PostThreadMessageW, SendMessageTimeoutW, SendMessageW,
-    SetForegroundWindow, TranslateMessage, MSG, PM_REMOVE, SMTO_ABORTIFHUNG, WINDOW_EX_STYLE,
-    WINDOW_STYLE, WM_GETTEXT, WM_QUIT, WS_CHILD, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_VISIBLE,
+    GetWindowThreadProcessId, PostThreadMessageW, SendMessageTimeoutW, SendMessageW,
+    SetForegroundWindow, TranslateMessage, MSG, SMTO_ABORTIFHUNG, WINDOW_EX_STYLE, WINDOW_STYLE,
+    WM_GETTEXT, WM_QUIT, WS_CHILD, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_EX_TRANSPARENT, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_VISIBLE,
 };
 
 #[link(name = "user32")]
@@ -376,27 +376,7 @@ fn key_press(vk: u16) {
 }
 
 fn pump(app: &mut App, keys: &Receiver<hook::KeyEvent>) {
-    unsafe {
-        let mut message = MSG::default();
-        while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
-            assert_ne!(message.message, WM_QUIT);
-            let _ = TranslateMessage(&message);
-            DispatchMessageW(&message);
-        }
-    }
-    while let Ok(key) = keys.try_recv() {
-        match key {
-            hook::KeyEvent::Hotkey => {
-                app.dispatch(Event::F8);
-                hook::acknowledge_hotkey();
-            }
-            hook::KeyEvent::Enter => app.dispatch(Event::Enter),
-            hook::KeyEvent::Esc => app.dispatch(Event::Esc),
-        }
-    }
-    app.tick_session();
-    app.tick_output(Instant::now());
-    overlay::tick();
+    assert!(!app.resident_iteration(keys), "Resident must remain active");
 }
 
 fn wait_for(
@@ -452,7 +432,7 @@ fn record_enter_pastes_once_and_restores_clipboard() {
     let _owner_binding = overlay::test_owner(owner.0);
     let mut target = EditTarget::new();
     let (key_tx, key_rx) = channel();
-    hook::install(key_tx, config::Hotkey { mods: 0, vk: 0x77 }).unwrap();
+    hook::install(key_tx.clone(), config::Hotkey { mods: 0, vk: 0x77 }).unwrap();
     let _hook = InstalledHook;
     let mut cfg = config::parse(config::EXAMPLE_TOML).unwrap();
     cfg.sounds = false;
@@ -567,6 +547,68 @@ fn record_enter_pastes_once_and_restores_clipboard() {
         );
         assert_eq!(target.text(), expected, "Copying must not insert again");
     }
+    for quit in [false, true] {
+        let cancellation = if quit { "WM_QUIT" } else { "Esc" };
+        let text = format!("must not paste before {cancellation}");
+        let seeded_clipboard = format!("clipboard before {cancellation}");
+        paste::copy_text_to_clipboard(&seeded_clipboard, owner.0).unwrap();
+        let id = app.recoveries.reserve(false).unwrap();
+        app.recoveries.update_raw(id, text.clone());
+        app.session.recovery_id = Some(id);
+        app.session.paste_target = Some(paste::capture_target().unwrap());
+        assert!(app.execute(Action::Paste { text: text.clone() }));
+        app.request_recording(|_| panic!("pending output must defer selection probing"));
+        assert!(app.pending_paste.is_some());
+        assert!(app.start_requested);
+        app.fixture_recorder = Some(Recorder::fixture(16000, vec![0.0; 320]));
+        if quit {
+            unsafe { PostThreadMessageW(GetCurrentThreadId(), WM_QUIT, WPARAM(0), LPARAM(0)) }
+                .unwrap();
+        } else {
+            key_tx.send(hook::KeyEvent::Esc).unwrap();
+        }
+        pump(app, &key_rx);
+        assert_eq!(
+            target.text(),
+            expected,
+            "Queued {cancellation} must be handled before pending text is inserted"
+        );
+        assert_eq!(clipboard_text(owner.0), seeded_clipboard);
+        assert!(app.pending_paste.is_none());
+        assert!(app.paste_transaction.is_none());
+        assert!(!app.start_requested);
+        assert!(app.fixture_recorder.is_some(), "The queued start must not run");
+        assert_eq!(app.state, State::Idle);
+        assert_eq!(app.recoveries.first_text(), Some((id, text.as_str())));
+        app.copy_failed_text();
+        assert_eq!(clipboard_text(owner.0), text);
+        assert_eq!(app.recoveries.count(), 0);
+        assert!(!overlay::EXIT_REQUESTED.load(Ordering::SeqCst));
+        drop(app.fixture_recorder.take());
+        println!("core_e2e: queued {cancellation} prevented insertion and preserved recovery");
+    }
+    for quit in [false, true] {
+        let cancellation = if quit { "WM_QUIT" } else { "Esc" };
+        app.start_requested = true;
+        app.fixture_recorder = Some(Recorder::fixture(16000, vec![0.0; 320]));
+        if quit {
+            unsafe { PostThreadMessageW(GetCurrentThreadId(), WM_QUIT, WPARAM(0), LPARAM(0)) }
+                .unwrap();
+        } else {
+            key_tx.send(hook::KeyEvent::Esc).unwrap();
+        }
+        assert_eq!(app.resident_iteration(&key_rx), quit);
+        assert!(
+            app.fixture_recorder.is_some(),
+            "Queued {cancellation} must cancel the next start before the recorder is taken"
+        );
+        assert!(!app.start_requested);
+        assert_eq!(app.state, State::Idle);
+        assert_eq!(target.text(), expected);
+        drop(app.fixture_recorder.take());
+        println!("core_e2e: queued {cancellation} prevented the next recording from starting");
+    }
+    overlay::EXIT_REQUESTED.store(false, Ordering::SeqCst);
     target
         .close()
         .expect("The owned EDIT process must exit cleanly");
