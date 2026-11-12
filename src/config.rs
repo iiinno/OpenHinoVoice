@@ -739,7 +739,12 @@ mod tests {
         assert!(!FormatConfig::default().usage_log);
         assert!(!parse("").unwrap().format.usage_log);
         assert!(!parse(EXAMPLE_TOML).unwrap().format.usage_log);
-        assert!(parse("[format]\nusage_log = true").unwrap().format.usage_log);
+        assert!(
+            parse("[format]\nusage_log = true")
+                .unwrap()
+                .format
+                .usage_log
+        );
     }
 
     #[test]

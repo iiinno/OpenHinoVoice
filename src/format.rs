@@ -1599,8 +1599,7 @@ mod tests {
                 assert!(request.starts_with("GET /models "), "{request}");
                 (
                     401,
-                    r#"{"error":{"message":"denied test-key BeArEr other-token, retry"}}"#
-                        .into(),
+                    r#"{"error":{"message":"denied test-key BeArEr other-token, retry"}}"#.into(),
                 )
             });
             let mut cfg = cfg_for(url);
