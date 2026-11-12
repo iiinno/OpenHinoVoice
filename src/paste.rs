@@ -213,7 +213,7 @@ impl OwnedClipboardFormat {
     }
 }
 
-fn is_ole_transport(format: u32) -> Result<bool, String> {
+fn is_transient_clipboard_format(format: u32) -> Result<bool, String> {
     if format < 0xc000 {
         return Ok(false);
     }
@@ -223,14 +223,84 @@ fn is_ole_transport(format: u32) -> Result<bool, String> {
         return Err("元のクリップボードの形式名を取得できません".into());
     }
     let name = String::from_utf16_lossy(&name[..length as usize]);
-    // These formats identify the old OLE publisher, not transferable document data.
+    // 転送元と一時的な所有権の印は、文書データではないため復元しない。
     Ok([
         "DataObject",
         "Ole Private Data",
         "Wine Marshalled DataObject",
+        "OpenHinoVoice.PasteOwnership",
     ]
     .iter()
     .any(|transport| name.eq_ignore_ascii_case(transport)))
+}
+
+#[derive(Clone, Copy)]
+struct ClipboardMarker {
+    format: u32,
+    nonce: [u8; 16],
+}
+
+impl ClipboardMarker {
+    fn allocate() -> Result<(Self, AllocatedClipboardMemory), String> {
+        let format = unsafe {
+            windows::Win32::System::DataExchange::RegisterClipboardFormatW(
+                windows::core::w!("OpenHinoVoice.PasteOwnership"),
+            )
+        };
+        if format == 0 {
+            return Err("クリップボードの所有権を確認する形式を登録できません".into());
+        }
+        let guid = unsafe { windows::Win32::System::Com::CoCreateGuid() }
+            .map_err(|e| format!("クリップボードの所有権を確認する印を作れません: {e}"))?;
+        let mut nonce = [0; 16];
+        nonce[..4].copy_from_slice(&guid.data1.to_le_bytes());
+        nonce[4..6].copy_from_slice(&guid.data2.to_le_bytes());
+        nonce[6..8].copy_from_slice(&guid.data3.to_le_bytes());
+        nonce[8..].copy_from_slice(&guid.data4);
+        let memory = AllocatedClipboardMemory::from_bytes(&nonce)?;
+        Ok((Self { format, nonce }, memory))
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+enum ClipboardOwnership {
+    #[default]
+    Unchanged,
+    Sequence(u32),
+    Marker(ClipboardMarker),
+}
+
+impl ClipboardOwnership {
+    fn matches_locked(self, owner: HWND, before: u32) -> Result<bool, String> {
+        if unsafe { GetClipboardOwner() } != owner.0 {
+            return Ok(false);
+        }
+        match self {
+            Self::Unchanged => Ok(false),
+            Self::Sequence(sequence) => Ok(should_restore(before, sequence, unsafe {
+                GetClipboardSequenceNumber()
+            })),
+            Self::Marker(marker) => unsafe {
+                if windows::Win32::System::DataExchange::IsClipboardFormatAvailable(marker.format).is_err() {
+                    return Ok(false);
+                }
+                let handle = GetClipboardData(marker.format);
+                if handle.is_null() {
+                    return Err("クリップボードの所有権を読み取れません".into());
+                }
+                if GlobalSize(handle) < marker.nonce.len() {
+                    return Ok(false);
+                }
+                let pointer = GlobalLock(handle) as *const u8;
+                if pointer.is_null() {
+                    return Err("クリップボードの所有権を確認できません".into());
+                }
+                let matches = std::slice::from_raw_parts(pointer, marker.nonce.len()) == marker.nonce;
+                GlobalUnlock(handle);
+                Ok(matches)
+            },
+        }
+    }
 }
 
 struct ClipboardSnapshot {
@@ -252,7 +322,7 @@ impl ClipboardSnapshot {
                 }
                 break;
             }
-            if is_ole_transport(format)? {
+            if is_transient_clipboard_format(format)? {
                 continue;
             }
             if formats.len() == SNAPSHOT_MAX_FORMATS {
@@ -274,17 +344,7 @@ impl ClipboardSnapshot {
         })
     }
 
-    fn restore(mut self, owner: HWND, our_sequence: u32) -> Result<(), String> {
-        if our_sequence == 0 {
-            return Ok(());
-        }
-        let _clipboard = OpenedClipboard::open(owner)?;
-        if !should_restore(self.sequence, our_sequence, unsafe {
-            GetClipboardSequenceNumber()
-        }) || unsafe { GetClipboardOwner() } != owner.0
-        {
-            return Ok(());
-        }
+    fn restore_locked(mut self, _clipboard: &OpenedClipboard) -> Result<(), String> {
         if unsafe { EmptyClipboard() } == 0 {
             return Err("元のクリップボードを復元する準備ができません".into());
         }
@@ -308,6 +368,24 @@ impl ClipboardSnapshot {
 
 struct AllocatedClipboardMemory(*mut c_void);
 
+impl AllocatedClipboardMemory {
+    fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
+        let memory = Self(unsafe { GlobalAlloc(GMEM_MOVEABLE, bytes.len()) });
+        if memory.0.is_null() {
+            return Err("クリップボード用メモリを確保できません".into());
+        }
+        unsafe {
+            let pointer = GlobalLock(memory.0) as *mut u8;
+            if pointer.is_null() {
+                return Err("クリップボード用メモリをロックできません".into());
+            }
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), pointer, bytes.len());
+            GlobalUnlock(memory.0);
+        }
+        Ok(memory)
+    }
+}
+
 impl Drop for AllocatedClipboardMemory {
     fn drop(&mut self) {
         if !self.0.is_null() {
@@ -321,6 +399,10 @@ impl Drop for AllocatedClipboardMemory {
 struct OpenedClipboard;
 
 impl OpenedClipboard {
+    fn try_open(owner: HWND) -> Option<Self> {
+        (unsafe { OpenClipboard(owner.0) } != 0).then(|| Self)
+    }
+
     fn open(owner: HWND) -> Result<Self, String> {
         for _ in 0..5 {
             if unsafe { OpenClipboard(owner.0) } != 0 {
@@ -356,19 +438,27 @@ fn copy_text_to_clipboard_checked(
     expected_sequence: Option<u32>,
     owned_sequence: &mut u32,
 ) -> Result<(), String> {
-    replace_clipboard_text(text, owner, expected_sequence, owned_sequence, None)
+    let mut ownership = ClipboardOwnership::Unchanged;
+    let result = replace_clipboard_text(text, owner, expected_sequence, &mut ownership, None);
+    *owned_sequence = match (result.is_ok(), ownership) {
+        (true, ClipboardOwnership::Sequence(sequence)) => sequence,
+        _ => 0,
+    };
+    result
 }
 
 fn replace_clipboard_text(
     text: &str,
     owner: HWND,
     expected_sequence: Option<u32>,
-    owned_sequence: &mut u32,
+    ownership: &mut ClipboardOwnership,
     snapshot: Option<&mut Option<ClipboardSnapshot>>,
 ) -> Result<(), String> {
     if owner.0.is_null() {
         return Err("クリップボードの所有者ウィンドウがありません".into());
     }
+    let retained = snapshot.is_some();
+    let mut marker = if retained { Some(ClipboardMarker::allocate()?) } else { None };
     let utf16 = clipboard_utf16(text);
     let bytes = utf16
         .len()
@@ -386,7 +476,11 @@ fn replace_clipboard_text(
         std::ptr::copy_nonoverlapping(utf16.as_ptr(), ptr, utf16.len());
         GlobalUnlock(mem.0);
 
-        let clipboard = OpenedClipboard::open(owner)?;
+        let clipboard = if retained {
+            OpenedClipboard::try_open(owner).ok_or("クリップボードが使用中のため入力を中止しました")?
+        } else {
+            OpenedClipboard::open(owner)?
+        };
         if expected_sequence.is_some_and(|sequence| sequence != GetClipboardSequenceNumber()) {
             return Err("クリップボードが他のアプリで更新されました".into());
         }
@@ -398,12 +492,21 @@ fn replace_clipboard_text(
         }
         // Record only changes made while we own the clipboard lock. An error
         // before EmptyClipboard must never authorize restoring somebody else's update.
-        *owned_sequence = GetClipboardSequenceNumber();
+        *ownership = ClipboardOwnership::Sequence(GetClipboardSequenceNumber());
+        if let Some((identity, memory)) = &mut marker {
+            if SetClipboardData(identity.format, memory.0).is_null() {
+                return Err("クリップボードの所有権を記録できません".into());
+            }
+            memory.0 = std::ptr::null_mut();
+            *ownership = ClipboardOwnership::Marker(*identity);
+        }
         if SetClipboardData(CF_UNICODETEXT, mem.0).is_null() {
             // Even when SetClipboardData fails, retain the failed text in App for another attempt.
             return Err("クリップボードへテキストを書き込めません".into());
         }
-        *owned_sequence = GetClipboardSequenceNumber();
+        if matches!(ownership, ClipboardOwnership::Sequence(_)) {
+            *ownership = ClipboardOwnership::Sequence(GetClipboardSequenceNumber());
+        }
         // Windows now owns the moveable memory handle; never free it in this process.
         mem.0 = std::ptr::null_mut();
     }
@@ -415,13 +518,25 @@ fn replace_clipboard_text(
     });
     // Closing a text write can publish Windows-synthesized formats and advance
     // the sequence. Reopen read-only and prove ownership before accepting it.
-    *owned_sequence = 0;
-    *owned_sequence = published_clipboard_sequence(owner, &utf16)?;
+    let sequence = if retained {
+        let clipboard = OpenedClipboard::try_open(owner)
+            .ok_or("クリップボードが使用中のため入力を中止しました")?;
+        published_sequence_locked(owner, &utf16, &clipboard)?
+    } else {
+        published_clipboard_sequence(owner, &utf16)?
+    };
+    if matches!(ownership, ClipboardOwnership::Sequence(_)) {
+        *ownership = ClipboardOwnership::Sequence(sequence);
+    }
     Ok(())
 }
 
 fn published_clipboard_sequence(owner: HWND, expected: &[u16]) -> Result<u32, String> {
-    let _clipboard = OpenedClipboard::open(owner)?;
+    let clipboard = OpenedClipboard::open(owner)?;
+    published_sequence_locked(owner, expected, &clipboard)
+}
+
+fn published_sequence_locked(owner: HWND, expected: &[u16], _clipboard: &OpenedClipboard) -> Result<u32, String> {
     unsafe {
         if GetClipboardOwner() != owner.0 {
             return Err("クリップボードが他のアプリで更新されました".into());
@@ -659,23 +774,29 @@ fn should_restore(before: u32, ours: u32, current: u32) -> bool {
     ours != 0 && ours != before && ours == current
 }
 
-/// 元の各形式を所有し、期限後に復元する。排他mutexは取得したスレッドで解放する。
+/// 復元完了まで所有者スレッドで保持する。排他mutexも同じスレッドで解放する。
+#[must_use]
 pub struct PasteTransaction {
     previous: Option<ClipboardSnapshot>,
     owner: HWND,
-    our_sequence: u32,
+    ownership: ClipboardOwnership,
     deadline: Instant,
+    waiting_since: Option<Instant>,
+    warned: bool,
+    delivery_error: Option<String>,
     _lease: PasteLease,
     _same_thread: PhantomData<Rc<()>>,
 }
 
+#[derive(Debug)]
+pub enum RestoreProgress {
+    Pending,
+    Waiting(String),
+    Finished(Result<(), String>),
+}
+
 impl PasteTransaction {
-    pub fn begin(
-        text: &str,
-        target: PasteTarget,
-        owner: HWND,
-        now: Instant,
-    ) -> Result<Self, String> {
+    pub fn begin(text: &str, target: PasteTarget, owner: HWND, now: Instant) -> Result<Self, String> {
         if text.is_empty() {
             return Err("入力テキストが空です".into());
         }
@@ -688,70 +809,92 @@ impl PasteTransaction {
         }
         let lease = PasteLease::acquire()?;
         let mut previous = None;
-        let mut our_sequence = 0;
-        let result =
-            replace_clipboard_text(text, owner, None, &mut our_sequence, Some(&mut previous));
+        let mut ownership = ClipboardOwnership::Unchanged;
+        let written = replace_clipboard_text(text, owner, None, &mut ownership, Some(&mut previous));
         let mut transaction = Self {
-            previous,
-            owner,
-            our_sequence,
-            deadline: now,
-            _lease: lease,
-            _same_thread: PhantomData,
+            previous, owner, ownership, deadline: now, waiting_since: None, warned: false,
+            delivery_error: None, _lease: lease, _same_thread: PhantomData,
         };
-        result?;
-        check_target(target)?;
-        if !no_modifiers_pressed() {
-            return Err("修飾キーが押されているため、貼り付けを中止しました".into());
+        let delivered = written.and_then(|()| {
+            check_target(target)?;
+            if !no_modifiers_pressed() {
+                return Err("修飾キーが押されているため、貼り付けを中止しました".into());
+            }
+            let clipboard = OpenedClipboard::try_open(owner)
+                .ok_or("クリップボードが使用中のため入力を中止しました")?;
+            let before = transaction.previous.as_ref().map_or(0, |snapshot| snapshot.sequence);
+            if !ownership.matches_locked(owner, before)? {
+                return Err("貼り付け前にクリップボードが別のアプリで変更されました".into());
+            }
+            drop(clipboard);
+            send_paste_command(target)
+        });
+        match delivered {
+            Ok(hold) => transaction.deadline = Instant::now() + hold,
+            Err(error) => {
+                if matches!(ownership, ClipboardOwnership::Unchanged) {
+                    return Err(error);
+                }
+                transaction.delivery_error = Some(error);
+                transaction.deadline = Instant::now();
+            }
         }
-        if our_sequence != 0 && our_sequence != unsafe { GetClipboardSequenceNumber() } {
-            return Err("貼り付け前にクリップボードが別のアプリで変更されました".into());
-        }
-        let clipboard_hold = send_paste_command(target)?;
-        // クリップボードの保持に時間がかかっても、送信後の猶予は確保する。
-        transaction.deadline = Instant::now() + clipboard_hold;
         Ok(transaction)
+    }
+
+    pub fn delivery_error(&self) -> Option<&str> {
+        self.delivery_error.as_deref()
     }
 
     pub fn deadline(&self) -> Instant {
         self.deadline
     }
 
-    pub fn restore(mut self) -> Result<(), String> {
-        self.restore_inner()
+    pub fn poll_restore(&mut self, now: Instant) -> RestoreProgress {
+        if now < self.deadline {
+            return RestoreProgress::Pending;
+        }
+        match self.restore_inner() {
+            Ok(true) => RestoreProgress::Finished(Ok(())),
+            Err(error) if self.previous.is_none() => RestoreProgress::Finished(Err(error)),
+            result => {
+                self.deadline = now + Duration::from_millis(50);
+                let started = *self.waiting_since.get_or_insert(now);
+                if !self.warned && now.saturating_duration_since(started) >= Duration::from_secs(2) {
+                    self.warned = true;
+                    RestoreProgress::Waiting(result.err().unwrap_or_else(||
+                        "クリップボードが使用中です。元の内容を保持して復元を待っています".into()))
+                } else {
+                    RestoreProgress::Pending
+                }
+            }
+        }
     }
 
-    fn restore_inner(&mut self) -> Result<(), String> {
-        let Some(previous) = self.previous.take() else {
-            return Ok(());
-        };
-        previous.restore(self.owner, self.our_sequence)
+    fn restore_inner(&mut self) -> Result<bool, String> {
+        let Some(previous) = self.previous.as_ref() else { return Ok(true) };
+        if matches!(self.ownership, ClipboardOwnership::Unchanged) {
+            self.previous = None;
+            return Ok(true);
+        }
+        let Some(clipboard) = OpenedClipboard::try_open(self.owner) else { return Ok(false) };
+        if !self.ownership.matches_locked(self.owner, previous.sequence)? {
+            self.previous = None;
+            return Ok(true);
+        }
+        self.previous.take().unwrap().restore_locked(&clipboard)?;
+        Ok(true)
     }
 }
 
 impl Drop for PasteTransaction {
     fn drop(&mut self) {
-        if let Err(error) = self.restore_inner() {
-            eprintln!("{error}");
+        match self.restore_inner() {
+            Ok(true) => {}
+            Ok(false) => eprintln!("クリップボードの復元待ちが完了する前に処理が終了しました"),
+            Err(error) => eprintln!("{error}"),
         }
     }
-}
-
-/// 実機試験など、同期で呼ぶ既存の入口。本番 UI は期限を待たずにループへ戻る。
-pub fn paste_text(text: &str, target: PasteTarget, owner: HWND) -> Result<(), String> {
-    if text.is_empty() {
-        return Ok(());
-    }
-    let transaction = PasteTransaction::begin(text, target, owner, Instant::now())?;
-    thread::sleep(
-        transaction
-            .deadline()
-            .saturating_duration_since(Instant::now()),
-    );
-    if let Err(error) = transaction.restore() {
-        eprintln!("{error}");
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -763,6 +906,27 @@ thread_local! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn transaction_for_test(previous: Option<ClipboardSnapshot>, owner: HWND, ownership: ClipboardOwnership) -> PasteTransaction {
+        PasteTransaction {
+            previous, owner, ownership, deadline: Instant::now(), waiting_since: None,
+            warned: false, delivery_error: None, _lease: PasteLease::acquire().unwrap(),
+            _same_thread: PhantomData,
+        }
+    }
+
+    fn finish_restore(transaction: &mut PasteTransaction) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match transaction.poll_restore(Instant::now()) {
+                RestoreProgress::Finished(result) => { result.unwrap(); return; }
+                RestoreProgress::Pending | RestoreProgress::Waiting(_) => {
+                    assert!(Instant::now() < deadline, "復元が期限内に完了しませんでした");
+                    thread::sleep(transaction.deadline().saturating_duration_since(Instant::now()));
+                }
+            }
+        }
+    }
 
     fn target() -> PasteTarget {
         PasteTarget {
@@ -892,7 +1056,7 @@ mod tests {
             }
         }
         let mut snapshot = None;
-        let mut ours = 0;
+        let mut ours = ClipboardOwnership::Unchanged;
         replace_clipboard_text(
             "transient dictation",
             owner.0,
@@ -901,7 +1065,7 @@ mod tests {
             Some(&mut snapshot),
         )
         .unwrap();
-        snapshot.unwrap().restore(owner.0, ours).unwrap();
+        finish_restore(&mut transaction_for_test(snapshot, owner.0, ours));
         let original_utf16 = clipboard_utf16(original);
         assert!(published_clipboard_sequence(owner.0, &original_utf16).is_ok());
         unsafe {
@@ -933,7 +1097,7 @@ mod tests {
         .unwrap();
         copy_text_to_clipboard("new user copy", foreign_owner.0).unwrap();
         let foreign_sequence = unsafe { GetClipboardSequenceNumber() };
-        snapshot.unwrap().restore(owner.0, ours).unwrap();
+        finish_restore(&mut transaction_for_test(snapshot, owner.0, ours));
         assert_eq!(foreign_sequence, unsafe { GetClipboardSequenceNumber() });
         assert!(
             published_clipboard_sequence(foreign_owner.0, &clipboard_utf16("new user copy"))
@@ -953,7 +1117,7 @@ mod tests {
             Some(&mut snapshot),
         )
         .unwrap();
-        snapshot.unwrap().restore(owner.0, ours).unwrap();
+        finish_restore(&mut transaction_for_test(snapshot, owner.0, ours));
         {
             let _clipboard = OpenedClipboard::open(owner.0).unwrap();
             assert_eq!(unsafe { EnumClipboardFormats(0) }, 0);
@@ -989,14 +1153,6 @@ mod tests {
                 }
             }
         }
-        let make_transaction = |previous, our_sequence| PasteTransaction {
-            previous,
-            owner: owner.0,
-            our_sequence,
-            deadline: Instant::now(),
-            _lease: PasteLease::acquire().unwrap(),
-            _same_thread: PhantomData,
-        };
         let mut failures = Vec::new();
         for phase in ["publication", "restoration"] {
             copy_text_to_clipboard(original, owner.0).unwrap();
@@ -1010,7 +1166,7 @@ mod tests {
                 });
             }
             let mut snapshot = None;
-            let mut sequence = 0;
+            let mut sequence = ClipboardOwnership::Unchanged;
             let replaced = replace_clipboard_text(
                 "temporary dictation under contention",
                 owner.0,
@@ -1018,16 +1174,22 @@ mod tests {
                 &mut sequence,
                 Some(&mut snapshot),
             );
-            let mut transaction = make_transaction(snapshot, sequence);
+            let mut transaction = transaction_for_test(snapshot, owner.0, sequence);
             if phase == "publication" {
-                assert!(replaced.is_err(), "publication must observe the reader lock");
+                assert!(
+                    replaced.is_err(),
+                    "publication must observe the reader lock"
+                );
             } else {
                 replaced.unwrap();
                 *reader.borrow_mut() = Some(ReaderLock::acquire());
-                assert!(transaction.restore_inner().is_err());
             }
+            let now = Instant::now();
+            assert!(matches!(transaction.poll_restore(now), RestoreProgress::Pending));
+            assert!(transaction.previous.is_some(), "読み取りロック中も原内容を保持する");
+            assert!(transaction.deadline() > now, "再試行で待機ループを空回りさせない");
             drop(reader.borrow_mut().take());
-            transaction.restore_inner().unwrap();
+            finish_restore(&mut transaction);
             if published_clipboard_sequence(owner.0, &clipboard_utf16(original)).is_err() {
                 failures.push(phase);
             }
@@ -1036,6 +1198,16 @@ mod tests {
             failures.is_empty(),
             "read-only clipboard contention discarded the original during {failures:?}"
         );
+
+        copy_text_to_clipboard(original, owner.0).unwrap();
+        let mut snapshot = None;
+        let mut ownership = ClipboardOwnership::Unchanged;
+        replace_clipboard_text("same text", owner.0, None, &mut ownership, Some(&mut snapshot)).unwrap();
+        copy_text_to_clipboard("same text", owner.0).unwrap();
+        let newer_sequence = unsafe { GetClipboardSequenceNumber() };
+        finish_restore(&mut transaction_for_test(snapshot, owner.0, ownership));
+        assert_eq!(unsafe { GetClipboardSequenceNumber() }, newer_sequence);
+        assert!(published_clipboard_sequence(owner.0, &clipboard_utf16("same text")).is_ok());
     }
 
     #[test]

@@ -634,6 +634,7 @@ impl App {
                 || self.start_requested);
         if matches!(&event, Event::Esc) {
             self.paste_notice = None;
+            self.start_requested = false;
         }
         if let Some(replay) = &mut self.replay {
             match &event {
@@ -649,7 +650,6 @@ impl App {
             match event {
                 Event::F8 => self.start_requested = true,
                 Event::Esc => {
-                    self.start_requested = false;
                     if let Some(pending) = self.pending_paste.take() {
                         self.recoveries.abandon(pending.recovery_id);
                     }
@@ -1104,16 +1104,21 @@ impl App {
                 Duration::from_millis(3500),
             );
         }
-        if self
-            .paste_transaction
-            .as_ref()
-            .is_some_and(|transaction| transaction.deadline() <= now)
-        {
-            if let Err(message) = self.paste_transaction.take().unwrap().restore() {
-                self.show_notice(Tone::Warn, message, Duration::from_millis(3500));
+        if let Some(mut transaction) = self.paste_transaction.take() {
+            match transaction.poll_restore(now) {
+                paste::RestoreProgress::Pending => self.paste_transaction = Some(transaction),
+                paste::RestoreProgress::Waiting(message) => {
+                    self.paste_transaction = Some(transaction);
+                    self.show_notice(Tone::Warn, message, Duration::from_millis(3500));
+                }
+                paste::RestoreProgress::Finished(result) => {
+                    if let Err(message) = result {
+                        self.show_notice(Tone::Warn, message, Duration::from_millis(3500));
+                    }
+                }
             }
         }
-        if self.pending_paste.as_ref().is_some_and(|pending| {
+        if self.paste_transaction.is_none() && self.pending_paste.as_ref().is_some_and(|pending| {
             self.recoveries.ready(pending.recovery_id) || pending.deadline <= now
         }) {
             let pending = self.pending_paste.take().unwrap();
@@ -1127,14 +1132,14 @@ impl App {
                 .and_then(|target| {
                     paste::PasteTransaction::begin(&pending.text, target, overlay::hwnd(), now)
                 });
-            self.recoveries
-                .mark_paste(pending.recovery_id, result.is_ok());
-            usage::log(
-                "paste",
-                serde_json::json!({"ok": result.is_ok(), "error": result.as_ref().err()}),
-            );
+            let error = match &result {
+                Ok(transaction) => transaction.delivery_error(),
+                Err(message) => Some(message.as_str()),
+            }.map(str::to_owned);
+            self.recoveries.mark_paste(pending.recovery_id, error.is_none());
+            usage::log("paste", serde_json::json!({"ok": error.is_none(), "error": error}));
             let feedback = output_feedback(
-                result.as_ref().err().map(String::as_str),
+                error.as_deref(),
                 self.recoveries.volatile(pending.recovery_id),
                 self.session.fallback_chunks > 0,
                 self.paste_notice.take(),
@@ -1207,14 +1212,6 @@ impl App {
         ) {
             return true;
         }
-        self.tick_output(Instant::now());
-
-        if overlay::take_recovery_request() {
-            self.copy_failed_text();
-        }
-        if self.paste_transaction.is_none() && overlay::take_last_text_request() {
-            self.copy_last_text();
-        }
         if let Some(kept) = self.kept_worker.take() {
             if Instant::now() < kept.expires {
                 self.kept_worker = Some(kept);
@@ -1250,6 +1247,13 @@ impl App {
             }
         }
 
+        self.tick_output(Instant::now());
+        if overlay::take_recovery_request() {
+            self.copy_failed_text();
+        }
+        if self.paste_transaction.is_none() && overlay::take_last_text_request() {
+            self.copy_last_text();
+        }
         self.sync_mirror();
         crate::preview_ipc::tick(Instant::now());
         while let Ok(outcome) = self.format_rx.try_recv() {

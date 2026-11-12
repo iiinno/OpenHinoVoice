@@ -14,8 +14,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DestroyWindow, DispatchMessageW, GetForegroundWindow, GetMessageW,
     GetWindowThreadProcessId, PostThreadMessageW, SendMessageTimeoutW, SendMessageW,
     SetForegroundWindow, TranslateMessage, MSG, SMTO_ABORTIFHUNG, WINDOW_EX_STYLE, WINDOW_STYLE,
-    WM_GETTEXT, WM_QUIT, WS_CHILD, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-    WS_EX_TRANSPARENT, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_VISIBLE,
+    WM_GETTEXT, WM_QUIT, WS_CHILD, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_VISIBLE,
 };
 
 #[link(name = "user32")]
@@ -577,7 +577,10 @@ fn record_enter_pastes_once_and_restores_clipboard() {
         assert!(app.pending_paste.is_none());
         assert!(app.paste_transaction.is_none());
         assert!(!app.start_requested);
-        assert!(app.fixture_recorder.is_some(), "The queued start must not run");
+        assert!(
+            app.fixture_recorder.is_some(),
+            "The queued start must not run"
+        );
         assert_eq!(app.state, State::Idle);
         assert_eq!(app.recoveries.first_text(), Some((id, text.as_str())));
         app.copy_failed_text();

@@ -795,21 +795,27 @@ impl eframe::App for Settings {
         if ui.ctx().input(|i| i.viewport().close_requested()) {
             self.request_close(ui.ctx());
         }
-        if let Some(tx) = &self.paste_transaction {
-            let remaining = tx.deadline().saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                let result = self.paste_transaction.take().unwrap().restore();
-                self.history_message = Some(match result {
-                    Ok(()) => "入力を送信しました。貼り付け先で内容を確認してください".into(),
-                    Err(e) => {
-                        format!("入力は送信しましたが、クリップボードの復元を確認できません: {e}")
-                    }
-                });
-                if self.closing {
-                    self.request_close(ui.ctx());
+        if let Some(mut transaction) = self.paste_transaction.take() {
+            match transaction.poll_restore(Instant::now()) {
+                paste::RestoreProgress::Pending => {
+                    ui.ctx().request_repaint_after(transaction.deadline().saturating_duration_since(Instant::now()));
+                    self.paste_transaction = Some(transaction);
                 }
-            } else {
-                ui.ctx().request_repaint_after(remaining);
+                paste::RestoreProgress::Waiting(message) => {
+                    self.history_message = Some(message);
+                    ui.ctx().request_repaint_after(transaction.deadline().saturating_duration_since(Instant::now()));
+                    self.paste_transaction = Some(transaction);
+                }
+                paste::RestoreProgress::Finished(result) => {
+                    self.history_message = Some(match (transaction.delivery_error(), result) {
+                        (Some(error), Ok(())) => format!("貼り直せませんでした: {error}。元のクリップボードの復元待ちは完了しました"),
+                        (_, Err(error)) => format!("クリップボードの復元を確認できません: {error}"),
+                        (None, Ok(())) => "入力を送信しました。貼り付け先で内容を確認してください".into(),
+                    });
+                    if self.closing {
+                        self.request_close(ui.ctx());
+                    }
+                }
             }
         }
         if let Some(result) = take(&mut self.home_job) {
@@ -878,8 +884,11 @@ impl eframe::App for Settings {
                     ui.ctx().request_repaint_after(
                         tx.deadline().saturating_duration_since(Instant::now()),
                     );
+                    self.history_message = Some(match tx.delivery_error() {
+                        Some(error) => format!("貼り直せませんでした: {error}。元のクリップボードの復元を待っています"),
+                        None => "入力を送信しました".into(),
+                    });
                     self.paste_transaction = Some(tx);
-                    self.history_message = Some("入力を送信しました".into());
                 }
                 Err(message) => {
                     self.history_message = Some(format!(

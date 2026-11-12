@@ -194,7 +194,7 @@ CI も同じ Full を Windows 上で実行し、検証ログを保存します�
 | `tests/audio_integration.rs` | マイクから 2 秒録音します |
 | `tests/format_live.rs` | 設定した接続先で、本物の AI に整形させます |
 | `tests/overlay_preview.rs` | 録音中の表示を、全部の状態について順に出します |
-| `tests/paste_integration.rs` | 選んでいる入力欄に文字を貼ります |
+| `src/app/core_e2e.rs` | Actionsで別プロセスの本文、取消、クリップボードの復元を確認します |
 
 ## スペシャルサンクス
 
