@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "sourceSha256": "9B387345580EB290B134763636CC0A4A38EEDD44EB1F937E522EBA3DE159430E",
+  "conditions": "After updating reports; unchanged source; existing Cargo target cache",
+  "fast": {
+    "status": "passed",
+    "elapsedMs": 15884,
+    "checks": [
+      {
+        "name": "format",
+        "status": "passed",
+        "durationMs": 1496,
+        "exitCode": 0,
+        "log": "format.log",
+        "validationError": null
+      },
+      {
+        "name": "tests",
+        "status": "passed",
+        "durationMs": 12797,
+        "exitCode": 0,
+        "log": "tests.log",
+        "validationError": null
+      }
+    ],
+    "tests": {
+      "passed": 236,
+      "failed": 0,
+      "ignored": 11
+    },
+    "recompiled": false
+  },
+  "release": {
+    "status": "passed",
+    "elapsedMs": 4866,
+    "artifacts": [
+      {
+        "kinds": [
+          "lib"
+        ],
+        "fresh": true,
+        "executable": null
+      },
+      {
+        "kinds": [
+          "bin"
+        ],
+        "fresh": true,
+        "executable": "C:\\Users\\inoue\\Project\\OpenHinoVoice\\target\\release\\openhinovoice.exe"
+      }
+    ]
+  }
+}

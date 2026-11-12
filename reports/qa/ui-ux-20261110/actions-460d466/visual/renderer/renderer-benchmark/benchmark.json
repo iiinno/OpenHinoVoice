@@ -1,0 +1,680 @@
+{
+  "conditions": {
+    "audio": false,
+    "execution": "unpaced offscreen throughput",
+    "frames_per_repetition": 120,
+    "repetitions": 3,
+    "scale": 1.0,
+    "system_motion_enabled": true,
+    "theme": "hinomaru",
+    "warmup_frames_per_state": 12,
+    "windows": false
+  },
+  "exclusions": [
+    "native UpdateLayeredWindow",
+    "settings texture upload",
+    "application event scheduling",
+    "input latency",
+    "ASR",
+    "actual preview button stop or timer cleanup"
+  ],
+  "measurements": [
+    {
+      "frames": 120,
+      "max_us": 912,
+      "p50_us": 527,
+      "p95_us": 710,
+      "p99_us": 850,
+      "process_cpu_ms": 78.125,
+      "repetition": 1,
+      "resources_after": {
+        "cpu_ms": 93.75,
+        "gdi": 1,
+        "private_bytes": 1810432,
+        "user": 1,
+        "working_set_bytes": 7950336
+      },
+      "resources_before": {
+        "cpu_ms": 15.625,
+        "gdi": 1,
+        "private_bytes": 1708032,
+        "user": 1,
+        "working_set_bytes": 7884800
+      },
+      "state": "recording",
+      "style": "standard",
+      "total_wall_us": 65678
+    },
+    {
+      "frames": 120,
+      "max_us": 941,
+      "p50_us": 532,
+      "p95_us": 928,
+      "p99_us": 940,
+      "process_cpu_ms": 78.125,
+      "repetition": 2,
+      "resources_after": {
+        "cpu_ms": 171.875,
+        "gdi": 1,
+        "private_bytes": 1708032,
+        "user": 1,
+        "working_set_bytes": 7901184
+      },
+      "resources_before": {
+        "cpu_ms": 93.75,
+        "gdi": 1,
+        "private_bytes": 1814528,
+        "user": 1,
+        "working_set_bytes": 7966720
+      },
+      "state": "recording",
+      "style": "standard",
+      "total_wall_us": 76346
+    },
+    {
+      "frames": 120,
+      "max_us": 1678,
+      "p50_us": 500,
+      "p95_us": 1071,
+      "p99_us": 1365,
+      "process_cpu_ms": 62.5,
+      "repetition": 3,
+      "resources_after": {
+        "cpu_ms": 234.375,
+        "gdi": 1,
+        "private_bytes": 1814528,
+        "user": 1,
+        "working_set_bytes": 7970816
+      },
+      "resources_before": {
+        "cpu_ms": 171.875,
+        "gdi": 1,
+        "private_bytes": 1712128,
+        "user": 1,
+        "working_set_bytes": 7905280
+      },
+      "state": "recording",
+      "style": "standard",
+      "total_wall_us": 70182
+    },
+    {
+      "frames": 120,
+      "max_us": 280,
+      "p50_us": 232,
+      "p95_us": 259,
+      "p99_us": 272,
+      "process_cpu_ms": 31.25,
+      "repetition": 1,
+      "resources_after": {
+        "cpu_ms": 265.625,
+        "gdi": 1,
+        "private_bytes": 1814528,
+        "user": 1,
+        "working_set_bytes": 7970816
+      },
+      "resources_before": {
+        "cpu_ms": 234.375,
+        "gdi": 1,
+        "private_bytes": 1814528,
+        "user": 1,
+        "working_set_bytes": 7970816
+      },
+      "state": "recognizing",
+      "style": "standard",
+      "total_wall_us": 28302
+    },
+    {
+      "frames": 120,
+      "max_us": 365,
+      "p50_us": 232,
+      "p95_us": 260,
+      "p99_us": 293,
+      "process_cpu_ms": 31.25,
+      "repetition": 2,
+      "resources_after": {
+        "cpu_ms": 296.875,
+        "gdi": 1,
+        "private_bytes": 1814528,
+        "user": 1,
+        "working_set_bytes": 7970816
+      },
+      "resources_before": {
+        "cpu_ms": 265.625,
+        "gdi": 1,
+        "private_bytes": 1814528,
+        "user": 1,
+        "working_set_bytes": 7970816
+      },
+      "state": "recognizing",
+      "style": "standard",
+      "total_wall_us": 28465
+    },
+    {
+      "frames": 120,
+      "max_us": 434,
+      "p50_us": 231,
+      "p95_us": 263,
+      "p99_us": 351,
+      "process_cpu_ms": 31.25,
+      "repetition": 3,
+      "resources_after": {
+        "cpu_ms": 328.125,
+        "gdi": 1,
+        "private_bytes": 1814528,
+        "user": 1,
+        "working_set_bytes": 7970816
+      },
+      "resources_before": {
+        "cpu_ms": 296.875,
+        "gdi": 1,
+        "private_bytes": 1814528,
+        "user": 1,
+        "working_set_bytes": 7970816
+      },
+      "state": "recognizing",
+      "style": "standard",
+      "total_wall_us": 28641
+    },
+    {
+      "frames": 120,
+      "max_us": 641,
+      "p50_us": 471,
+      "p95_us": 505,
+      "p99_us": 538,
+      "process_cpu_ms": 62.5,
+      "repetition": 1,
+      "resources_after": {
+        "cpu_ms": 390.625,
+        "gdi": 1,
+        "private_bytes": 1753088,
+        "user": 1,
+        "working_set_bytes": 7950336
+      },
+      "resources_before": {
+        "cpu_ms": 328.125,
+        "gdi": 1,
+        "private_bytes": 1814528,
+        "user": 1,
+        "working_set_bytes": 8003584
+      },
+      "state": "formatting",
+      "style": "standard",
+      "total_wall_us": 57629
+    },
+    {
+      "frames": 120,
+      "max_us": 674,
+      "p50_us": 448,
+      "p95_us": 481,
+      "p99_us": 527,
+      "process_cpu_ms": 46.875,
+      "repetition": 2,
+      "resources_after": {
+        "cpu_ms": 437.5,
+        "gdi": 1,
+        "private_bytes": 1814528,
+        "user": 1,
+        "working_set_bytes": 8003584
+      },
+      "resources_before": {
+        "cpu_ms": 390.625,
+        "gdi": 1,
+        "private_bytes": 1814528,
+        "user": 1,
+        "working_set_bytes": 7950336
+      },
+      "state": "formatting",
+      "style": "standard",
+      "total_wall_us": 54959
+    },
+    {
+      "frames": 120,
+      "max_us": 637,
+      "p50_us": 473,
+      "p95_us": 506,
+      "p99_us": 589,
+      "process_cpu_ms": 62.5,
+      "repetition": 3,
+      "resources_after": {
+        "cpu_ms": 500.0,
+        "gdi": 1,
+        "private_bytes": 1769472,
+        "user": 1,
+        "working_set_bytes": 7966720
+      },
+      "resources_before": {
+        "cpu_ms": 437.5,
+        "gdi": 1,
+        "private_bytes": 1814528,
+        "user": 1,
+        "working_set_bytes": 8003584
+      },
+      "state": "formatting",
+      "style": "standard",
+      "total_wall_us": 58006
+    },
+    {
+      "frames": 120,
+      "max_us": 484,
+      "p50_us": 275,
+      "p95_us": 437,
+      "p99_us": 465,
+      "process_cpu_ms": 31.25,
+      "repetition": 1,
+      "resources_after": {
+        "cpu_ms": 531.25,
+        "gdi": 1,
+        "private_bytes": 1814528,
+        "user": 1,
+        "working_set_bytes": 8011776
+      },
+      "resources_before": {
+        "cpu_ms": 500.0,
+        "gdi": 1,
+        "private_bytes": 1814528,
+        "user": 1,
+        "working_set_bytes": 8007680
+      },
+      "state": "success",
+      "style": "standard",
+      "total_wall_us": 35239
+    },
+    {
+      "frames": 120,
+      "max_us": 695,
+      "p50_us": 502,
+      "p95_us": 526,
+      "p99_us": 556,
+      "process_cpu_ms": 62.5,
+      "repetition": 2,
+      "resources_after": {
+        "cpu_ms": 593.75,
+        "gdi": 1,
+        "private_bytes": 1814528,
+        "user": 1,
+        "working_set_bytes": 8011776
+      },
+      "resources_before": {
+        "cpu_ms": 531.25,
+        "gdi": 1,
+        "private_bytes": 1814528,
+        "user": 1,
+        "working_set_bytes": 8011776
+      },
+      "state": "success",
+      "style": "standard",
+      "total_wall_us": 52161
+    },
+    {
+      "frames": 120,
+      "max_us": 671,
+      "p50_us": 279,
+      "p95_us": 509,
+      "p99_us": 523,
+      "process_cpu_ms": 46.875,
+      "repetition": 3,
+      "resources_after": {
+        "cpu_ms": 640.625,
+        "gdi": 1,
+        "private_bytes": 1814528,
+        "user": 1,
+        "working_set_bytes": 8011776
+      },
+      "resources_before": {
+        "cpu_ms": 593.75,
+        "gdi": 1,
+        "private_bytes": 1814528,
+        "user": 1,
+        "working_set_bytes": 8011776
+      },
+      "state": "success",
+      "style": "standard",
+      "total_wall_us": 42839
+    },
+    {
+      "frames": 120,
+      "max_us": 1098,
+      "p50_us": 638,
+      "p95_us": 683,
+      "p99_us": 1082,
+      "process_cpu_ms": 78.125,
+      "repetition": 1,
+      "resources_after": {
+        "cpu_ms": 718.75,
+        "gdi": 1,
+        "private_bytes": 2207744,
+        "user": 1,
+        "working_set_bytes": 8146944
+      },
+      "resources_before": {
+        "cpu_ms": 640.625,
+        "gdi": 1,
+        "private_bytes": 2043904,
+        "user": 1,
+        "working_set_bytes": 8069120
+      },
+      "state": "recording",
+      "style": "rich",
+      "total_wall_us": 79368
+    },
+    {
+      "frames": 120,
+      "max_us": 761,
+      "p50_us": 641,
+      "p95_us": 707,
+      "p99_us": 746,
+      "process_cpu_ms": 78.125,
+      "repetition": 2,
+      "resources_after": {
+        "cpu_ms": 796.875,
+        "gdi": 1,
+        "private_bytes": 2043904,
+        "user": 1,
+        "working_set_bytes": 8069120
+      },
+      "resources_before": {
+        "cpu_ms": 718.75,
+        "gdi": 1,
+        "private_bytes": 2207744,
+        "user": 1,
+        "working_set_bytes": 8146944
+      },
+      "state": "recording",
+      "style": "rich",
+      "total_wall_us": 79660
+    },
+    {
+      "frames": 120,
+      "max_us": 1224,
+      "p50_us": 642,
+      "p95_us": 1061,
+      "p99_us": 1132,
+      "process_cpu_ms": 93.75,
+      "repetition": 3,
+      "resources_after": {
+        "cpu_ms": 890.625,
+        "gdi": 1,
+        "private_bytes": 2064384,
+        "user": 1,
+        "working_set_bytes": 8089600
+      },
+      "resources_before": {
+        "cpu_ms": 796.875,
+        "gdi": 1,
+        "private_bytes": 2076672,
+        "user": 1,
+        "working_set_bytes": 8085504
+      },
+      "state": "recording",
+      "style": "rich",
+      "total_wall_us": 83535
+    },
+    {
+      "frames": 120,
+      "max_us": 338,
+      "p50_us": 267,
+      "p95_us": 284,
+      "p99_us": 336,
+      "process_cpu_ms": 15.625,
+      "repetition": 1,
+      "resources_after": {
+        "cpu_ms": 906.25,
+        "gdi": 1,
+        "private_bytes": 2228224,
+        "user": 1,
+        "working_set_bytes": 8126464
+      },
+      "resources_before": {
+        "cpu_ms": 890.625,
+        "gdi": 1,
+        "private_bytes": 2228224,
+        "user": 1,
+        "working_set_bytes": 8126464
+      },
+      "state": "recognizing",
+      "style": "rich",
+      "total_wall_us": 32712
+    },
+    {
+      "frames": 120,
+      "max_us": 496,
+      "p50_us": 267,
+      "p95_us": 457,
+      "p99_us": 490,
+      "process_cpu_ms": 31.25,
+      "repetition": 2,
+      "resources_after": {
+        "cpu_ms": 937.5,
+        "gdi": 1,
+        "private_bytes": 2228224,
+        "user": 1,
+        "working_set_bytes": 8126464
+      },
+      "resources_before": {
+        "cpu_ms": 906.25,
+        "gdi": 1,
+        "private_bytes": 2228224,
+        "user": 1,
+        "working_set_bytes": 8126464
+      },
+      "state": "recognizing",
+      "style": "rich",
+      "total_wall_us": 35895
+    },
+    {
+      "frames": 120,
+      "max_us": 502,
+      "p50_us": 449,
+      "p95_us": 488,
+      "p99_us": 493,
+      "process_cpu_ms": 46.875,
+      "repetition": 3,
+      "resources_after": {
+        "cpu_ms": 984.375,
+        "gdi": 1,
+        "private_bytes": 2228224,
+        "user": 1,
+        "working_set_bytes": 8126464
+      },
+      "resources_before": {
+        "cpu_ms": 937.5,
+        "gdi": 1,
+        "private_bytes": 2228224,
+        "user": 1,
+        "working_set_bytes": 8126464
+      },
+      "state": "recognizing",
+      "style": "rich",
+      "total_wall_us": 47842
+    },
+    {
+      "frames": 120,
+      "max_us": 689,
+      "p50_us": 536,
+      "p95_us": 571,
+      "p99_us": 597,
+      "process_cpu_ms": 62.5,
+      "repetition": 1,
+      "resources_after": {
+        "cpu_ms": 1062.5,
+        "gdi": 1,
+        "private_bytes": 2228224,
+        "user": 1,
+        "working_set_bytes": 8159232
+      },
+      "resources_before": {
+        "cpu_ms": 1000.0,
+        "gdi": 1,
+        "private_bytes": 2064384,
+        "user": 1,
+        "working_set_bytes": 8093696
+      },
+      "state": "formatting",
+      "style": "rich",
+      "total_wall_us": 64381
+    },
+    {
+      "frames": 120,
+      "max_us": 748,
+      "p50_us": 537,
+      "p95_us": 571,
+      "p99_us": 607,
+      "process_cpu_ms": 62.5,
+      "repetition": 2,
+      "resources_after": {
+        "cpu_ms": 1125.0,
+        "gdi": 1,
+        "private_bytes": 2064384,
+        "user": 1,
+        "working_set_bytes": 8093696
+      },
+      "resources_before": {
+        "cpu_ms": 1062.5,
+        "gdi": 1,
+        "private_bytes": 2240512,
+        "user": 1,
+        "working_set_bytes": 8159232
+      },
+      "state": "formatting",
+      "style": "rich",
+      "total_wall_us": 64520
+    },
+    {
+      "frames": 120,
+      "max_us": 750,
+      "p50_us": 539,
+      "p95_us": 574,
+      "p99_us": 597,
+      "process_cpu_ms": 62.5,
+      "repetition": 3,
+      "resources_after": {
+        "cpu_ms": 1187.5,
+        "gdi": 1,
+        "private_bytes": 2076672,
+        "user": 1,
+        "working_set_bytes": 8105984
+      },
+      "resources_before": {
+        "cpu_ms": 1125.0,
+        "gdi": 1,
+        "private_bytes": 2076672,
+        "user": 1,
+        "working_set_bytes": 8105984
+      },
+      "state": "formatting",
+      "style": "rich",
+      "total_wall_us": 64573
+    },
+    {
+      "frames": 120,
+      "max_us": 363,
+      "p50_us": 316,
+      "p95_us": 347,
+      "p99_us": 362,
+      "process_cpu_ms": 46.875,
+      "repetition": 1,
+      "resources_after": {
+        "cpu_ms": 1234.375,
+        "gdi": 1,
+        "private_bytes": 2240512,
+        "user": 1,
+        "working_set_bytes": 8163328
+      },
+      "resources_before": {
+        "cpu_ms": 1187.5,
+        "gdi": 1,
+        "private_bytes": 2240512,
+        "user": 1,
+        "working_set_bytes": 8163328
+      },
+      "state": "success",
+      "style": "rich",
+      "total_wall_us": 38630
+    },
+    {
+      "frames": 120,
+      "max_us": 437,
+      "p50_us": 316,
+      "p95_us": 347,
+      "p99_us": 418,
+      "process_cpu_ms": 31.25,
+      "repetition": 2,
+      "resources_after": {
+        "cpu_ms": 1265.625,
+        "gdi": 1,
+        "private_bytes": 2240512,
+        "user": 1,
+        "working_set_bytes": 8163328
+      },
+      "resources_before": {
+        "cpu_ms": 1234.375,
+        "gdi": 1,
+        "private_bytes": 2240512,
+        "user": 1,
+        "working_set_bytes": 8163328
+      },
+      "state": "success",
+      "style": "rich",
+      "total_wall_us": 38821
+    },
+    {
+      "frames": 120,
+      "max_us": 357,
+      "p50_us": 316,
+      "p95_us": 344,
+      "p99_us": 353,
+      "process_cpu_ms": 46.875,
+      "repetition": 3,
+      "resources_after": {
+        "cpu_ms": 1312.5,
+        "gdi": 1,
+        "private_bytes": 2240512,
+        "user": 1,
+        "working_set_bytes": 8163328
+      },
+      "resources_before": {
+        "cpu_ms": 1265.625,
+        "gdi": 1,
+        "private_bytes": 2240512,
+        "user": 1,
+        "working_set_bytes": 8163328
+      },
+      "state": "success",
+      "style": "rich",
+      "total_wall_us": 38551
+    }
+  ],
+  "path": "shared preview_frame: text cache + CPU raster + unmultiplied RGBA conversion",
+  "resource_cycles": {
+    "after_first_100": {
+      "cpu_ms": 1375.0,
+      "gdi": 1,
+      "private_bytes": 4009984,
+      "user": 1,
+      "working_set_bytes": 9326592
+    },
+    "after_second_100": {
+      "cpu_ms": 1453.125,
+      "gdi": 1,
+      "private_bytes": 4009984,
+      "user": 1,
+      "working_set_bytes": 9326592
+    },
+    "before": {
+      "cpu_ms": 1312.5,
+      "gdi": 1,
+      "private_bytes": 2240512,
+      "user": 1,
+      "working_set_bytes": 8163328
+    },
+    "cycles": 2,
+    "gdi_stable": true,
+    "motion": "reduced",
+    "note": "Resource plateau after warming the same 100 transitions; this does not observe settings repaint scheduling.",
+    "private_growth_budget_bytes": 1048576,
+    "second_cycle_private_growth_bytes": 0,
+    "switches_per_cycle": 100,
+    "user_stable": true
+  },
+  "status": "measured"
+}

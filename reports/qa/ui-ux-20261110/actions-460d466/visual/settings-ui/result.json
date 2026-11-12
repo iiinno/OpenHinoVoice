@@ -1,0 +1,687 @@
+{
+  "schemaVersion": 1,
+  "mode": "HiddenDesktopUI",
+  "runId": "ui-20261109T173823-853b72c4",
+  "status": "passed",
+  "startedAt": "2026-11-09T17:38:23.6776772Z",
+  "finishedAt": "2026-11-09T17:39:00.1471509Z",
+  "scope": "settings UIA + client capture at 600x420 and 720x520 logical pixels",
+  "executable": "D:\\a\\OpenHinoVoice\\OpenHinoVoice\\target\\qa\\visual\\opengl\\openhinovoice.exe",
+  "executableSha256": "6EDAC60E342BDC2FAFEC853721ED0F8E6C7670687A69A17E5C13507E1CD97100",
+  "harnessSha256": "17BC31AFFCD05C63821E79882B79C21484FCF6F2895A4CDD3891CD4601CCA142",
+  "compile": "passed",
+  "ui": "passed",
+  "sourceRevision": "460d4667f4101966cd1161d2d872354d45fb8131",
+  "inputDesktopSwitched": false,
+  "audioRequested": false,
+  "microphoneRequested": false,
+  "limitations": [
+    "画像の見た目は別途確認が必要",
+    "WindowsのDPIと高コントラスト設定は変更しない",
+    "キーボード操作・音・ASR・貼付・外部APIは未実施"
+  ],
+  "controller-result": {
+    "schemaVersion": 1,
+    "status": "passed",
+    "startedAt": "2026-11-09T17:38:25.944809Z",
+    "desktopSwitched": false,
+    "timeoutMs": 90000,
+    "inputDesktopBefore": "Default",
+    "workerExitCode": 0,
+    "scope": "hidden desktop settings UIA and client capture",
+    "windowStation": "WinSta0",
+    "desktopName": "OHV_ui-20261109T173823-853b72c4",
+    "workerPid": 2100,
+    "desktopClosed": true,
+    "inputDesktopAfter": "Default",
+    "finishedAt": "2026-11-09T17:39:00.1232928Z"
+  },
+  "worker-result": {
+    "schemaVersion": 1,
+    "status": "passed",
+    "startedAt": "2026-11-09T17:38:26.4785333Z",
+    "cases": [
+      {
+        "sizeLogical": "600x420",
+        "status": "passed",
+        "pid": 3364,
+        "gracefulExit": true,
+        "expectedWindowIdentity": {
+          "title": "OpenHinoVoice",
+          "class": "Window Class",
+          "pid": 3364
+        },
+        "startupWindows": [
+          {
+            "hwnd": "0x501D2",
+            "pid": 3364,
+            "threadId": 3348,
+            "title": "OpenHinoVoice",
+            "class": "Window Class",
+            "visible": true,
+            "matchesSettingsIdentity": true,
+            "dpi": 96,
+            "style": "0x16CF0000",
+            "extendedStyle": "0x00040110",
+            "hasMenu": false,
+            "client": {
+              "left": 0,
+              "top": 0,
+              "right": 600,
+              "bottom": 420,
+              "width": 600,
+              "height": 420
+            },
+            "outer": {
+              "left": 78,
+              "top": 78,
+              "right": 694,
+              "bottom": 537,
+              "width": 616,
+              "height": 459
+            }
+          },
+          {
+            "hwnd": "0x40072",
+            "pid": 3364,
+            "threadId": 3348,
+            "title": "",
+            "class": "Winit Thread Event Target",
+            "visible": true,
+            "matchesSettingsIdentity": false,
+            "dpi": 96,
+            "style": "0x94000000",
+            "extendedStyle": "0x080800A0",
+            "hasMenu": false,
+            "client": {
+              "left": 0,
+              "top": 0,
+              "right": 0,
+              "bottom": 0,
+              "width": 0,
+              "height": 0
+            },
+            "outer": {
+              "left": 0,
+              "top": 0,
+              "right": 16,
+              "bottom": 16,
+              "width": 16,
+              "height": 16
+            }
+          }
+        ],
+        "beforeResize": {
+          "hwnd": "0x501D2",
+          "pid": 3364,
+          "threadId": 3348,
+          "title": "OpenHinoVoice",
+          "class": "Window Class",
+          "visible": true,
+          "matchesSettingsIdentity": true,
+          "dpi": 96,
+          "style": "0x16CF0000",
+          "extendedStyle": "0x00040110",
+          "hasMenu": false,
+          "client": {
+            "left": 0,
+            "top": 0,
+            "right": 600,
+            "bottom": 420,
+            "width": 600,
+            "height": 420
+          },
+          "outer": {
+            "left": 78,
+            "top": 78,
+            "right": 694,
+            "bottom": 537,
+            "width": 616,
+            "height": 459
+          }
+        },
+        "beforeResizeDiagnostic": "600x420/before-resize-diagnostic.json",
+        "dpi": 96,
+        "expectedClientPixels": [
+          600,
+          420
+        ],
+        "requestedOuterPixels": [
+          616,
+          459
+        ],
+        "resizeNeeded": false,
+        "afterResize": {
+          "hwnd": "0x501D2",
+          "pid": 3364,
+          "threadId": 3348,
+          "title": "OpenHinoVoice",
+          "class": "Window Class",
+          "visible": true,
+          "matchesSettingsIdentity": true,
+          "dpi": 96,
+          "style": "0x16CF0000",
+          "extendedStyle": "0x00040110",
+          "hasMenu": false,
+          "client": {
+            "left": 0,
+            "top": 0,
+            "right": 600,
+            "bottom": 420,
+            "width": 600,
+            "height": 420
+          },
+          "outer": {
+            "left": 78,
+            "top": 78,
+            "right": 694,
+            "bottom": 537,
+            "width": 616,
+            "height": 459
+          }
+        },
+        "clientPixels": [
+          600,
+          420
+        ],
+        "metricsBefore": {
+          "at": "2026-11-09T17:38:27.9558829Z",
+          "privateBytes": 72130560,
+          "workingSetBytes": 95436800,
+          "cpuMs": 421.875,
+          "gdi": 12,
+          "user": 37,
+          "handles": 299
+        },
+        "uiaNodes": 54,
+        "displayPageNamed": true,
+        "focusableNodes": 30,
+        "uiaStatus": "passed",
+        "printWindow": {
+          "status": "passed",
+          "colors": 274,
+          "path": "600x420/client-printwindow.png"
+        },
+        "captureColors": 274,
+        "capturePath": "600x420/client-framebuffer.png",
+        "captureRenderer": "eframe glow framebuffer",
+        "actions": [
+          {
+            "name": "preset-soft",
+            "status": "passed",
+            "controlName": "ソフト",
+            "intent": "select",
+            "chosenPattern": "TogglePattern",
+            "supportedPatterns": [
+              {
+                "id": 10015,
+                "name": "TogglePatternIdentifiers.Pattern"
+              }
+            ],
+            "controlRole": "ControlType.Button",
+            "controlEnabled": true,
+            "stateBefore": "Off",
+            "actionSent": true,
+            "expectedStateObserved": true,
+            "capturePath": "600x420/action-preset-soft.png",
+            "captureColors": 274
+          },
+          {
+            "name": "restore",
+            "status": "passed",
+            "controlName": "音と表示を保存済みに戻す",
+            "intent": "invoke",
+            "chosenPattern": "InvokePattern",
+            "supportedPatterns": [
+              {
+                "id": 10000,
+                "name": "InvokePatternIdentifiers.Pattern"
+              }
+            ],
+            "controlRole": "ControlType.Button",
+            "controlEnabled": true,
+            "actionSent": true,
+            "expectedStateObserved": true,
+            "capturePath": "600x420/action-restore.png",
+            "captureColors": 274
+          },
+          {
+            "name": "preview-start",
+            "status": "passed",
+            "controlName": "試す",
+            "intent": "invoke",
+            "chosenPattern": "InvokePattern",
+            "supportedPatterns": [
+              {
+                "id": 10000,
+                "name": "InvokePatternIdentifiers.Pattern"
+              }
+            ],
+            "controlRole": "ControlType.Button",
+            "controlEnabled": true,
+            "actionSent": true,
+            "expectedStateObserved": true,
+            "capturePath": "600x420/action-preview-start.png",
+            "captureColors": 274
+          },
+          {
+            "name": "preview-stop",
+            "status": "passed",
+            "controlName": "プレビューを停止",
+            "intent": "invoke",
+            "chosenPattern": "InvokePattern",
+            "supportedPatterns": [
+              {
+                "id": 10000,
+                "name": "InvokePatternIdentifiers.Pattern"
+              }
+            ],
+            "controlRole": "ControlType.Button",
+            "controlEnabled": true,
+            "actionSent": true,
+            "expectedStateObserved": true,
+            "capturePath": "600x420/action-preview-stop.png",
+            "captureColors": 274
+          },
+          {
+            "name": "preview-before-navigation",
+            "status": "passed",
+            "controlName": "試す",
+            "intent": "invoke",
+            "chosenPattern": "InvokePattern",
+            "supportedPatterns": [
+              {
+                "id": 10000,
+                "name": "InvokePatternIdentifiers.Pattern"
+              }
+            ],
+            "controlRole": "ControlType.Button",
+            "controlEnabled": true,
+            "actionSent": true,
+            "expectedStateObserved": true,
+            "capturePath": "600x420/action-preview-before-navigation.png",
+            "captureColors": 274
+          },
+          {
+            "name": "leave-display",
+            "status": "passed",
+            "controlName": "入力",
+            "intent": "select",
+            "chosenPattern": "TogglePattern",
+            "supportedPatterns": [
+              {
+                "id": 10015,
+                "name": "TogglePatternIdentifiers.Pattern"
+              }
+            ],
+            "controlRole": "ControlType.Button",
+            "controlEnabled": true,
+            "stateBefore": "Off",
+            "actionSent": true,
+            "expectedStateObserved": true,
+            "capturePath": "600x420/action-leave-display.png",
+            "captureColors": 217
+          },
+          {
+            "name": "return-display",
+            "status": "passed",
+            "controlName": "音と表示",
+            "intent": "select",
+            "chosenPattern": "TogglePattern",
+            "supportedPatterns": [
+              {
+                "id": 10015,
+                "name": "TogglePatternIdentifiers.Pattern"
+              }
+            ],
+            "controlRole": "ControlType.Button",
+            "controlEnabled": true,
+            "stateBefore": "Off",
+            "actionSent": true,
+            "expectedStateObserved": true,
+            "capturePath": "600x420/action-return-display.png",
+            "captureColors": 274
+          }
+        ],
+        "configUnchangedByPreview": true,
+        "metricsAfter": {
+          "at": "2026-11-09T17:38:43.6036249Z",
+          "privateBytes": 73179136,
+          "workingSetBytes": 97030144,
+          "cpuMs": 1125,
+          "gdi": 12,
+          "user": 40,
+          "handles": 301
+        },
+        "exitCode": 0
+      },
+      {
+        "sizeLogical": "720x520",
+        "status": "passed",
+        "pid": 1060,
+        "gracefulExit": true,
+        "expectedWindowIdentity": {
+          "title": "OpenHinoVoice",
+          "class": "Window Class",
+          "pid": 1060
+        },
+        "startupWindows": [
+          {
+            "hwnd": "0x5007A",
+            "pid": 1060,
+            "threadId": 1736,
+            "title": "OpenHinoVoice",
+            "class": "Window Class",
+            "visible": true,
+            "matchesSettingsIdentity": true,
+            "dpi": 96,
+            "style": "0x16CF0000",
+            "extendedStyle": "0x00040110",
+            "hasMenu": false,
+            "client": {
+              "left": 0,
+              "top": 0,
+              "right": 720,
+              "bottom": 520,
+              "width": 720,
+              "height": 520
+            },
+            "outer": {
+              "left": 104,
+              "top": 104,
+              "right": 840,
+              "bottom": 663,
+              "width": 736,
+              "height": 559
+            }
+          },
+          {
+            "hwnd": "0xF0010",
+            "pid": 1060,
+            "threadId": 1736,
+            "title": "",
+            "class": "Winit Thread Event Target",
+            "visible": true,
+            "matchesSettingsIdentity": false,
+            "dpi": 96,
+            "style": "0x94000000",
+            "extendedStyle": "0x080800A0",
+            "hasMenu": false,
+            "client": {
+              "left": 0,
+              "top": 0,
+              "right": 0,
+              "bottom": 0,
+              "width": 0,
+              "height": 0
+            },
+            "outer": {
+              "left": 0,
+              "top": 0,
+              "right": 16,
+              "bottom": 16,
+              "width": 16,
+              "height": 16
+            }
+          }
+        ],
+        "beforeResize": {
+          "hwnd": "0x5007A",
+          "pid": 1060,
+          "threadId": 1736,
+          "title": "OpenHinoVoice",
+          "class": "Window Class",
+          "visible": true,
+          "matchesSettingsIdentity": true,
+          "dpi": 96,
+          "style": "0x16CF0000",
+          "extendedStyle": "0x00040110",
+          "hasMenu": false,
+          "client": {
+            "left": 0,
+            "top": 0,
+            "right": 720,
+            "bottom": 520,
+            "width": 720,
+            "height": 520
+          },
+          "outer": {
+            "left": 104,
+            "top": 104,
+            "right": 840,
+            "bottom": 663,
+            "width": 736,
+            "height": 559
+          }
+        },
+        "beforeResizeDiagnostic": "720x520/before-resize-diagnostic.json",
+        "dpi": 96,
+        "expectedClientPixels": [
+          720,
+          520
+        ],
+        "requestedOuterPixels": [
+          736,
+          559
+        ],
+        "resizeNeeded": false,
+        "afterResize": {
+          "hwnd": "0x5007A",
+          "pid": 1060,
+          "threadId": 1736,
+          "title": "OpenHinoVoice",
+          "class": "Window Class",
+          "visible": true,
+          "matchesSettingsIdentity": true,
+          "dpi": 96,
+          "style": "0x16CF0000",
+          "extendedStyle": "0x00040110",
+          "hasMenu": false,
+          "client": {
+            "left": 0,
+            "top": 0,
+            "right": 720,
+            "bottom": 520,
+            "width": 720,
+            "height": 520
+          },
+          "outer": {
+            "left": 104,
+            "top": 104,
+            "right": 840,
+            "bottom": 663,
+            "width": 736,
+            "height": 559
+          }
+        },
+        "clientPixels": [
+          720,
+          520
+        ],
+        "metricsBefore": {
+          "at": "2026-11-09T17:38:44.1169978Z",
+          "privateBytes": 74522624,
+          "workingSetBytes": 96681984,
+          "cpuMs": 484.375,
+          "gdi": 12,
+          "user": 37,
+          "handles": 294
+        },
+        "uiaNodes": 54,
+        "displayPageNamed": true,
+        "focusableNodes": 30,
+        "uiaStatus": "passed",
+        "printWindow": {
+          "status": "passed",
+          "colors": 280,
+          "path": "720x520/client-printwindow.png"
+        },
+        "captureColors": 280,
+        "capturePath": "720x520/client-framebuffer.png",
+        "captureRenderer": "eframe glow framebuffer",
+        "actions": [
+          {
+            "name": "preset-soft",
+            "status": "passed",
+            "controlName": "ソフト",
+            "intent": "select",
+            "chosenPattern": "TogglePattern",
+            "supportedPatterns": [
+              {
+                "id": 10015,
+                "name": "TogglePatternIdentifiers.Pattern"
+              }
+            ],
+            "controlRole": "ControlType.Button",
+            "controlEnabled": true,
+            "stateBefore": "Off",
+            "actionSent": true,
+            "expectedStateObserved": true,
+            "capturePath": "720x520/action-preset-soft.png",
+            "captureColors": 278
+          },
+          {
+            "name": "restore",
+            "status": "passed",
+            "controlName": "音と表示を保存済みに戻す",
+            "intent": "invoke",
+            "chosenPattern": "InvokePattern",
+            "supportedPatterns": [
+              {
+                "id": 10000,
+                "name": "InvokePatternIdentifiers.Pattern"
+              }
+            ],
+            "controlRole": "ControlType.Button",
+            "controlEnabled": true,
+            "actionSent": true,
+            "expectedStateObserved": true,
+            "capturePath": "720x520/action-restore.png",
+            "captureColors": 280
+          },
+          {
+            "name": "preview-start",
+            "status": "passed",
+            "controlName": "試す",
+            "intent": "invoke",
+            "chosenPattern": "InvokePattern",
+            "supportedPatterns": [
+              {
+                "id": 10000,
+                "name": "InvokePatternIdentifiers.Pattern"
+              }
+            ],
+            "controlRole": "ControlType.Button",
+            "controlEnabled": true,
+            "actionSent": true,
+            "expectedStateObserved": true,
+            "capturePath": "720x520/action-preview-start.png",
+            "captureColors": 279
+          },
+          {
+            "name": "preview-stop",
+            "status": "passed",
+            "controlName": "プレビューを停止",
+            "intent": "invoke",
+            "chosenPattern": "InvokePattern",
+            "supportedPatterns": [
+              {
+                "id": 10000,
+                "name": "InvokePatternIdentifiers.Pattern"
+              }
+            ],
+            "controlRole": "ControlType.Button",
+            "controlEnabled": true,
+            "actionSent": true,
+            "expectedStateObserved": true,
+            "capturePath": "720x520/action-preview-stop.png",
+            "captureColors": 280
+          },
+          {
+            "name": "preview-before-navigation",
+            "status": "passed",
+            "controlName": "試す",
+            "intent": "invoke",
+            "chosenPattern": "InvokePattern",
+            "supportedPatterns": [
+              {
+                "id": 10000,
+                "name": "InvokePatternIdentifiers.Pattern"
+              }
+            ],
+            "controlRole": "ControlType.Button",
+            "controlEnabled": true,
+            "actionSent": true,
+            "expectedStateObserved": true,
+            "capturePath": "720x520/action-preview-before-navigation.png",
+            "captureColors": 279
+          },
+          {
+            "name": "leave-display",
+            "status": "passed",
+            "controlName": "入力",
+            "intent": "select",
+            "chosenPattern": "TogglePattern",
+            "supportedPatterns": [
+              {
+                "id": 10015,
+                "name": "TogglePatternIdentifiers.Pattern"
+              }
+            ],
+            "controlRole": "ControlType.Button",
+            "controlEnabled": true,
+            "stateBefore": "Off",
+            "actionSent": true,
+            "expectedStateObserved": true,
+            "capturePath": "720x520/action-leave-display.png",
+            "captureColors": 225
+          },
+          {
+            "name": "return-display",
+            "status": "passed",
+            "controlName": "音と表示",
+            "intent": "select",
+            "chosenPattern": "TogglePattern",
+            "supportedPatterns": [
+              {
+                "id": 10015,
+                "name": "TogglePatternIdentifiers.Pattern"
+              }
+            ],
+            "controlRole": "ControlType.Button",
+            "controlEnabled": true,
+            "stateBefore": "Off",
+            "actionSent": true,
+            "expectedStateObserved": true,
+            "capturePath": "720x520/action-return-display.png",
+            "captureColors": 280
+          }
+        ],
+        "configUnchangedByPreview": true,
+        "metricsAfter": {
+          "at": "2026-11-09T17:39:00.0835113Z",
+          "privateBytes": 74526720,
+          "workingSetBytes": 97132544,
+          "cpuMs": 1750,
+          "gdi": 12,
+          "user": 38,
+          "handles": 294
+        },
+        "exitCode": 0
+      }
+    ],
+    "audioRequested": false,
+    "microphoneRequested": false,
+    "globalInputSent": false,
+    "limitations": [
+      "Capture success requires human inspection; nonblank is only a transport check.",
+      "Native DPI is the existing Windows value; no user display settings are changed.",
+      "UIA semantic control patterns test presets, restore, silent preview start/stop and page exit. Keyboard shortcuts, audio, ASR, paste and external APIs remain untested."
+    ],
+    "perMonitorV2DpiAwarenessSet": true,
+    "dpiAwarenessWin32Error": 0,
+    "phase": "complete",
+    "updatedAt": "2026-11-09T17:39:00.1054165Z",
+    "finishedAt": "2026-11-09T17:39:00.1054165Z"
+  }
+}

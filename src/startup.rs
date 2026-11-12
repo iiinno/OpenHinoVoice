@@ -10,16 +10,23 @@ const NAME: PCWSTR = w!("OpenHinoVoice");
 
 /// 旧名 JapanVoice で自動起動を登録していたら、新しい名前と今の exe に付け替える
 pub fn migrate_legacy() {
+    if crate::config::is_test_sandbox() {
+        return;
+    }
     const OLD: PCWSTR = w!("JapanVoice");
     unsafe {
-        if RegGetValueW(HKEY_CURRENT_USER, RUN, OLD, RRF_RT_REG_SZ, None, None, None).is_ok() {
+        if RegGetValueW(HKEY_CURRENT_USER, RUN, OLD, RRF_RT_REG_SZ, None, None, None).is_ok()
+            && set_enabled(true).is_ok()
+        {
             let _ = RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN, OLD);
-            let _ = set_enabled(true);
         }
     }
 }
 
 pub fn is_enabled() -> bool {
+    if crate::config::is_test_sandbox() {
+        return false;
+    }
     unsafe {
         RegGetValueW(
             HKEY_CURRENT_USER,
@@ -35,6 +42,13 @@ pub fn is_enabled() -> bool {
 }
 
 pub fn set_enabled(on: bool) -> Result<(), String> {
+    if crate::config::is_test_sandbox() {
+        return if on {
+            Err("検証用の設定画面では自動起動を登録できません".into())
+        } else {
+            Ok(())
+        };
+    }
     // 有効時は常に現在の exe のパスを書き直す。ファイル移動後の stale Run 値を修復する。
     if !on && !is_enabled() {
         return Ok(());

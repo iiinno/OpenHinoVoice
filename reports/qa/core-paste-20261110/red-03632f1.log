@@ -1,0 +1,6 @@
+2026-11-10T09:26:37.8611957Z [31;1mclipboard sequence: before=5, recorded=7, after_close=10[0m
+2026-11-10T09:26:37.8649005Z [31;1mthread 'paste::tests::clipboard_write_tracks_the_published_sequence' (8312) panicked at src\paste.rs:484:9:[0m
+2026-11-10T09:26:37.8651212Z [31;1massertion `left == right` failed: closing our own clipboard write must not look like another application's change[0m
+2026-11-10T09:26:37.8669123Z [31;1m  left: 7[0m
+2026-11-10T09:26:37.8676749Z [31;1m right: 10[0m
+2026-11-10T09:26:37.8896014Z test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 285 filtered out; finished in 0.03s

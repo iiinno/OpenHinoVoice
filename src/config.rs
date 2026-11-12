@@ -36,7 +36,7 @@ speech_exe = ""
 # 認識モデル。speech.cpp のモデル名か .gguf のパス。名前なら初回に自動で取得する
 model = "haas-ja-v1.0:q4_k"
 hotkey = "F8"
-# 最大録音時間(分)。1、3、5、10から選択。到達時は自動で認識へ進む
+# 最大録音時間(分)。1、3、5、10、30、60から選択。到達時は自動で認識へ進む
 max_recording_minutes = 5
 # 録音中の表示の色。"hinomaru"(白地に赤い点)か "auto"(Windows のライト、ダークに合わせる)
 theme = "hinomaru"
@@ -53,6 +53,27 @@ recovery_history = true
 # 録音開始、確定、エラーで効果音を鳴らすか、とその音量(0〜100)
 sounds = true
 volume = 70
+# 音と表示は別々に選べる。起動音は個別に有効化する
+sound_set = "classic"
+hud_style = "standard"
+feedback_motion = "system"
+startup_sound = false
+sound_events = { start = true, stop = true, done = true, warning = true, error = true, cancel = false }
+
+# リアルタイム表示。話している途中の文字と区間の確定を画面の上の帯に出す。
+# 入力欄には何も書かず、Enter を押したあとの最終的な文だけが入る
+live_caption = true
+# 仮の表示。話している途中の音を 1 秒ごとに認識させて帯に出す。処理の遅い PC ではオフにする
+partial_caption = true
+# 帯の場所。"top"(画面の上端)か "caret"(入力中の位置の近く。取れない画面では上端に出る)
+caption_position = "top"
+
+# Edit モード。文を選んだ状態で録音を始めると、話した指示で選んだ部分を
+# 書き換える。専用のキーはなく、いつもの録音開始キーを使う
+edit_mode = true
+# 録音のあと、この分数の間は認識エンジンを残す(0、1、3、5、10)。
+# 続けて話すときの準備時間がなくなるが、その間はモデルぶんのメモリを使う
+keep_worker_minutes = 0
 
 [format]
 base_url = "https://opencode.ai/inference/go/openai/v1"
@@ -70,12 +91,22 @@ prompt = """
 - 話者が伝えた情報量と意図を保ち、完成した文章の本文のみを出力する
 """
 
+# オフラインモード。この PC の外への通信をすべて止める。整形の接続先は
+# localhost のみを許し、ChatGPT のトークンの更新もしない。認識モデルが
+# 未取得のままだと起動時に案内を出す
+offline = false
+# Edit モードの、書き換え方の追加の指示(任意)。例: 「ですます調にする」
+edit_prompt = ""
+# この PC での動き(区間の長さ、待ち時間、失敗)を usage-log.jsonl に記録する。
+# 音声は含めず、外にも送らない
+usage_log = false
+
 # リクエスト本体に混ぜる項目。deepseek-v4.1-flash は推論を止めないと応答が倍近く遅くなる
 [format.extra_body]
 reasoning_effort = "none"
 "#;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct FormatConfig {
     /// 整形の接続先。"opencode-go"、"openai"(API キー)、"chatgpt"(ChatGPT でログイン)、"custom"(OpenAI 互換)
     #[serde(default = "default_provider")]
@@ -105,6 +136,17 @@ pub struct FormatConfig {
     /// OpenAI と ChatGPT で優先処理(Fast モード)を頼む。料金や利用枠の減りは 2 倍になる
     #[serde(default)]
     pub fast: bool,
+    /// オフラインモード。この PC の外への通信をすべて止め、整形の接続先は
+    /// localhost だけを許し、ChatGPT のトークンの更新もしない
+    #[serde(default)]
+    pub offline: bool,
+    /// Edit モードの、書き換え方の追加の指示。空なら既定の指示だけを使う
+    #[serde(default)]
+    pub edit_prompt: String,
+    /// この PC での動き(区間の長さ、待ち時間、失敗)を、音声を含めず
+    /// usage-log.jsonl に記録する。外には送らない。利用者が有効にした場合だけ記録する
+    #[serde(default)]
+    pub usage_log: bool,
 }
 
 fn default_provider() -> String {
@@ -116,7 +158,7 @@ fn default_openai_model() -> String {
 fn default_base_url() -> String {
     "https://opencode.ai/inference/go/openai/v1".to_string()
 }
-fn default_timeout_ms() -> u64 {
+pub(crate) fn default_timeout_ms() -> u64 {
     10000
 }
 fn default_prompt() -> String {
@@ -138,11 +180,14 @@ impl Default for FormatConfig {
             openai_model: default_openai_model(),
             chatgpt_model: default_openai_model(),
             fast: false,
+            offline: false,
+            edit_prompt: String::new(),
+            usage_log: false,
         }
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct Config {
     #[serde(default)]
     pub speech_exe: String,
@@ -171,6 +216,35 @@ pub struct Config {
     /// 効果音の音量(0〜100)
     #[serde(default = "default_volume")]
     pub volume: u8,
+    // 未知の選択も保存時に失わないよう、設定では識別子を保持し、利用時に型へ変換する。
+    #[serde(default = "default_sound_set")]
+    pub sound_set: String,
+    #[serde(default)]
+    pub sound_events: crate::feedback::SoundEvents,
+    #[serde(default)]
+    pub startup_sound: bool,
+    #[serde(default = "default_hud_style")]
+    pub hud_style: String,
+    #[serde(default = "default_feedback_motion")]
+    pub feedback_motion: String,
+    /// リアルタイム表示。区間の確定と、話している途中の仮の文字を画面の上に出す
+    #[serde(default = "default_true")]
+    pub live_caption: bool,
+    /// 仮の表示。話している途中の音を 1 秒ごとに認識させて出す。処理の遅い PC ではオフにする
+    #[serde(default = "default_true")]
+    pub partial_caption: bool,
+    /// 表示の場所。"top"(画面の上端)か "caret"(入力中の位置の近く)
+    #[serde(default = "default_caption_position")]
+    pub caption_position: String,
+    /// Edit モード。文を選んだ状態で録音を始めると、話した指示で
+    /// 選んだ部分を書き換える。オフのときは選択の確認そのものをしない
+    #[serde(default = "default_true")]
+    pub edit_mode: bool,
+    /// 録音のあと、この分数の間は認識エンジンを残す。続けて話すときの
+    /// 準備時間(起動とモデルの読み込み)がなくなる。代わりにその間、
+    /// モデルのぶんのメモリを使う。0 は残さない(今までどおり)
+    #[serde(default)]
+    pub keep_worker_minutes: u32,
     #[serde(default)]
     pub format: FormatConfig,
 }
@@ -190,14 +264,27 @@ fn default_true() -> bool {
 fn default_volume() -> u8 {
     70
 }
+fn default_sound_set() -> String {
+    crate::feedback::SoundSet::Classic.id().into()
+}
+fn default_hud_style() -> String {
+    crate::feedback::HudStyle::Standard.id().into()
+}
+fn default_feedback_motion() -> String {
+    crate::feedback::FeedbackMotion::System.id().into()
+}
 fn default_theme() -> String {
     "hinomaru".to_string()
+}
+fn default_caption_position() -> String {
+    "top".to_string()
 }
 
 impl Config {
     /// 選んだ接続先で整形できる資格情報があるか。なければ整形せずに生テキストを貼る
     pub fn has_api_key(&self) -> bool {
         match self.format.provider.as_str() {
+            "local" => !self.format.model.trim().is_empty(),
             "openai" => !self.format.openai_api_key.trim().is_empty(),
             "chatgpt" => crate::chatgpt::is_signed_in(),
             _ => !self.format.api_key.trim().is_empty(),
@@ -233,7 +320,7 @@ fn atomic_replace(path: &std::path::Path, contents: &[u8]) -> Result<(), String>
     let nano = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
-    let tmp = path.with_file_name(format!(".api-keys-{}-{nano}.tmp", std::process::id()));
+    let tmp = path.with_file_name(format!(".openhino-{}-{nano}.tmp", std::process::id()));
     let result = (|| -> std::io::Result<()> {
         let mut file = std::fs::OpenOptions::new()
             .write(true)
@@ -248,7 +335,7 @@ fn atomic_replace(path: &std::path::Path, contents: &[u8]) -> Result<(), String>
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
-    result.map_err(|e| format!("秘密情報を安全に保存できません: {e}"))
+    result.map_err(|e| format!("ファイルを安全に保存できません: {e}"))
 }
 
 fn decode_api_keys(sealed: &[u8]) -> Result<StoredApiKeys, String> {
@@ -366,7 +453,7 @@ pub fn load() -> Result<Config, String> {
                 (Some("format"), "openai_api_key", toml::Value::from("")),
             ],
         )?;
-        std::fs::write(&path, clean)
+        atomic_replace(&path, clean.as_bytes())
             .map_err(|e| format!("旧設定の平文APIキーを除去できません: {e}"))?;
     } else if let Some(keys) = load_api_keys()? {
         cfg.format.api_key = keys.api_key;
@@ -413,8 +500,11 @@ fn version_key(name: &str) -> Vec<u64> {
 pub fn parse(text: &str) -> Result<Config, String> {
     let cfg: Config =
         toml::from_str(text).map_err(|e| format!("設定ファイルの形式が不正です: {e}"))?;
-    if !matches!(cfg.max_recording_minutes, 1 | 3 | 5 | 10) {
-        return Err("最大録音時間は1、3、5、10分から選択してください".into());
+    if !matches!(cfg.max_recording_minutes, 1 | 3 | 5 | 10 | 30 | 60) {
+        return Err("最大録音時間は1、3、5、10、30、60分から選択してください".into());
+    }
+    if !matches!(cfg.keep_worker_minutes, 0 | 1 | 3 | 5 | 10) {
+        return Err("認識エンジンを残す時間は0、1、3、5、10分から選択してください".into());
     }
     crate::lexicon::validate(&cfg.terms)?;
     Ok(cfg)
@@ -433,13 +523,13 @@ pub fn set_values(
             .to_string()
             .parse::<toml_edit::Value>()
             .map_err(|e| format!("設定値 {key} の形式が不正です: {e}"))?;
-        let table = match section {
+        let table: &mut dyn toml_edit::TableLike = match section {
             Some(section) => {
                 if !doc.as_table().contains_key(section) {
                     doc[section] = toml_edit::Item::Table(toml_edit::Table::new());
                 }
                 doc[section]
-                    .as_table_mut()
+                    .as_table_like_mut()
                     .ok_or_else(|| format!("設定セクション [{section}] が表ではありません"))?
             }
             None => doc.as_table_mut(),
@@ -463,15 +553,118 @@ pub fn set_values(
             *old = new_value;
             *old.decor_mut() = decor;
         } else {
-            table[key] = toml_edit::Item::Value(new_value);
+            table.insert(key, toml_edit::Item::Value(new_value));
         }
     }
     Ok(doc.to_string())
 }
 
+pub fn parse_extra_body(text: &str) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    let extra = if text.trim().is_empty() {
+        serde_json::Map::new()
+    } else {
+        serde_json::from_str(text).map_err(|e| format!("追加項目の JSON が不正です: {e}"))?
+    };
+    toml::Value::try_from(&extra).map_err(|e| format!("追加項目を TOML に保存できません: {e}"))?;
+    Ok(extra)
+}
+
+pub fn update_extra_body(
+    doc: &mut toml_edit::DocumentMut,
+    extra: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    if extra.is_empty()
+        && doc
+            .get("format")
+            .and_then(|f| f.get("extra_body"))
+            .is_none()
+    {
+        return Ok(());
+    }
+    update_json_item(
+        &mut doc["format"]["extra_body"],
+        &serde_json::Value::Object(extra.clone()),
+    )
+}
+
+fn json_toml_value(value: &serde_json::Value) -> Result<toml_edit::Value, String> {
+    toml::Value::try_from(value)
+        .map_err(|e| format!("追加項目を TOML に保存できません: {e}"))?
+        .to_string()
+        .parse()
+        .map_err(|e| format!("追加項目の形式が不正です: {e}"))
+}
+
+fn update_json_item(item: &mut toml_edit::Item, value: &serde_json::Value) -> Result<(), String> {
+    if let Some(old) = item.as_value() {
+        let document: toml::Value = toml::from_str(&format!("value = {old}"))
+            .map_err(|e| format!("保存済みの追加項目を読めません: {e}"))?;
+        if serde_json::to_value(&document["value"]).map_err(|e| e.to_string())? == *value {
+            return Ok(());
+        }
+    }
+    if let serde_json::Value::Object(fields) = value {
+        if item.as_table_like().is_none() {
+            *item = toml_edit::Item::Table(toml_edit::Table::new());
+        }
+        let table = item.as_table_like_mut().unwrap();
+        let removed: Vec<String> = table
+            .iter()
+            .filter(|(k, _)| !fields.contains_key(*k))
+            .map(|(k, _)| k.to_string())
+            .collect();
+        for key in removed {
+            table.remove(&key);
+        }
+        for (key, value) in fields {
+            if let Some(old) = table.get_mut(key) {
+                update_json_item(old, value)?;
+            } else {
+                table.insert(key, toml_edit::Item::Value(json_toml_value(value)?));
+            }
+        }
+    } else {
+        let mut new_value = json_toml_value(value)?;
+        if let Some(old) = item.as_value() {
+            *new_value.decor_mut() = old.decor().clone();
+        }
+        *item = toml_edit::Item::Value(new_value);
+    }
+    Ok(())
+}
+
 pub fn save(text: &str) -> Result<(), String> {
+    save_at(&config_path(), text)
+}
+
+fn save_at(path: &std::path::Path, text: &str) -> Result<(), String> {
     parse(text)?;
-    std::fs::write(config_path(), text).map_err(|e| format!("設定ファイルを書けません: {e}"))
+    atomic_replace(path, text.as_bytes()).map_err(|e| format!("設定ファイルを書けません: {e}"))
+}
+
+/// 検証用プロセスだけを分離し、普段使っているインスタンスと競合させない。
+pub fn mutex_name(base: &str) -> String {
+    mutex_name_with_namespace(base, std::env::var("OHV_TEST_NAMESPACE").ok().as_deref())
+}
+
+pub fn is_test_sandbox() -> bool {
+    valid_test_namespace(std::env::var("OHV_TEST_NAMESPACE").ok().as_deref()).is_some()
+}
+
+fn valid_test_namespace(value: Option<&str>) -> Option<&str> {
+    value.filter(|v| {
+        !v.is_empty()
+            && v.len() <= 64
+            && v.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    })
+}
+
+fn mutex_name_with_namespace(base: &str, namespace: Option<&str>) -> String {
+    match valid_test_namespace(namespace) {
+        Some(namespace) => format!("{base}.{namespace}"),
+        None => base.to_owned(),
+    }
 }
 
 pub const MOD_CTRL: u8 = 1;
@@ -542,6 +735,19 @@ mod tests {
     }
 
     #[test]
+    fn usage_logging_requires_explicit_opt_in() {
+        assert!(!FormatConfig::default().usage_log);
+        assert!(!parse("").unwrap().format.usage_log);
+        assert!(!parse(EXAMPLE_TOML).unwrap().format.usage_log);
+        assert!(
+            parse("[format]\nusage_log = true")
+                .unwrap()
+                .format
+                .usage_log
+        );
+    }
+
+    #[test]
     fn parses_example() {
         let cfg = parse(EXAMPLE_TOML).expect("example must parse");
         assert_eq!(cfg.speech_exe, "");
@@ -609,7 +815,7 @@ mod tests {
     fn recording_minutes_defaults_for_older_configs_and_validates_saved_choices() {
         let old = EXAMPLE_TOML.replace("max_recording_minutes = 5\n", "");
         assert_eq!(parse(&old).unwrap().max_recording_minutes, 5);
-        for minutes in [1, 3, 5, 10] {
+        for minutes in [1, 3, 5, 10, 30, 60] {
             let updated = set_values(
                 &old,
                 &[(None, "max_recording_minutes", toml::Value::from(minutes))],
@@ -624,7 +830,7 @@ mod tests {
                 "none"
             );
         }
-        for minutes in [-1, 0, 2, 11, 1000] {
+        for minutes in [-1, 0, 2, 11, 20, 45, 1000] {
             let invalid = set_values(
                 EXAMPLE_TOML,
                 &[(None, "max_recording_minutes", toml::Value::from(minutes))],
@@ -789,6 +995,43 @@ mod tests {
     }
 
     #[test]
+    fn invalid_settings_save_preserves_existing_file_and_valid_save_keeps_comments() {
+        let dir = std::env::temp_dir().join(format!(
+            "ohv-config-save-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let original = "# 利用者のコメント\nhotkey = 'F8'\n";
+        std::fs::write(&path, original).unwrap();
+        assert!(save_at(&path, "[format]\n[format]\n").is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        let updated = original.replace("F8", "Ctrl+Alt+J");
+        save_at(&path, &updated).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), updated);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_namespace_is_explicit_and_cannot_change_object_directory() {
+        let base = "Local\\OpenHinoVoice.Singleton";
+        assert_eq!(mutex_name_with_namespace(base, None), base);
+        assert_eq!(mutex_name_with_namespace(base, Some("")), base);
+        assert_eq!(mutex_name_with_namespace(base, Some("a\\b")), base);
+        assert_eq!(mutex_name_with_namespace(base, Some(&"x".repeat(65))), base);
+        assert_eq!(
+            mutex_name_with_namespace(base, Some("qa-123_abc")),
+            format!("{base}.qa-123_abc")
+        );
+    }
+
+    #[test]
     fn newer_speech_versions_sort_higher() {
         assert!(version_key("0.10.2") > version_key("0.9.4"));
         assert!(version_key("1.0.0") > version_key("0.99.9"));
@@ -812,6 +1055,51 @@ mod tests {
         assert_eq!(parse_hotkey("Ctrl+J+K"), None);
         assert_eq!(parse_hotkey("Hyper+J"), None);
         assert_eq!(parse_hotkey(""), None);
+    }
+
+    #[test]
+    fn a_local_model_does_not_need_credentials() {
+        let mut cfg: Config = toml::from_str("").unwrap();
+        cfg.format.provider = "local".into();
+        cfg.format.model = "my-local-model".into();
+        cfg.format.base_url = "http://127.0.0.1:8080/v1".into();
+        assert!(cfg.has_api_key());
+    }
+
+    #[test]
+    fn extra_body_edits_preserve_nested_comments_and_unchanged_values() {
+        let text = "[format]\nprovider = 'local' # 接続先\n[format.extra_body] # 追加設定\nreasoning_effort = 'none' # 推論\n[format.extra_body.chat_template_kwargs] # テンプレート\nenable_thinking = true # 考えるか\n";
+        let mut doc: toml_edit::DocumentMut = text.parse().unwrap();
+        let unchanged = parse_extra_body(
+            r#"{"reasoning_effort":"none","chat_template_kwargs":{"enable_thinking":true}}"#,
+        )
+        .unwrap();
+        update_extra_body(&mut doc, &unchanged).unwrap();
+        assert_eq!(doc.to_string(), text);
+        let changed = parse_extra_body(
+            r#"{"reasoning_effort":"none","chat_template_kwargs":{"enable_thinking":false}}"#,
+        )
+        .unwrap();
+        update_extra_body(&mut doc, &changed).unwrap();
+        let updated = doc.to_string();
+        for comment in [
+            "# 接続先",
+            "# 追加設定",
+            "# 推論",
+            "# テンプレート",
+            "# 考えるか",
+        ] {
+            assert!(updated.contains(comment), "{updated}");
+        }
+        assert!(updated.contains("reasoning_effort = 'none'"));
+        assert!(updated.contains("enable_thinking = false # 考えるか"));
+    }
+
+    #[test]
+    fn extra_body_refuses_values_that_toml_cannot_represent() {
+        assert!(parse_extra_body(r#"{"value":null}"#).is_err());
+        assert!(parse_extra_body(r#"{"nested":{"value":null}}"#).is_err());
+        assert!(parse_extra_body("[]").is_err());
     }
 
     #[test]

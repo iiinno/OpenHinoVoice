@@ -1,0 +1,14 @@
+ts	phase	decision	why	evidence	result
+2026-11-07T12:04:10Z	frame	未プッシュ13コミットをPlan.mdのフェーズごとに点検する	クラッシュを優先し、確認できた不具合ごとに修正と検証を行う	bf74f47; reports/qa/unpushed-review-20261107.md	open
+2026-11-07T12:06:42Z	overlay	空の文字はWin32へ渡さず空のTextMaskを返す。テスト実行時は実使用ログへ追記しない	最初の仮字幕の再現テストが0xc0000005で落ちた。修正後は同じGDI経路を通過した	src/overlay.rs; src/usage.rs; exec_b02dfe9e-8b1e-4b82-ba14-98026394a925	fmt clippy 全408テスト通過
+2026-11-07T12:13:51Z	runtime	仮認識の取り消しを一か所に集め、認識終了時にworkerを解放または期限付き保持する	5件の不具合を再現。単一スレッド所有のReceiverからMutexも除いた	src/main.rs; src/asr.rs; /tmp/ohv-runtime-before.log; /tmp/ohv-runtime-after.log	fmt clippy 全テスト通過
+2026-11-07T12:17:00Z	segment	冒頭と端数を保持し、同じ静けさなら後ろで区切る。字幕画像は見える行数だけ確保する	音声欠落2件を回帰テストで再現。Vec先頭の繰り返しdrainを走査に置き換えた	src/segment.rs; src/overlay.rs; tests/overlay_preview.rs; /tmp/ohv-segment-before.log; /tmp/ohv-segment-after.log	3ゲートと実際のlayered window描画通過
+2026-11-07T12:29:34Z	ai	実際の送信先で制限を判定し、モデル一覧にも適用する。ローカルではキーと外部プロキシを不要にしリダイレクトを止める	6件を失敗テストで再現。ChatGPTの選択文と指示を分離し、長文は失敗部分だけ原文に戻す	src/format.rs; src/chatgpt.rs; /tmp/ohv-network-before.log; /tmp/ohv-network-after.log	fmt clippy 全テスト通過
+2026-11-07T12:29:36Z	tests	HTTP試験用サーバーの受信接続を同期モードへ戻す	非同期listenerから引き継がれた設定で要求を読み切らず接続を閉じていた	src/format.rs:serve_http_once	修正後の全ターゲット通過
+2026-11-07T12:33:54Z	uia	UIA未対応を表示しCOMを解放する。応答待ちの照会は重複させない。未取得モデルの開始を拒む	未対応が選択なしに化けていた。オフライン起動の注意だけでは自動取得を防げなかった	src/uia.rs; src/asr.rs; /tmp/ohv-uia-offline-after.log	fmt clippy 全テスト通過
+2026-11-07T12:35:54Z	settings	追加JSONの保存と接続テストを統一しコメントを保持する。日付境界はWindowsで現地の午前0時をUTCへ変換する	JSON nullの空文字化、未保存の設定の無視、日付境界の符号誤りを直した	src/config.rs; src/settings.rs; src/history.rs; /tmp/ohv-settings-after.log	fmt clippy 全テスト通過
+2026-11-07T12:40:50Z	lifecycle	送信中は時刻の有無で表し、確定は一件ずつ認識させる。切れた結果を成功にせず字幕キャッシュを解放する	タイムアウトの前倒し、失敗回数の二重計上、model_limitの成功扱い、字幕キャッシュ保持を4件の失敗で再現した	src/main.rs; src/asr.rs; src/overlay.rs; /tmp/ohv-lifecycle-before.log; /tmp/ohv-lifecycle-after.log	fmt clippy 全テスト通過
+2026-11-07T12:48:01Z	paragraphs	長文の分割位置の空白と空行を成功時にも原文への復帰時にも残す	追加した回帰テストで段落が消えることを再現した	40ef848; /tmp/ohv-paragraph-before.log; /tmp/ohv-final-tests.log	3ゲート通過
+2026-11-07T12:48:03Z	evidence	過去のEnter遅延と文欠落なしとメモリ予算内の判定を撤回する	測定コードは最後の区間だけを計時し、旧メモリ記録は基準値を超えていた	tests/perf_live.rs; reports/perf/baseline-0.1.2.md; reports/qa/manual-p5.md	現行版の実測は未確認
+2026-11-07T12:48:04Z	isolation	以後の全テストは専用APPDATAで実行しテスト用Appの復旧履歴も無効にした	最初の全検証では旧テストに実履歴へ書き込む経路が残っていた。混入した記録は削除しない	src/main.rs:test_app; src/usage.rs; reports/qa/unpushed-review-20261107.md	以後は一時領域で全検証
+2026-11-07T12:53:06Z	verify	最終480テストとWin32プレビューとreleaseビルドを通し、旧exeを退避して修正版を導入した	再現したクラッシュの経路を確認し、ビルド元と導入先のハッシュ一致と設定不変を確認した	reports/qa/unpushed-review-verification-20261107.txt; C:/Users/inoue/AppData/Local/Temp/ohv-review-install-ee88ced4280f4279bd9a04402b17f614.json	自動検証と起動は通過。実マイクと性能と独立レビューは未確認

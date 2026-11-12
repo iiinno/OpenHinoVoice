@@ -11,6 +11,13 @@ Speech recognition runs entirely on your PC; audio is never sent anywhere. Optio
 - One key starts recording; Enter transcribes and pastes
 - Press Enter once to paste cleaned-up text. Press it again without waiting to paste the raw transcript immediately
 - While recording, a small Hinomaru-style pill appears near the top of the screen. Its bars follow your voice, so you can see it is listening
+- A live caption band on the screen shows the words as you speak and each settled phrase as it is recognized. The input field only receives the final text
+- Speech is recognized utterance by utterance. If recognition falls behind recording, Enter waits for all remaining intervals
+- Edit mode: select text, then start recording as usual, and say an instruction like "make it polite" — the selected part is rewritten. No dedicated key needed
+
+## Edit mode
+
+Select text, press the usual recording key, say what to change, then press Enter. With no selection, recording works exactly as before. The selection is read only through Windows UI Automation (TextPattern): no key events are sent and the clipboard is untouched. Apps whose selection cannot be read show a short notice and fall back to normal voice input. Selections over 6000 characters are not edited, and both the before and after texts are kept in the recovery history. Turn Edit mode off to skip the selection check entirely.
 - Short sound effects on start and paste (can be turned off)
 
 ## Install
@@ -39,8 +46,8 @@ An icon appears in the notification area at the bottom right. If you don't see i
 
 Right-click the icon and choose 設定 (Settings).
 
-1. On 一般 (General), choose the hotkey (F8 by default). Tick the start-at-sign-in box if you want it to start automatically
-2. To clean up text with AI, choose a provider on 整形(AI). With ChatGPT Plus or Pro, pick the ChatGPT plan and press "Continue with ChatGPT"
+1. On 入力 (Input), choose the hotkey (F8 by default). Tick the start-at-sign-in box if you want it to start automatically
+2. To clean up text with AI, choose a provider on AI. With ChatGPT Plus or Pro, pick the ChatGPT plan and press "Continue with ChatGPT"
 3. Press 接続テスト (connection test) to check, then 保存 (Save)
 
 ### 4. Try it
@@ -77,9 +84,18 @@ To start recording from a mouse button, assign a key combination such as Ctrl+Al
 | ChatGPT plan | ChatGPT Plus or Pro subscribers. No extra cost; uses your plan |
 | OpenCode Go | OpenCode Go subscribers. Uses a low-cost model (`deepseek-v4.1-flash` by default) |
 | OpenAI API key | OpenAI API users. Uses `gpt-6-luna` by default |
+| Anthropic (Claude) | Anthropic API users. Uses `claude-haiku-5-5` by default |
+| Google Gemini | Gemini API key holders, via the OpenAI-compatible endpoint |
+| OpenRouter | One key for many models |
+| Groq | Fast inference API |
+| Local LLM | Any OpenAI-compatible engine running on this PC. Speech and text never leave the machine |
 | Other | Any OpenAI-compatible API |
 
 Only the transcribed text is sent. Check each provider's terms for how they handle data. ChatGPT sign-in tokens are encrypted with Windows DPAPI and stored on this PC.
+
+## Offline mode
+
+Turn on "offline mode" on the AI page and nothing leaves this PC: only localhost formatting endpoints are accepted, ChatGPT tokens are not refreshed, and the app tells you at startup when the recognition model has not been downloaded yet (it never downloads one by itself). With a local LLM as the provider, recording through pasting works with the network fully disconnected.
 
 OpenCode Go's terms describe it as designed for OpenCode and other coding agents. Cleaning up dictation is outside that intended use, so use it at your own discretion.
 
@@ -100,9 +116,9 @@ The settings file is `%APPDATA%\OpenHinoVoice\config.toml`.
 cargo build --release
 ```
 
-The executable is `target\release\openhinovoice.exe`. Run the tests with `cargo test`; tests that need a real microphone or API are `#[ignore]`d.
+The executable is `target\release\openhinovoice.exe`. Use `pwsh -NoProfile -File scripts/verify.ps1 -Mode Fast` during development and `-Mode Full` before integration. The script isolates application data and records JSON results and logs. Full runs formatting, clippy, normal tests, and a release build. See the [verification guide](docs/verification.md) for live tests; tests that need a real microphone or API are `#[ignore]`d.
 
-Windows CI runs `cargo fmt --all -- --check`, `cargo check --all-targets --locked`, `cargo clippy --all-targets --locked -- -D warnings`, and `cargo test --all-targets --locked`. A release tag such as `v0.1.0` must match `Cargo.toml`'s `version`. The Windows executable embeds `FileVersion` and `ProductVersion` from that Cargo version and uses `OpenHinoVoice` as its `ProductName`. Existing releases are never overwritten.
+Windows CI uses the same Full workflow and retains its logs. A release tag such as `v0.1.0` must match `Cargo.toml`'s `version`. The Windows executable embeds `FileVersion` and `ProductVersion` from that Cargo version and uses `OpenHinoVoice` as its `ProductName`. Existing releases are never overwritten.
 
 ## Special thanks
 

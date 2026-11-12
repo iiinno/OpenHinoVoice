@@ -2,24 +2,196 @@ name: CI
 
 on:
   push:
+    branches: ["**"]
   pull_request:
+  workflow_call:
+  workflow_dispatch:
+    inputs:
+      ui_check:
+        description: Run the separate hosted desktop UI diagnostic job
+        type: boolean
+        required: true
+        default: false
+      perf_check:
+        description: Compare release builds with and without the accessibility feature
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}-${{ ((github.event_name == 'push' && contains(github.event.head_commit.message, '[perf-check]')) || (github.event_name == 'workflow_dispatch' && inputs.perf_check)) && 'perf' || 'checks' }}
+  cancel-in-progress: true
 
 jobs:
   build-and-test:
     runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile verification helpers before Rust work
+        id: harnesses
+        run: |
+          ./scripts/verify-ui.ps1 -CompileOnly -OutputDir target/qa/ci/ui-harness
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./scripts/measure-ui.ps1 -CompileOnly -OutputDir target/qa/ci/perf-harness
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-      - name: Check code and test targets
-        run: cargo check --all-targets --locked
-      - name: Lint
-        run: cargo clippy --all-targets --locked -- -D warnings
-      - name: Build Windows executable
-        run: cargo build --locked
-      - name: Unit and non-hardware regression tests
-        run: cargo test --all-targets --locked
+        with:
+          cache-on-failure: true
+      - name: Prepare locked dependencies
+        id: dependencies
+        run: |
+          New-Item -ItemType Directory -Force -Path target/qa/ci | Out-Null
+          cargo fetch --locked 2>&1 | Tee-Object -FilePath target/qa/ci/fetch.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify ordinary regressions before the desktop checks
+        id: fast
+        run: ./scripts/verify.ps1 -Mode Fast -OutputDir target/qa/ci/fast
+      - name: Verify the real Windows clipboard contract
+        id: clipboard
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        timeout-minutes: 10
+        run: |
+          cargo test --lib paste::tests::clipboard_write_tracks_the_published_sequence --locked --offline -- --ignored --exact --nocapture --test-threads=1 2>&1 | Tee-Object -FilePath target/qa/ci/clipboard-contract.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ((Get-Content target/qa/ci/clipboard-contract.log -Raw) -notmatch 'test result: ok\. 1 passed; 0 failed') { throw 'The required clipboard regression did not run.' }
+      - name: Verify recording through actual text insertion
+        id: core-e2e
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        timeout-minutes: 10
+        run: |
+          $sandbox = Join-Path $env:GITHUB_WORKSPACE 'target/qa/core-e2e'
+          $env:APPDATA = Join-Path $sandbox 'appdata'
+          $env:LOCALAPPDATA = Join-Path $sandbox 'localappdata'
+          $env:OHV_TEST_NAMESPACE = "core-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          New-Item -ItemType Directory -Force -Path $env:APPDATA, $env:LOCALAPPDATA | Out-Null
+          cargo test --lib app::core_e2e::record_enter_pastes_once_and_restores_clipboard --locked --offline -- --ignored --exact --nocapture --test-threads=1 2>&1 | Tee-Object -FilePath target/qa/ci/core-e2e.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ((Get-Content target/qa/ci/core-e2e.log -Raw) -notmatch 'test result: ok\. 1 passed; 0 failed') { throw 'The required end-to-end insertion regression did not run.' }
+      - name: Verify in isolated application directories
+        id: verify
+        run: ./scripts/verify.ps1 -Mode Full -OutputDir target/qa/ci
+      - name: Build the offscreen preview example
+        id: preview-build
+        run: |
+          cargo build --release --example overlay_preview --locked --offline 2>&1 | Tee-Object -FilePath target/qa/ci/preview-build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Prepare release artifacts and checksums
+        id: package
+        run: |
+          $package = (cargo metadata --no-deps --locked --offline --format-version 1 | ConvertFrom-Json).packages |
+            Where-Object { $_.name -eq 'openhinovoice' }
+          if ($LASTEXITCODE -ne 0 -or @($package).Count -ne 1) { throw 'パッケージの版を確認できません。' }
+          $version = $package.version
+          $info = (Get-Item 'target/release/openhinovoice.exe').VersionInfo
+          $numericVersion = "$($info.FileMajorPart).$($info.FileMinorPart).$($info.FileBuildPart)"
+          if ($numericVersion -cne ($version -split '[-+]')[0] -or $info.FileVersion -cne $version -or $info.ProductVersion -cne $version -or $info.ProductName -cne 'OpenHinoVoice') {
+            throw 'exeの版または製品名がCargo.tomlと一致しません。'
+          }
+          $verification = Get-Content -LiteralPath target/qa/ci/result.json -Raw | ConvertFrom-Json
+          if ($verification.revision -cne $env:GITHUB_SHA -or $verification.status -cne 'passed' -or $verification.scope -cne 'full' -or $verification.tests.passed -le 0 -or $verification.tests.failed -ne 0) {
+            throw 'このコミットのFull検証が成功していません。'
+          }
+          $destination = 'target/ci-artifacts'
+          New-Item -ItemType Directory -Force -Path $destination | Out-Null
+          Copy-Item -LiteralPath target/release/openhinovoice.exe -Destination "$destination/openhinovoice.exe"
+          Copy-Item -LiteralPath target/release/examples/overlay_preview.exe -Destination "$destination/overlay_preview.exe"
+          $checksums = foreach ($name in @('openhinovoice.exe', 'overlay_preview.exe')) {
+            $hash = Get-FileHash -LiteralPath (Join-Path $destination $name) -Algorithm SHA256
+            '{0} *{1}' -f $hash.Hash.ToLowerInvariant(), $name
+          }
+          $checksums | Set-Content -LiteralPath "$destination/SHA256SUMS.txt" -Encoding utf8NoBOM
+          Copy-Item -LiteralPath target/qa/ci/result.json -Destination "$destination/verification.json"
+          [ordered]@{
+            revision = $env:GITHUB_SHA
+            version = $version
+            sourceSha256 = $verification.sourceSha256
+            runId = $env:GITHUB_RUN_ID
+            runAttempt = $env:GITHUB_RUN_ATTEMPT
+            target = 'x86_64-pc-windows-msvc'
+            rustcVersion = (rustc -Vv | Out-String).Trim()
+            profile = 'release'
+            features = 'default'
+            verification = 'scripts/verify.ps1 -Mode Full'
+            coreClipboardVerified = $true
+            coreTextInsertionVerified = $true
+            desktopUiVerified = $false
+            liveAudioOrModelTestsExecuted = $false
+          } | ConvertTo-Json | Set-Content -LiteralPath "$destination/build.json" -Encoding utf8NoBOM
+      - name: Keep release binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release-${{ github.sha }}
+          path: target/ci-artifacts/*
+          if-no-files-found: error
+          retention-days: 14
+      - name: Record CI step outcomes
+        if: always()
+        env:
+          CLIPBOARD_RESULT: ${{ steps.clipboard.outcome }}
+          CORE_E2E_RESULT: ${{ steps.core-e2e.outcome }}
+          HARNESSES_RESULT: ${{ steps.harnesses.outcome }}
+          DEPENDENCIES_RESULT: ${{ steps.dependencies.outcome }}
+          FAST_RESULT: ${{ steps.fast.outcome }}
+          VERIFY_RESULT: ${{ steps.verify.outcome }}
+          PREVIEW_BUILD_RESULT: ${{ steps.preview-build.outcome }}
+          PACKAGE_RESULT: ${{ steps.package.outcome }}
+        run: |
+          New-Item -ItemType Directory -Force -Path target/qa/ci | Out-Null
+          [ordered]@{
+            revision = $env:GITHUB_SHA
+            clipboardContract = $env:CLIPBOARD_RESULT
+            coreTextInsertion = $env:CORE_E2E_RESULT
+            helperCompilation = $env:HARNESSES_RESULT
+            dependencies = $env:DEPENDENCIES_RESULT
+            ordinaryRegressions = $env:FAST_RESULT
+            verify = $env:VERIFY_RESULT
+            previewBuild = $env:PREVIEW_BUILD_RESULT
+            package = $env:PACKAGE_RESULT
+            desktopUi = 'not_run'
+            liveAudioOrModelTests = 'not_run'
+          } | ConvertTo-Json | Set-Content -LiteralPath target/qa/ci/ci-status.json -Encoding utf8NoBOM
+      - name: Keep verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-${{ github.sha }}
+          path: |
+            target/qa/ci/*.json
+            target/qa/ci/*.log
+            target/qa/ci/fast/*.json
+            target/qa/ci/fast/*.log
+            target/qa/ci/ui-harness/*.json
+            target/qa/ci/ui-harness/*.log
+            target/qa/ci/perf-harness/*.json
+            target/qa/ci/perf-harness/*.log
+          if-no-files-found: error
+          retention-days: 14
+
+  ui-check:
+    name: Explicit UI diagnostics
+    needs: build-and-test
+    if: ${{ (github.event_name == 'push' && contains(github.event.head_commit.message, '[ui-check]')) || (github.event_name == 'workflow_dispatch' && inputs.ui_check) }}
+    uses: ./.github/workflows/ui-check.yml
+    with:
+      settings_ui: true
+      release_artifact: windows-release-${{ github.sha }}
+
+  perf-check:
+    name: Explicit accessibility cost comparison
+    needs: build-and-test
+    if: ${{ (github.event_name == 'push' && contains(github.event.head_commit.message, '[perf-check]')) || (github.event_name == 'workflow_dispatch' && inputs.perf_check) }}
+    uses: ./.github/workflows/perf-check.yml
+    with:
+      release_artifact: windows-release-${{ github.sha }}

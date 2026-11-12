@@ -1,5 +1,4 @@
-// Integration crates compile full production modules but use only a subset of their APIs.
-#![allow(dead_code)]
+use openhinovoice::overlay;
 
 use std::time::{Duration, Instant};
 use windows::Win32::UI::HiDpi::{
@@ -8,9 +7,6 @@ use windows::Win32::UI::HiDpi::{
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
 };
-
-#[path = "../src/overlay.rs"]
-mod overlay;
 
 use overlay::{Mode, Tone};
 
@@ -31,11 +27,14 @@ fn cycle_overlay_states() {
     let modes = [
         Mode::Recording {
             started: Instant::now() - Duration::from_secs(5),
+            preparing: true,
         },
-        Mode::Busy {
-            label: "認識中".into(),
-            hint: None,
+        Mode::Recording {
+            started: Instant::now() - Duration::from_secs(5),
+            preparing: false,
         },
+        Mode::Recognizing { preparing: true },
+        Mode::Recognizing { preparing: false },
         Mode::Busy {
             label: "整形中".into(),
             hint: Some("Enter で生テキスト".into()),
@@ -50,6 +49,7 @@ fn cycle_overlay_states() {
         },
     ];
     for mode in modes {
+        overlay::set_caption("", "最初の仮字幕を表示します");
         let recording = matches!(mode, Mode::Recording { .. });
         overlay::show(mode);
         let start = Instant::now();
@@ -61,11 +61,18 @@ fn cycle_overlay_states() {
                 let samples: Vec<f32> = (0..480).map(|i| amp * ((i as f32) * 0.3).sin()).collect();
                 overlay::push_level(&samples);
             }
+            if start.elapsed() > hold / 2 {
+                overlay::set_caption(
+                    &"確定した長い字幕を折り返して表示します。".repeat(100),
+                    "次の仮字幕です",
+                );
+            }
             pump();
             overlay::tick();
             std::thread::sleep(Duration::from_millis(10));
         }
     }
+    overlay::clear_caption();
     overlay::hide();
     let start = Instant::now();
     while start.elapsed() < Duration::from_millis(400) {

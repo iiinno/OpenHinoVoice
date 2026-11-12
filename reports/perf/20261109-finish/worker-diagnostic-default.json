@@ -1,0 +1,132 @@
+{
+  "schemaVersion": 1,
+  "scope": "direct_owned_worker_startup",
+  "warmupDisabled": false,
+  "modelFile": "Haas-616M-ja-v1.0-Q4_K.gguf",
+  "status": "completed",
+  "samples": [
+    {
+      "elapsedMs": 94,
+      "cpuSeconds": 0.0,
+      "privateBytes": 1179648,
+      "workingSetBytes": 2719744
+    },
+    {
+      "elapsedMs": 1188,
+      "cpuSeconds": 0.703125,
+      "privateBytes": 390389760,
+      "workingSetBytes": 412430336
+    },
+    {
+      "elapsedMs": 2282,
+      "cpuSeconds": 2.21875,
+      "privateBytes": 452849664,
+      "workingSetBytes": 434831360
+    },
+    {
+      "elapsedMs": 3313,
+      "cpuSeconds": 7.359375,
+      "privateBytes": 620097536,
+      "workingSetBytes": 591024128
+    },
+    {
+      "elapsedMs": 4313,
+      "cpuSeconds": 11.390625,
+      "privateBytes": 610656256,
+      "workingSetBytes": 593305600
+    }
+  ],
+  "processId": 41916,
+  "readyMs": 2141,
+  "readyEvent": {
+    "type": "ready",
+    "protocol": 4,
+    "version": "0.10.1",
+    "defaults": {},
+    "model": {
+      "name": "Haas-ja-v1.0",
+      "organization": "third-intelligence",
+      "basename": "Haas",
+      "size_label": "616M",
+      "finetune": "ja",
+      "version": "v1.0",
+      "license": "Apache-2.0",
+      "source": {
+        "repository": "https://huggingface.co/third-intelligence/Haas-ja-v1.0",
+        "revision": "660728d39019e5e065046154beca44ac9a66a540"
+      },
+      "weight_type": "Q4_K",
+      "architecture": "fastconformer",
+      "layout": 4,
+      "task": "recognition",
+      "sample_rate": 16000,
+      "languages": [
+        "ja"
+      ],
+      "voice_files": false,
+      "voice_recordings": false,
+      "options": [
+        {
+          "name": "language",
+          "type": "string",
+          "required": false,
+          "steers": false,
+          "default": "auto",
+          "choices": [
+            "ja"
+          ]
+        },
+        {
+          "name": "timestamps",
+          "type": "bool",
+          "required": false,
+          "steers": true,
+          "default": false
+        },
+        {
+          "name": "decode_on_cpu",
+          "type": "bool",
+          "required": false,
+          "steers": true,
+          "default": true
+        },
+        {
+          "name": "keywords",
+          "type": "string",
+          "required": false,
+          "steers": true,
+          "default": ""
+        },
+        {
+          "name": "keywords_alpha",
+          "type": "float",
+          "required": false,
+          "steers": true,
+          "default": 2,
+          "exclusive_minimum": 0
+        },
+        {
+          "name": "keywords_guard",
+          "type": "bool",
+          "required": false,
+          "steers": true,
+          "default": true
+        }
+      ],
+      "file_bytes": 351901216,
+      "weight_bytes": 351568808,
+      "device": "Vulkan0",
+      "threads": 8
+    }
+  },
+  "cpuSecondsToReady": 1.296875,
+  "inputSha256": "5990A896E3A60057346904009F5193A706880B25713128B7F9EFD79CED2B93FD",
+  "inputAudioSeconds": 18.98,
+  "requestScope": "one_whole_wav_request_without_app_segmentation",
+  "stop": "complete",
+  "startupToFirstEndMs": 4828,
+  "firstRequestMs": 2671,
+  "outputChars": 98,
+  "transcribeToEndMs": 2593,
+  "elapsedMs": 5594
+}

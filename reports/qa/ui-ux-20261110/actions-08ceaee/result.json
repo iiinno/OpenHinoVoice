@@ -1,0 +1,110 @@
+{
+  "schemaVersion": 1,
+  "runId": "20261109T164558912Z-8365aa8d",
+  "mode": "Full",
+  "liveTest": null,
+  "scope": "full",
+  "startedAt": "2026-11-09T16:45:58.9370821Z",
+  "finishedAt": "2026-11-09T16:54:15.3275600Z",
+  "revision": "08ceaee502a69fdac9219f20e4b43591005098aa",
+  "dirty": false,
+  "sourceSha256": "E9D85EED736EFD8C228FF18EA961F14DD3B6EBD40F1ADEC7A4A745579889C43B",
+  "sourceFileCount": 101,
+  "status": "passed",
+  "checks": [
+    {
+      "name": "format",
+      "status": "passed",
+      "durationMs": 2065,
+      "exitCode": 0,
+      "log": "format.log",
+      "validationError": null
+    },
+    {
+      "name": "clippy",
+      "status": "passed",
+      "durationMs": 84232,
+      "exitCode": 0,
+      "log": "clippy.log",
+      "validationError": null
+    },
+    {
+      "name": "tests",
+      "status": "passed",
+      "durationMs": 136754,
+      "exitCode": 0,
+      "log": "tests.log",
+      "validationError": null
+    },
+    {
+      "name": "release",
+      "status": "passed",
+      "durationMs": 272888,
+      "exitCode": 0,
+      "log": "release.log",
+      "validationError": null
+    }
+  ],
+  "tests": {
+    "passed": 294,
+    "failed": 0,
+    "ignored": 11
+  },
+  "ignored": [
+    {
+      "name": "settings::setup::tests::pipe_holder_parent_fixture",
+      "reason": "subprocess fixture with an inherited-pipe descendant"
+    },
+    {
+      "name": "settings::setup::tests::waiting_child_fixture",
+      "reason": "subprocess fixture for cancellation; invoked by its owning test"
+    },
+    {
+      "name": "wav_is_transcribed",
+      "reason": "needs the speech.cpp worker, a Haas model and a test WAV; run explicitly"
+    },
+    {
+      "name": "records_two_seconds",
+      "reason": "needs a microphone; run explicitly"
+    },
+    {
+      "name": "real_api_formats_long_dictation",
+      "reason": "calls the real formatting API with a long transcript from JV_RAW_FILE; run explicitly"
+    },
+    {
+      "name": "real_api_formats_with_prewarm",
+      "reason": "calls the real formatting API with the key in the user config; run explicitly"
+    },
+    {
+      "name": "cycle_overlay_states",
+      "reason": "shows the overlay on screen; run explicitly"
+    },
+    {
+      "name": "pastes_into_focused_app",
+      "reason": "needs a focused text field in the interactive session; run explicitly"
+    },
+    {
+      "name": "live_segmented_latency_and_accuracy_on_corpus",
+      "reason": "取得済みspeech.cppモデルとcorpusが必要。verify.ps1 -Mode Liveで明示実行"
+    },
+    {
+      "name": "live_worker_latency_and_accuracy_on_corpus",
+      "reason": "取得済みspeech.cppモデルとcorpusが必要。verify.ps1 -Mode Liveで明示実行"
+    },
+    {
+      "name": "live_realtime_session_on_corpus",
+      "reason": "本番セッションと既存モデル・音声を実時間で検証。verify.ps1 -Mode Live -LiveTest Realtimeで明示実行"
+    }
+  ],
+  "manualPrerequisites": [
+    "実マイクの録音と切断",
+    "対象アプリの本文とクリップボード復元",
+    "UIAとDPI・複数モニター",
+    "実クラウドAPIと複数のローカルLLM"
+  ],
+  "isolation": {
+    "appData": "appdata",
+    "localAppData": "localappdata",
+    "namespace": "20261109T164558912Z-8365aa8d"
+  }
+}

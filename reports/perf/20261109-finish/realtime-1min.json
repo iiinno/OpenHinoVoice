@@ -1,0 +1,324 @@
+{
+  "arch": "x86_64",
+  "build_profile": "release",
+  "cache_flushed": false,
+  "cpu": null,
+  "excludes": [
+    "microphone capture",
+    "Windows event loop",
+    "painted subtitle",
+    "AI formatting",
+    "history",
+    "clipboard and paste"
+  ],
+  "frame_ms": 25,
+  "includes": [
+    "production segmentation",
+    "partial recognition",
+    "confirmed priority",
+    "Enter drain",
+    "AsrDone transition"
+  ],
+  "logical_cpus": 16,
+  "measurements": [
+    {
+      "audio_seconds": 61.06,
+      "audio_start_to_asr_done_ms": 62491,
+      "backlog": [
+        {
+          "elapsed_ms": 0,
+          "pending_pcm_bytes": 0
+        },
+        {
+          "elapsed_ms": 1009,
+          "pending_pcm_bytes": 31360
+        },
+        {
+          "elapsed_ms": 2012,
+          "pending_pcm_bytes": 63360
+        },
+        {
+          "elapsed_ms": 3026,
+          "pending_pcm_bytes": 96000
+        },
+        {
+          "elapsed_ms": 4053,
+          "pending_pcm_bytes": 126080
+        },
+        {
+          "elapsed_ms": 5062,
+          "pending_pcm_bytes": 160640
+        },
+        {
+          "elapsed_ms": 6062,
+          "pending_pcm_bytes": 179200
+        },
+        {
+          "elapsed_ms": 7062,
+          "pending_pcm_bytes": 211200
+        },
+        {
+          "elapsed_ms": 8076,
+          "pending_pcm_bytes": 243840
+        },
+        {
+          "elapsed_ms": 9083,
+          "pending_pcm_bytes": 262400
+        },
+        {
+          "elapsed_ms": 10094,
+          "pending_pcm_bytes": 294400
+        },
+        {
+          "elapsed_ms": 11099,
+          "pending_pcm_bytes": 326400
+        },
+        {
+          "elapsed_ms": 12128,
+          "pending_pcm_bytes": 359680
+        },
+        {
+          "elapsed_ms": 13128,
+          "pending_pcm_bytes": 392320
+        },
+        {
+          "elapsed_ms": 14137,
+          "pending_pcm_bytes": 424320
+        },
+        {
+          "elapsed_ms": 15141,
+          "pending_pcm_bytes": 442880
+        },
+        {
+          "elapsed_ms": 16148,
+          "pending_pcm_bytes": 474880
+        },
+        {
+          "elapsed_ms": 17157,
+          "pending_pcm_bytes": 507520
+        },
+        {
+          "elapsed_ms": 18160,
+          "pending_pcm_bytes": 291840
+        },
+        {
+          "elapsed_ms": 19164,
+          "pending_pcm_bytes": 323840
+        },
+        {
+          "elapsed_ms": 20193,
+          "pending_pcm_bytes": 166400
+        },
+        {
+          "elapsed_ms": 21213,
+          "pending_pcm_bytes": 186880
+        },
+        {
+          "elapsed_ms": 22213,
+          "pending_pcm_bytes": 218880
+        },
+        {
+          "elapsed_ms": 23217,
+          "pending_pcm_bytes": 66560
+        },
+        {
+          "elapsed_ms": 24221,
+          "pending_pcm_bytes": 97280
+        },
+        {
+          "elapsed_ms": 25234,
+          "pending_pcm_bytes": 118400
+        },
+        {
+          "elapsed_ms": 26241,
+          "pending_pcm_bytes": 150400
+        },
+        {
+          "elapsed_ms": 27243,
+          "pending_pcm_bytes": 182400
+        },
+        {
+          "elapsed_ms": 28248,
+          "pending_pcm_bytes": 17920
+        },
+        {
+          "elapsed_ms": 29264,
+          "pending_pcm_bytes": 50560
+        },
+        {
+          "elapsed_ms": 30290,
+          "pending_pcm_bytes": 83200
+        },
+        {
+          "elapsed_ms": 31296,
+          "pending_pcm_bytes": 115200
+        },
+        {
+          "elapsed_ms": 32310,
+          "pending_pcm_bytes": 132480
+        },
+        {
+          "elapsed_ms": 33311,
+          "pending_pcm_bytes": 53760
+        },
+        {
+          "elapsed_ms": 34318,
+          "pending_pcm_bytes": 85760
+        },
+        {
+          "elapsed_ms": 35333,
+          "pending_pcm_bytes": 118400
+        },
+        {
+          "elapsed_ms": 36339,
+          "pending_pcm_bytes": 136320
+        },
+        {
+          "elapsed_ms": 37344,
+          "pending_pcm_bytes": 51840
+        },
+        {
+          "elapsed_ms": 38345,
+          "pending_pcm_bytes": 83840
+        },
+        {
+          "elapsed_ms": 39361,
+          "pending_pcm_bytes": 108800
+        },
+        {
+          "elapsed_ms": 40383,
+          "pending_pcm_bytes": 148480
+        },
+        {
+          "elapsed_ms": 41396,
+          "pending_pcm_bytes": 181120
+        },
+        {
+          "elapsed_ms": 42398,
+          "pending_pcm_bytes": 213120
+        },
+        {
+          "elapsed_ms": 43400,
+          "pending_pcm_bytes": 232320
+        },
+        {
+          "elapsed_ms": 44407,
+          "pending_pcm_bytes": 41600
+        },
+        {
+          "elapsed_ms": 45408,
+          "pending_pcm_bytes": 73600
+        },
+        {
+          "elapsed_ms": 46435,
+          "pending_pcm_bytes": 105600
+        },
+        {
+          "elapsed_ms": 47448,
+          "pending_pcm_bytes": 138240
+        },
+        {
+          "elapsed_ms": 48450,
+          "pending_pcm_bytes": 170240
+        },
+        {
+          "elapsed_ms": 49468,
+          "pending_pcm_bytes": 189440
+        },
+        {
+          "elapsed_ms": 50473,
+          "pending_pcm_bytes": 221440
+        },
+        {
+          "elapsed_ms": 51496,
+          "pending_pcm_bytes": 253440
+        },
+        {
+          "elapsed_ms": 52523,
+          "pending_pcm_bytes": 88320
+        },
+        {
+          "elapsed_ms": 53535,
+          "pending_pcm_bytes": 32640
+        },
+        {
+          "elapsed_ms": 54542,
+          "pending_pcm_bytes": 64640
+        },
+        {
+          "elapsed_ms": 55551,
+          "pending_pcm_bytes": 97280
+        },
+        {
+          "elapsed_ms": 56552,
+          "pending_pcm_bytes": 128640
+        },
+        {
+          "elapsed_ms": 57556,
+          "pending_pcm_bytes": 161280
+        },
+        {
+          "elapsed_ms": 58572,
+          "pending_pcm_bytes": 192640
+        },
+        {
+          "elapsed_ms": 59606,
+          "pending_pcm_bytes": 225920
+        },
+        {
+          "elapsed_ms": 60640,
+          "pending_pcm_bytes": 259840
+        },
+        {
+          "elapsed_ms": 61670,
+          "pending_pcm_bytes": 259840
+        }
+      ],
+      "backlog_at_enter_pcm_bytes": 259840,
+      "case": "1min",
+      "cer_loose": 0.11371237458193979,
+      "cer_strict": 0.15673981191222572,
+      "elapsed_ms": 62958,
+      "enter_to_asr_done_ms": 1420,
+      "error": null,
+      "first_partial_result_ms": 23108,
+      "max_backlog_pcm_bytes": 513280,
+      "max_feed_lateness_ms": 261,
+      "output_chars": 296,
+      "reference_fingerprint_fnv1a64": "bcf0cdd699269fb2",
+      "sample_rate": 16000,
+      "status": "completed",
+      "supplied_samples": 976960,
+      "wav_fingerprint_fnv1a64": "09a40cdccad12c61",
+      "worker_ready_ms": 15728
+    }
+  ],
+  "model": "Haas-616M-ja-v1.0-Q4_K.gguf",
+  "os": "windows",
+  "pump_wait": "production App::wait_duration limited by the next audio frame",
+  "revision": "29c80b90d47a96dddd4cb061a19cda1b88cb1db2",
+  "schema_version": 1,
+  "scope": "production_recognition_session_realtime_audio",
+  "status": "completed",
+  "version": "0.5.0",
+  "source_sha256": "0DCCCDAEBE84CCBBEBFFAB1605DF2F1DB00879A90A3DA0D82AE1D2697658448B",
+  "inputs": [
+    {
+      "name": "1min.wav",
+      "bytes": 1953964,
+      "sha256": "DFB102FE24F642D9088388A75204DE086BCD15CF1DC3AC767C71124C46F6BDE7"
+    },
+    {
+      "name": "1min.ref.txt",
+      "bytes": 938,
+      "sha256": "D5BB3716CCD5CA5492A372EDB042B27C753311D96981E99EBBBA14466D934AE2"
+    }
+  ],
+  "model_identity": {
+    "file": "Haas-616M-ja-v1.0-Q4_K.gguf",
+    "bytes": 351901216,
+    "sha256": "D24D53F29B75214A933FF482B0DE1217E0A800F4118CCA39AD6CF03609A89D6F"
+  },
+  "live_result_status": "passed",
+  "artifact_note": "Before the ready-receive race and build-input-only follow-up fixes; ready completed successfully in this run."
+}

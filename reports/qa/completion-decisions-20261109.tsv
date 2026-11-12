@@ -1,0 +1,17 @@
+ts	phase	decision	why	evidence	result
+2026-11-09T11:00:00+09:00	frame	現行v0.5.0の完成と軽量化を実装し、公開は行わない	利用者が実装とUX・検証基盤の改善を依頼した	reports/qa/completion-plan-20261109.md	open
+2026-11-09T11:28:26.216Z	correction	先頭frame行の時刻をファイル作成時刻 2026-11-09T11:00:20.300Z に訂正	初期テンプレートの時刻が残ったため	C:/Users/inoue/Project/OpenHinoVoice/reports/qa/completion-decisions-20261109.tsv	corrected
+2026-11-09T11:28:26.216Z	architecture	既存Appと純粋stateを残しhook・保存・STA貼付を分離	入力の待ちを直接除き責務を一か所に保つ	C:/Users/inoue/AppData/Local/Temp/ohv-finish-20261109/architecture-codex.md	selected
+2026-11-09T11:28:26.216Z	execution	外部Grok CLIを中断し非表示実行のnative担当へ引継ぎ	利用者がターミナル表示を止めるよう指定した	C:/Users/inoue/Project/OpenHinoVoice/reports/qa/completion-plan-20261109.md	native writers running
+2026-11-09T11:28:26.216Z	baseline	変更前release exeを保存	同じ成果物で後から比較できるようにする	C:/Users/inoue/AppData/Local/Temp/ohv-finish-20261109/baseline/build.json	build passed
+2026-11-09T11:28:26.216Z	core	設定の原子的保存と音声バッファ再利用・エラー通知APIを追加	破損を防ぎ録音コールバックの割り当てを減らす	C:/Users/inoue/AppData/Local/Temp/ohv-finish-20261109/checks/audio-config/cargo.log	192 passed
+2026-11-09T11:53:45.515Z	review	初回保存と履歴削除の競合・clipboard snapshotのsequence競合を修正。独立レビューで終了要求の破棄とflush迂回を検出し、回帰試験付き修正中。	独立レビューで終了処理の不具合を検出	当時のレビュー詳細の保存先は未記録	終了処理の回帰修正中（当時の記録）
+2026-11-09T11:53:45.515Z	verification	先行all-targetsはUIA TimedOutをprobe例が扱わずcompile失敗。match追加、未使用history APIを削除。最終Fullで再検証する。	probe例のUIA TimedOut未対応	先行all-targetsログの保存先は当時未記録	先行試験は失敗。最終Fullは未実施（当時の記録）
+2026-11-09T13:30:37.382Z	performance	新規workerの起動条件を本番認識時間と分けて測る	ready 15–31秒だが直接診断2.141秒で固定遅延ではない	reports/perf/20261109-finish/realtime-1min.json	no-warmupは未採用
+2026-11-09T13:30:37.382Z	build	build.rs監視入力をbuild.rsとCargo.tomlへ限定	レポート更新で本体再リンクが発生	Cargo fingerprint Precalculated reports/qa/completion-implementation-20261109.md	最終Fullで検証
+2026-11-09T13:30:37.382Z	runtime	ready前のterminal受信を止め、準備中の録音継続を案内	準備完了通知の取りこぼしを防ぎ、待ちの意味を利用者へ示す	src/app.rs・src/overlay.rs	回帰試験追加、最終Full待ち
+2026-11-09T13:50:11.828Z	verification	最終Fullで仮認識writer確認1件が失敗	固定100ms後の読出しでは非同期write完了を保証しない	target/qa/finish-complete-20261109/tests.log	送信観測を待つ回帰テストへ修正中
+2026-11-09T14:12:44.048Z	verification	最終Full合格、236成功、11通常対象外	非同期writer待機修正を含む同じソースで統合検証	reports/qa/validation-20261109/full/result.json	passed
+2026-11-09T14:12:44.048Z	cache	レポート更新後のFastとreleaseで再コンパイルなし	build.rsの不要な入力監視を除いた効果を確認	reports/qa/validation-20261109/cache-check.json	Fast 15.884秒、release再利用4.866秒
+2026-11-09T14:12:44.048Z	measurement	最終exeの待機本体Private最大1.99MiB	speechと設定画面を除く60秒測定、速度改善率とは扱わない	reports/perf/20261109-finish/idle.json	専用プロセス終了済み
+2026-11-09T14:12:44.048Z	limitations	性能目標・実機ゲートは未達または未確認として残す	5minでEnter後26.108秒、GUIは利用者の作業を妨げない指定により操作しない	reports/qa/completion-implementation-20261109.md	完成版公開の判定はしない

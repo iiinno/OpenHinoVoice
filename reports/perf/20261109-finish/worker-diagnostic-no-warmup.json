@@ -1,0 +1,252 @@
+{
+  "schemaVersion": 1,
+  "scope": "direct_owned_worker_startup",
+  "warmupDisabled": true,
+  "modelFile": "Haas-616M-ja-v1.0-Q4_K.gguf",
+  "status": "completed",
+  "samples": [
+    {
+      "elapsedMs": 703,
+      "cpuSeconds": 0.015625,
+      "privateBytes": 1171456,
+      "workingSetBytes": 2711552
+    },
+    {
+      "elapsedMs": 1781,
+      "cpuSeconds": 0.1875,
+      "privateBytes": 2809856,
+      "workingSetBytes": 9641984
+    },
+    {
+      "elapsedMs": 3031,
+      "cpuSeconds": 0.34375,
+      "privateBytes": 7495680,
+      "workingSetBytes": 20025344
+    },
+    {
+      "elapsedMs": 4094,
+      "cpuSeconds": 0.375,
+      "privateBytes": 8732672,
+      "workingSetBytes": 25001984
+    },
+    {
+      "elapsedMs": 5406,
+      "cpuSeconds": 0.4375,
+      "privateBytes": 17944576,
+      "workingSetBytes": 37531648
+    },
+    {
+      "elapsedMs": 6609,
+      "cpuSeconds": 0.484375,
+      "privateBytes": 23449600,
+      "workingSetBytes": 43642880
+    },
+    {
+      "elapsedMs": 7625,
+      "cpuSeconds": 0.59375,
+      "privateBytes": 383451136,
+      "workingSetBytes": 141430784
+    },
+    {
+      "elapsedMs": 8641,
+      "cpuSeconds": 0.59375,
+      "privateBytes": 385568768,
+      "workingSetBytes": 407650304
+    },
+    {
+      "elapsedMs": 9797,
+      "cpuSeconds": 0.609375,
+      "privateBytes": 385806336,
+      "workingSetBytes": 407867392
+    },
+    {
+      "elapsedMs": 10844,
+      "cpuSeconds": 0.640625,
+      "privateBytes": 390406144,
+      "workingSetBytes": 412459008
+    },
+    {
+      "elapsedMs": 11875,
+      "cpuSeconds": 0.640625,
+      "privateBytes": 390406144,
+      "workingSetBytes": 412459008
+    },
+    {
+      "elapsedMs": 12875,
+      "cpuSeconds": 0.65625,
+      "privateBytes": 390406144,
+      "workingSetBytes": 412459008
+    },
+    {
+      "elapsedMs": 14422,
+      "cpuSeconds": 0.671875,
+      "privateBytes": 390406144,
+      "workingSetBytes": 412459008
+    },
+    {
+      "elapsedMs": 15531,
+      "cpuSeconds": 0.671875,
+      "privateBytes": 390406144,
+      "workingSetBytes": 412459008
+    },
+    {
+      "elapsedMs": 16594,
+      "cpuSeconds": 0.671875,
+      "privateBytes": 390406144,
+      "workingSetBytes": 412459008
+    },
+    {
+      "elapsedMs": 17641,
+      "cpuSeconds": 0.734375,
+      "privateBytes": 390406144,
+      "workingSetBytes": 412459008
+    },
+    {
+      "elapsedMs": 18672,
+      "cpuSeconds": 0.765625,
+      "privateBytes": 390406144,
+      "workingSetBytes": 412459008
+    },
+    {
+      "elapsedMs": 19781,
+      "cpuSeconds": 0.796875,
+      "privateBytes": 390406144,
+      "workingSetBytes": 412459008
+    },
+    {
+      "elapsedMs": 20859,
+      "cpuSeconds": 0.828125,
+      "privateBytes": 390406144,
+      "workingSetBytes": 412459008
+    },
+    {
+      "elapsedMs": 21859,
+      "cpuSeconds": 0.90625,
+      "privateBytes": 390406144,
+      "workingSetBytes": 412459008
+    },
+    {
+      "elapsedMs": 22922,
+      "cpuSeconds": 1.078125,
+      "privateBytes": 390406144,
+      "workingSetBytes": 412459008
+    },
+    {
+      "elapsedMs": 23938,
+      "cpuSeconds": 1.203125,
+      "privateBytes": 391880704,
+      "workingSetBytes": 413618176
+    },
+    {
+      "elapsedMs": 25031,
+      "cpuSeconds": 1.5,
+      "privateBytes": 503062528,
+      "workingSetBytes": 511012864
+    },
+    {
+      "elapsedMs": 26141,
+      "cpuSeconds": 1.640625,
+      "privateBytes": 495013888,
+      "workingSetBytes": 510578688
+    },
+    {
+      "elapsedMs": 27172,
+      "cpuSeconds": 3.9375,
+      "privateBytes": 496304128,
+      "workingSetBytes": 516116480
+    }
+  ],
+  "processId": 14904,
+  "readyMs": 23797,
+  "readyEvent": {
+    "type": "ready",
+    "protocol": 4,
+    "version": "0.10.1",
+    "defaults": {},
+    "model": {
+      "name": "Haas-ja-v1.0",
+      "organization": "third-intelligence",
+      "basename": "Haas",
+      "size_label": "616M",
+      "finetune": "ja",
+      "version": "v1.0",
+      "license": "Apache-2.0",
+      "source": {
+        "repository": "https://huggingface.co/third-intelligence/Haas-ja-v1.0",
+        "revision": "660728d39019e5e065046154beca44ac9a66a540"
+      },
+      "weight_type": "Q4_K",
+      "architecture": "fastconformer",
+      "layout": 4,
+      "task": "recognition",
+      "sample_rate": 16000,
+      "languages": [
+        "ja"
+      ],
+      "voice_files": false,
+      "voice_recordings": false,
+      "options": [
+        {
+          "name": "language",
+          "type": "string",
+          "required": false,
+          "steers": false,
+          "default": "auto",
+          "choices": [
+            "ja"
+          ]
+        },
+        {
+          "name": "timestamps",
+          "type": "bool",
+          "required": false,
+          "steers": true,
+          "default": false
+        },
+        {
+          "name": "decode_on_cpu",
+          "type": "bool",
+          "required": false,
+          "steers": true,
+          "default": true
+        },
+        {
+          "name": "keywords",
+          "type": "string",
+          "required": false,
+          "steers": true,
+          "default": ""
+        },
+        {
+          "name": "keywords_alpha",
+          "type": "float",
+          "required": false,
+          "steers": true,
+          "default": 2,
+          "exclusive_minimum": 0
+        },
+        {
+          "name": "keywords_guard",
+          "type": "bool",
+          "required": false,
+          "steers": true,
+          "default": true
+        }
+      ],
+      "file_bytes": 351901216,
+      "weight_bytes": 351568808,
+      "device": "Vulkan0",
+      "threads": 8
+    }
+  },
+  "cpuSecondsToReady": 1.140625,
+  "inputSha256": "5990A896E3A60057346904009F5193A706880B25713128B7F9EFD79CED2B93FD",
+  "inputAudioSeconds": 18.98,
+  "requestScope": "one_whole_wav_request_without_app_segmentation",
+  "stop": "complete",
+  "startupToFirstEndMs": 28203,
+  "firstRequestMs": 4390,
+  "outputChars": 98,
+  "transcribeToEndMs": 4265,
+  "elapsedMs": 30344
+}

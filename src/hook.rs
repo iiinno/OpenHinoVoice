@@ -1,15 +1,16 @@
 use crate::config::{Hotkey, MOD_ALT, MOD_CTRL, MOD_SHIFT, MOD_WIN};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
-use std::sync::mpsc::Sender;
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, AtomicU8, Ordering};
+use std::sync::mpsc::{channel, Sender};
+use std::sync::{Mutex, OnceLock};
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
     VIRTUAL_KEY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, SetWindowsHookExW, UnhookWindowsHookEx, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT,
-    WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    CallNextHookEx, DispatchMessageW, GetMessageW, PeekMessageW, PostThreadMessageW,
+    SetWindowsHookExW, UnhookWindowsHookEx, HC_ACTION, KBDLLHOOKSTRUCT, MSG, PM_NOREMOVE,
+    WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,16 +26,34 @@ pub const MIRROR_RECOGNIZING: u8 = 2;
 pub const MIRROR_FORMATTING: u8 = 3;
 
 static SENDER: OnceLock<Sender<KeyEvent>> = OnceLock::new();
+static RESIDENT_WINDOW: AtomicIsize = AtomicIsize::new(0);
 static MIRROR: AtomicU8 = AtomicU8::new(MIRROR_IDLE);
-static HOTKEY_VK: AtomicU32 = AtomicU32::new(0x77);
-static HOTKEY_MODS: AtomicU8 = AtomicU8::new(0);
+static PENDING_KEYS: AtomicU32 = AtomicU32::new(0);
+// 主キーと修飾キーは一つの値にして、設定更新の途中の組合せを読まない。
+static HOTKEY: AtomicU32 = AtomicU32::new(0x77);
 // 押下を横取りした主キーは、離したときも横取りしてアプリに片側だけ届かないようにする
-static HOTKEY_HELD: AtomicBool = AtomicBool::new(false);
+static CAPTURED_HOTKEYS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 // A held Enter produces repeated WM_KEYDOWN messages. Only its first physical
 // press may advance Recording -> Recognizing or request raw text.
 static ENTER_HELD: AtomicBool = AtomicBool::new(false);
 static ENTER_CAPTURED: AtomicBool = AtomicBool::new(false);
-static HOOK_HANDLE: OnceLock<isize> = OnceLock::new();
+static ESC_HELD: AtomicBool = AtomicBool::new(false);
+static ESC_CAPTURED: AtomicBool = AtomicBool::new(false);
+static PUMP: Mutex<Option<(u32, std::thread::JoinHandle<()>)>> = Mutex::new(None);
+
+/// キーの通知を待ちループに知らせる。待機中はスリープでなくメッセージ待ちで
+/// 起きるため、通知にはウィンドウメッセージを使う
+pub fn wake_resident() {
+    use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
+    let hwnd = windows::Win32::Foundation::HWND(
+        RESIDENT_WINDOW.load(Ordering::Acquire) as *mut std::ffi::c_void
+    );
+    if !hwnd.0.is_null() {
+        unsafe {
+            let _ = PostMessageW(hwnd, crate::overlay::WM_WAKE, WPARAM(0), LPARAM(0));
+        }
+    }
+}
 
 /// Returns (swallow, send_event). Also captures the matching key-up even if
 /// the app state changes while the key is held.
@@ -60,30 +79,65 @@ pub fn set_mirror(state: u8) {
     MIRROR.store(state, Ordering::SeqCst);
 }
 
+pub fn acknowledge_hotkey() {
+    let _ = PENDING_KEYS.try_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+        Some(n.saturating_sub(1))
+    });
+}
+
+pub(crate) fn preview_blocked() -> bool {
+    mirror() != MIRROR_IDLE || PENDING_KEYS.load(Ordering::SeqCst) > 0
+}
+
 pub fn mirror() -> u8 {
     MIRROR.load(Ordering::SeqCst)
 }
 
 pub fn set_hotkey(hotkey: Hotkey) {
-    HOTKEY_VK.store(hotkey.vk, Ordering::SeqCst);
-    HOTKEY_MODS.store(hotkey.mods, Ordering::SeqCst);
+    HOTKEY.store(hotkey.vk | (u32::from(hotkey.mods) << 16), Ordering::SeqCst);
 }
 
 pub fn install(sender: Sender<KeyEvent>, hotkey: Hotkey) -> Result<(), String> {
-    let _ = SENDER.set(sender);
+    SENDER
+        .set(sender)
+        .map_err(|_| "キーフックは既に初期化されています".to_string())?;
     set_hotkey(hotkey);
-    unsafe {
-        let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), None, 0)
-            .map_err(|e| format!("キーフックを設置できません: {e}"))?;
-        let _ = HOOK_HANDLE.set(hook.0 as isize);
-    }
+    RESIDENT_WINDOW.store(crate::overlay::hwnd().0 as isize, Ordering::Release);
+    let (ready, result) = channel();
+    let thread = std::thread::Builder::new()
+        .name("keyboard-hook".into())
+        .spawn(move || unsafe {
+            // 最初にメッセージキューを作り、終了通知を受け取れる状態で知らせる。
+            let mut message = MSG::default();
+            let _ = PeekMessageW(&mut message, None, 0, 0, PM_NOREMOVE);
+            let id = windows::Win32::System::Threading::GetCurrentThreadId();
+            match SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), None, 0) {
+                Ok(hook) => {
+                    if ready.send(Ok(id)).is_ok() {
+                        while GetMessageW(&mut message, None, 0, 0).0 > 0 {
+                            DispatchMessageW(&message);
+                        }
+                    }
+                    let _ = UnhookWindowsHookEx(hook);
+                }
+                Err(error) => {
+                    let _ = ready.send(Err(format!("キーフックを設置できません: {error}")));
+                }
+            }
+        })
+        .map_err(|e| format!("キー入力の担当を起動できません: {e}"))?;
+    let id = result
+        .recv()
+        .map_err(|_| "キー入力の担当が起動中に終了しました".to_string())??;
+    *PUMP.lock().unwrap_or_else(|p| p.into_inner()) = Some((id, thread));
     Ok(())
 }
 
 pub fn uninstall() {
-    if let Some(raw) = HOOK_HANDLE.get() {
-        unsafe {
-            let _ = UnhookWindowsHookEx(HHOOK(*raw as *mut std::ffi::c_void));
+    if let Some((id, thread)) = PUMP.lock().unwrap_or_else(|p| p.into_inner()).take() {
+        let sent = unsafe { PostThreadMessageW(id, WM_QUIT, WPARAM(0), LPARAM(0)) };
+        if sent.is_ok() {
+            let _ = thread.join();
         }
     }
 }
@@ -133,59 +187,61 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         let is_down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
         let is_up = msg == WM_KEYUP || msg == WM_SYSKEYUP;
         if is_down || is_up {
-            let hotkey = HOTKEY_VK.load(Ordering::SeqCst);
-            let state = mirror();
-            if vk == hotkey {
-                let swallow = if is_down {
-                    let mods = HOTKEY_MODS.load(Ordering::SeqCst);
-                    let hit = current_mods() == mods;
-                    if hit {
-                        HOTKEY_HELD.store(true, Ordering::SeqCst);
+            let captured = &CAPTURED_HOTKEYS[(vk / 64).min(3) as usize];
+            let bit = 1_u64 << (vk % 64);
+            if captured.load(Ordering::SeqCst) & bit != 0 {
+                if is_up {
+                    captured.fetch_and(!bit, Ordering::SeqCst);
+                }
+                return LRESULT(1);
+            }
+            let packed = HOTKEY.load(Ordering::SeqCst);
+            let hotkey = packed & 0xffff;
+            if vk == hotkey && is_down {
+                let mods = (packed >> 16) as u8;
+                if current_mods() == mods {
+                    // 本体が開始を処理する前の Enter/Esc も同じ録音の操作として捕捉する。
+                    PENDING_KEYS.fetch_add(1, Ordering::SeqCst);
+                    if SENDER
+                        .get()
+                        .is_some_and(|sender| sender.send(KeyEvent::Hotkey).is_ok())
+                    {
+                        captured.fetch_or(bit, Ordering::SeqCst);
                         if mods & (MOD_ALT | MOD_WIN) != 0 {
                             send_mask_key();
                         }
-                        if let Some(sender) = SENDER.get() {
-                            let _ = sender.send(KeyEvent::Hotkey);
-                        }
+                        wake_resident();
+                        return LRESULT(1);
                     }
-                    hit
-                } else {
-                    HOTKEY_HELD.swap(false, Ordering::SeqCst)
-                };
-                if swallow {
-                    return LRESULT(1);
+                    acknowledge_hotkey();
                 }
                 return CallNextHookEx(None, code, wparam, lparam);
             }
+            let active = mirror() != MIRROR_IDLE || PENDING_KEYS.load(Ordering::SeqCst) > 0;
             if vk == VIRTUAL_KEY(0x0D).0 as u32 {
-                let (swallow, send) =
-                    capture_press(&ENTER_HELD, &ENTER_CAPTURED, is_down, state != MIRROR_IDLE);
+                let (swallow, send) = capture_press(&ENTER_HELD, &ENTER_CAPTURED, is_down, active);
                 if send {
                     if let Some(sender) = SENDER.get() {
                         let _ = sender.send(KeyEvent::Enter);
                     }
+                    wake_resident();
                 }
                 if swallow {
                     return LRESULT(1);
                 }
                 return CallNextHookEx(None, code, wparam, lparam);
             }
-            let event: Option<KeyEvent> = if vk == VIRTUAL_KEY(0x1B).0 as u32 {
-                if state != MIRROR_IDLE {
-                    Some(KeyEvent::Esc)
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-            if let Some(ev) = event {
-                if is_down {
+            if vk == VIRTUAL_KEY(0x1B).0 as u32 {
+                let (swallow, send) = capture_press(&ESC_HELD, &ESC_CAPTURED, is_down, active);
+                if send {
                     if let Some(sender) = SENDER.get() {
-                        let _ = sender.send(ev);
+                        let _ = sender.send(KeyEvent::Esc);
                     }
+                    wake_resident();
                 }
-                return LRESULT(1);
+                if swallow {
+                    return LRESULT(1);
+                }
             }
         }
     }

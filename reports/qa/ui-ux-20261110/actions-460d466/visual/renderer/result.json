@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "mode": "AnimatedOffscreenRenderer",
+  "status": "passed",
+  "startedAt": "2026-11-09T17:38:13.0878169Z",
+  "finishedAt": "2026-11-09T17:38:20.7522029Z",
+  "sourceRevision": "460d4667f4101966cd1161d2d872354d45fb8131",
+  "executable": "D:\\a\\OpenHinoVoice\\OpenHinoVoice\\target\\release\\examples\\overlay_preview.exe",
+  "executableSha256": "2fbde715fb267410bb945166b41349315d3f8f371314bd3dada3e1833aabbaea",
+  "scope": "shared preview_frame rasterization and RGBA conversion with system motion enabled",
+  "fixtures": "passed",
+  "rendererBenchmark": "passed",
+  "frameCount": 720,
+  "measurementCount": 24,
+  "motion": {
+    "before": false,
+    "afterEnable": true,
+    "afterRestore": false,
+    "restore": "passed",
+    "profileUpdated": false
+  },
+  "wholeApplicationPerformanceBenchmark": "not_run",
+  "audioRequested": false,
+  "microphoneRequested": false,
+  "limitations": [
+    "Excludes settings texture upload, native window compositing, scheduling, input latency, and ASR.",
+    "Hosted runner timings are not end-user machine performance."
+  ]
+}

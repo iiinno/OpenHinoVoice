@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "mode": "HiddenDesktopUI",
+  "runId": "ui-20261109T173415-f277c402",
+  "status": "compiled_only",
+  "startedAt": "2026-11-09T17:34:15.1968172Z",
+  "finishedAt": "2026-11-09T17:34:17.2560953Z",
+  "scope": "settings UIA + client capture at 600x420 and 720x520 logical pixels",
+  "executable": "",
+  "executableSha256": null,
+  "harnessSha256": "17BC31AFFCD05C63821E79882B79C21484FCF6F2895A4CDD3891CD4601CCA142",
+  "compile": "passed",
+  "ui": "not_run",
+  "sourceRevision": "460d4667f4101966cd1161d2d872354d45fb8131",
+  "inputDesktopSwitched": false,
+  "audioRequested": false,
+  "microphoneRequested": false,
+  "limitations": [
+    "画像の見た目は別途確認が必要",
+    "WindowsのDPIと高コントラスト設定は変更しない",
+    "キーボード操作・音・ASR・貼付・外部APIは未実施"
+  ]
+}

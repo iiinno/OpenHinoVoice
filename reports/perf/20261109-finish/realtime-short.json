@@ -1,0 +1,220 @@
+{
+  "arch": "x86_64",
+  "build_profile": "release",
+  "cache_flushed": false,
+  "cpu": null,
+  "excludes": [
+    "microphone capture",
+    "Windows event loop",
+    "painted subtitle",
+    "AI formatting",
+    "history",
+    "clipboard and paste"
+  ],
+  "frame_ms": 25,
+  "includes": [
+    "production segmentation",
+    "partial recognition",
+    "confirmed priority",
+    "Enter drain",
+    "AsrDone transition"
+  ],
+  "logical_cpus": 16,
+  "measurements": [
+    {
+      "audio_seconds": 18.98,
+      "audio_start_to_asr_done_ms": 36125,
+      "backlog": [
+        {
+          "elapsed_ms": 0,
+          "pending_pcm_bytes": 0
+        },
+        {
+          "elapsed_ms": 1000,
+          "pending_pcm_bytes": 32000
+        },
+        {
+          "elapsed_ms": 2000,
+          "pending_pcm_bytes": 64000
+        },
+        {
+          "elapsed_ms": 3000,
+          "pending_pcm_bytes": 96000
+        },
+        {
+          "elapsed_ms": 4002,
+          "pending_pcm_bytes": 128000
+        },
+        {
+          "elapsed_ms": 5011,
+          "pending_pcm_bytes": 160000
+        },
+        {
+          "elapsed_ms": 6025,
+          "pending_pcm_bytes": 192000
+        },
+        {
+          "elapsed_ms": 7026,
+          "pending_pcm_bytes": 211200
+        },
+        {
+          "elapsed_ms": 8027,
+          "pending_pcm_bytes": 243200
+        },
+        {
+          "elapsed_ms": 9033,
+          "pending_pcm_bytes": 259840
+        },
+        {
+          "elapsed_ms": 10043,
+          "pending_pcm_bytes": 291840
+        },
+        {
+          "elapsed_ms": 11043,
+          "pending_pcm_bytes": 323840
+        },
+        {
+          "elapsed_ms": 12058,
+          "pending_pcm_bytes": 356480
+        },
+        {
+          "elapsed_ms": 13070,
+          "pending_pcm_bytes": 388480
+        },
+        {
+          "elapsed_ms": 14075,
+          "pending_pcm_bytes": 421120
+        },
+        {
+          "elapsed_ms": 15075,
+          "pending_pcm_bytes": 453120
+        },
+        {
+          "elapsed_ms": 16075,
+          "pending_pcm_bytes": 485120
+        },
+        {
+          "elapsed_ms": 17076,
+          "pending_pcm_bytes": 517120
+        },
+        {
+          "elapsed_ms": 18078,
+          "pending_pcm_bytes": 549120
+        },
+        {
+          "elapsed_ms": 19087,
+          "pending_pcm_bytes": 564480
+        },
+        {
+          "elapsed_ms": 20093,
+          "pending_pcm_bytes": 564480
+        },
+        {
+          "elapsed_ms": 21096,
+          "pending_pcm_bytes": 564480
+        },
+        {
+          "elapsed_ms": 22099,
+          "pending_pcm_bytes": 564480
+        },
+        {
+          "elapsed_ms": 23101,
+          "pending_pcm_bytes": 564480
+        },
+        {
+          "elapsed_ms": 24101,
+          "pending_pcm_bytes": 564480
+        },
+        {
+          "elapsed_ms": 25101,
+          "pending_pcm_bytes": 564480
+        },
+        {
+          "elapsed_ms": 26103,
+          "pending_pcm_bytes": 564480
+        },
+        {
+          "elapsed_ms": 27106,
+          "pending_pcm_bytes": 564480
+        },
+        {
+          "elapsed_ms": 28114,
+          "pending_pcm_bytes": 564480
+        },
+        {
+          "elapsed_ms": 29119,
+          "pending_pcm_bytes": 564480
+        },
+        {
+          "elapsed_ms": 30120,
+          "pending_pcm_bytes": 564480
+        },
+        {
+          "elapsed_ms": 31124,
+          "pending_pcm_bytes": 564480
+        },
+        {
+          "elapsed_ms": 32124,
+          "pending_pcm_bytes": 564480
+        },
+        {
+          "elapsed_ms": 33135,
+          "pending_pcm_bytes": 370560
+        },
+        {
+          "elapsed_ms": 34137,
+          "pending_pcm_bytes": 320000
+        },
+        {
+          "elapsed_ms": 35155,
+          "pending_pcm_bytes": 320000
+        }
+      ],
+      "backlog_at_enter_pcm_bytes": 564480,
+      "case": "short",
+      "cer_loose": 0.08695652173913043,
+      "cer_strict": 0.1111111111111111,
+      "elapsed_ms": 36713,
+      "enter_to_asr_done_ms": 17136,
+      "error": null,
+      "first_partial_result_ms": null,
+      "max_backlog_pcm_bytes": 576640,
+      "max_feed_lateness_ms": 133,
+      "output_chars": 96,
+      "reference_fingerprint_fnv1a64": "bbf0483325968e6f",
+      "sample_rate": 16000,
+      "status": "completed",
+      "supplied_samples": 303680,
+      "wav_fingerprint_fnv1a64": "731acda99b222d79",
+      "worker_ready_ms": 31262
+    }
+  ],
+  "model": "Haas-616M-ja-v1.0-Q4_K.gguf",
+  "os": "windows",
+  "pump_wait": "production App::wait_duration limited by the next audio frame",
+  "revision": "29c80b90d47a96dddd4cb061a19cda1b88cb1db2",
+  "schema_version": 1,
+  "scope": "production_recognition_session_realtime_audio",
+  "status": "completed",
+  "version": "0.5.0",
+  "source_sha256": "0DCCCDAEBE84CCBBEBFFAB1605DF2F1DB00879A90A3DA0D82AE1D2697658448B",
+  "inputs": [
+    {
+      "name": "short.wav",
+      "bytes": 607404,
+      "sha256": "5990A896E3A60057346904009F5193A706880B25713128B7F9EFD79CED2B93FD"
+    },
+    {
+      "name": "short.ref.txt",
+      "bytes": 296,
+      "sha256": "A866048D315E3068DD44B3B2A767DC2759C7F1440333189391D1CACAAEC26778"
+    }
+  ],
+  "model_identity": {
+    "file": "Haas-616M-ja-v1.0-Q4_K.gguf",
+    "bytes": 351901216,
+    "sha256": "D24D53F29B75214A933FF482B0DE1217E0A800F4118CCA39AD6CF03609A89D6F"
+  },
+  "live_result_status": "passed",
+  "artifact_note": "Before the ready-receive race and build-input-only follow-up fixes; ready completed successfully in this run."
+}

@@ -1,0 +1,18 @@
+{
+  "version": "0.5.0",
+  "sourceSha256": "9B387345580EB290B134763636CC0A4A38EEDD44EB1F937E522EBA3DE159430E",
+  "bytes": 7781376,
+  "sha256": "c255a7870696c7d5964a89c16ab0a2b7f30311f24c6f42d2394183a49be27194",
+  "builtAt": "2026-11-09T14:07:10.8862499Z",
+  "toolchain": [
+    "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "cargo 1.99.1 (5f94df478 2026-08-27)"
+  ],
+  "baseline": {
+    "sha": "29c80b90d47a96dddd4cb061a19cda1b88cb1db2",
+    "builtAt": "2026-11-09T11:15:05.266Z",
+    "bytes": 7645696,
+    "sha256": "aa6e74cd4cc79d3cfcd72c5a39a463602434447f30e1fcf4dc583fd04dbe1f4a",
+    "command": "cargo build --release --locked"
+  }
+}

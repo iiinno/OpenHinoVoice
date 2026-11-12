@@ -1,0 +1,293 @@
+{
+  "schemaVersion": 1,
+  "createdAt": "2026-11-09T13:39:38.365Z",
+  "sourceSha256": "0DCCCDAEBE84CCBBEBFFAB1605DF2F1DB00879A90A3DA0D82AE1D2697658448B",
+  "sourceContext": "Measurements precede final build-input, ready-event race, and engine-readiness UX fixes. They do not certify the current source tree.",
+  "frozenBinary": {
+    "sha256": "CFB47A56E8BD131A6FFF364CF1A58C0E86ECC1C862EA437724958F5E257FE74A",
+    "usedFor": [
+      "5min"
+    ],
+    "originalArtifact": {
+      "base": "target/qa/realtime",
+      "path": "frozen-source-0DCCCDAE/realtime_live.exe"
+    },
+    "included": false,
+    "artifactNote": "凍結テストexeはこの証拠セットに同梱しない。元の保存先とSHA-256のみを記録する。"
+  },
+  "profile": "release",
+  "runsPerCase": 1,
+  "comparativeBaseline": false,
+  "systemLoadControlled": false,
+  "workerReuse": false,
+  "productionRecognitionIncludes": [
+    "production segmentation",
+    "partial recognition",
+    "confirmed priority",
+    "Enter drain",
+    "AsrDone transition"
+  ],
+  "excludes": [
+    "microphone capture",
+    "Windows event loop",
+    "painted subtitle",
+    "AI formatting",
+    "history",
+    "clipboard and paste"
+  ],
+  "realtime": [
+    {
+      "file": "realtime-short.json",
+      "audio_seconds": 18.98,
+      "audio_start_to_asr_done_ms": 36125,
+      "backlog_at_enter_pcm_bytes": 564480,
+      "case": "short",
+      "cer_loose": 0.08695652173913043,
+      "cer_strict": 0.1111111111111111,
+      "elapsed_ms": 36713,
+      "enter_to_asr_done_ms": 17136,
+      "error": null,
+      "first_partial_result_ms": null,
+      "max_backlog_pcm_bytes": 576640,
+      "max_feed_lateness_ms": 133,
+      "output_chars": 96,
+      "reference_fingerprint_fnv1a64": "bbf0483325968e6f",
+      "sample_rate": 16000,
+      "status": "completed",
+      "supplied_samples": 303680,
+      "wav_fingerprint_fnv1a64": "731acda99b222d79",
+      "worker_ready_ms": 31262,
+      "backlogSamples": 36,
+      "recordingMinuteWindows": [
+        {
+          "minute": 1,
+          "samples": 19,
+          "meanPcmBytes": 272236,
+          "maxPcmBytes": 549120,
+          "lastPcmBytes": 549120
+        }
+      ],
+      "originalArtifact": {
+        "base": "target/qa/realtime",
+        "file": "release-short-1794228348561/perf/realtime-1794229133843-35948.json"
+      }
+    },
+    {
+      "file": "realtime-1min.json",
+      "audio_seconds": 61.06,
+      "audio_start_to_asr_done_ms": 62491,
+      "backlog_at_enter_pcm_bytes": 259840,
+      "case": "1min",
+      "cer_loose": 0.11371237458193979,
+      "cer_strict": 0.15673981191222572,
+      "elapsed_ms": 62958,
+      "enter_to_asr_done_ms": 1420,
+      "error": null,
+      "first_partial_result_ms": 23108,
+      "max_backlog_pcm_bytes": 513280,
+      "max_feed_lateness_ms": 261,
+      "output_chars": 296,
+      "reference_fingerprint_fnv1a64": "bcf0cdd699269fb2",
+      "sample_rate": 16000,
+      "status": "completed",
+      "supplied_samples": 976960,
+      "wav_fingerprint_fnv1a64": "09a40cdccad12c61",
+      "worker_ready_ms": 15728,
+      "backlogSamples": 62,
+      "recordingMinuteWindows": [
+        {
+          "minute": 1,
+          "samples": 60,
+          "meanPcmBytes": 173291,
+          "maxPcmBytes": 507520,
+          "lastPcmBytes": 225920
+        },
+        {
+          "minute": 2,
+          "samples": 1,
+          "meanPcmBytes": 259840,
+          "maxPcmBytes": 259840,
+          "lastPcmBytes": 259840
+        }
+      ],
+      "originalArtifact": {
+        "base": "target/qa/realtime",
+        "file": "release-1min-1794229357519/perf/realtime-1794230186816-36344.json"
+      }
+    },
+    {
+      "file": "realtime-5min.json",
+      "audio_seconds": 303.12,
+      "audio_start_to_asr_done_ms": 329230,
+      "backlog_at_enter_pcm_bytes": 997120,
+      "case": "5min",
+      "cer_loose": 0.03793103448275862,
+      "cer_strict": 0.07046764894298527,
+      "elapsed_ms": 329887,
+      "enter_to_asr_done_ms": 26108,
+      "error": null,
+      "first_partial_result_ms": 86262,
+      "max_backlog_pcm_bytes": 1342720,
+      "max_feed_lateness_ms": 406,
+      "output_chars": 1495,
+      "reference_fingerprint_fnv1a64": "3f3db0fe6aed66ae",
+      "sample_rate": 16000,
+      "status": "completed",
+      "supplied_samples": 4849920,
+      "wav_fingerprint_fnv1a64": "f64f02385493b5fc",
+      "worker_ready_ms": 42646,
+      "backlogSamples": 325,
+      "recordingMinuteWindows": [
+        {
+          "minute": 1,
+          "samples": 60,
+          "meanPcmBytes": 739979,
+          "maxPcmBytes": 1333120,
+          "lastPcmBytes": 912640
+        },
+        {
+          "minute": 2,
+          "samples": 59,
+          "meanPcmBytes": 274799,
+          "maxPcmBytes": 707200,
+          "lastPcmBytes": 284160
+        },
+        {
+          "minute": 3,
+          "samples": 59,
+          "meanPcmBytes": 214910,
+          "maxPcmBytes": 419200,
+          "lastPcmBytes": 256640
+        },
+        {
+          "minute": 4,
+          "samples": 60,
+          "meanPcmBytes": 237728,
+          "maxPcmBytes": 519040,
+          "lastPcmBytes": 62080
+        },
+        {
+          "minute": 5,
+          "samples": 59,
+          "meanPcmBytes": 376179,
+          "maxPcmBytes": 901760,
+          "lastPcmBytes": 901760
+        },
+        {
+          "minute": 6,
+          "samples": 3,
+          "meanPcmBytes": 968107,
+          "maxPcmBytes": 1002240,
+          "lastPcmBytes": 1002240
+        }
+      ],
+      "originalArtifact": {
+        "base": "target/qa/realtime",
+        "file": "frozen-5min-1794231005492/perf/realtime-1794231350789-43328.json"
+      }
+    }
+  ],
+  "directDiagnostics": [
+    {
+      "status": "completed",
+      "warmupDisabled": false,
+      "readyMs": 2141,
+      "cpuSecondsToReady": 1.296875,
+      "startupToFirstEndMs": 4828,
+      "firstRequestMs": 2671,
+      "transcribeToEndMs": 2593,
+      "device": "Vulkan0",
+      "threads": 8,
+      "inputAudioSeconds": 18.98,
+      "inputSha256": "5990A896E3A60057346904009F5193A706880B25713128B7F9EFD79CED2B93FD",
+      "scope": "one_whole_wav_request_without_app_segmentation",
+      "firstObservedChildSampleMs": 94,
+      "originalArtifact": {
+        "base": "target/qa/realtime",
+        "directory": "direct-default-1794230431348"
+      },
+      "file": "worker-diagnostic-default.json"
+    },
+    {
+      "status": "completed",
+      "warmupDisabled": true,
+      "readyMs": 23797,
+      "cpuSecondsToReady": 1.140625,
+      "startupToFirstEndMs": 28203,
+      "firstRequestMs": 4390,
+      "transcribeToEndMs": 4265,
+      "device": "Vulkan0",
+      "threads": 8,
+      "inputAudioSeconds": 18.98,
+      "inputSha256": "5990A896E3A60057346904009F5193A706880B25713128B7F9EFD79CED2B93FD",
+      "scope": "one_whole_wav_request_without_app_segmentation",
+      "firstObservedChildSampleMs": 703,
+      "originalArtifact": {
+        "base": "target/qa/realtime",
+        "directory": "direct-no-warmup-1794230666365"
+      },
+      "file": "worker-diagnostic-no-warmup.json"
+    }
+  ],
+  "directInterpretation": [
+    "The no-warmup trial did not improve readiness or startup-to-first-result. This is not a causal comparison because each mode ran once and system load was not controlled.",
+    "The no-warmup child was first sampled at 703 ms; readiness was 23797 ms with 1.140625 CPU seconds. From 10844 to 22922 ms memory was nearly stable and CPU rose only from 0.640625 to 1.078125 seconds. The waiting subsystem was not measured.",
+    "No per-stage model load, GPU initialization, kernel warmup, or Popen timings were emitted; stderr contained only the ready announcement.",
+    "The direct request sends one whole WAV, unlike the production segmented replay. It is a startup diagnostic, not an equivalent E2E benchmark."
+  ],
+  "memory": {
+    "file": "speech-1min-memory.json",
+    "scope": "owned_live_descendant_speech_observed_samples",
+    "sampleCount": 52,
+    "intervalSeconds": 1,
+    "includesApp": false,
+    "startupPeakGuaranteed": false,
+    "maxObservedPrivateBytes": 640303104,
+    "maxObservedWorkingSetBytes": 617996288,
+    "originalArtifact": {
+      "base": "target/qa/realtime",
+      "file": "release-1min-1794229357519/speech-process-samples.json"
+    }
+  },
+  "cleanup": {
+    "allRunnerExitCodesZero": true,
+    "fiveMinuteProcessVerification": [
+      {
+        "pid": 43648,
+        "created": 1794231005.757262,
+        "name": "python.exe",
+        "state": "gone"
+      },
+      {
+        "pid": 43328,
+        "created": 1794231017.3804414,
+        "name": "realtime_live.exe",
+        "state": "gone"
+      },
+      {
+        "pid": 40996,
+        "created": 1794231019.0299873,
+        "name": "conhost.exe",
+        "state": "gone"
+      },
+      {
+        "pid": 41676,
+        "created": 1794231021.0439987,
+        "name": "speech.exe",
+        "state": "gone"
+      },
+      {
+        "pid": 43408,
+        "created": 1794231022.035205,
+        "name": "conhost.exe",
+        "state": "gone"
+      }
+    ]
+  },
+  "conclusions": [
+    "The 5-minute replay completed, but Enter-to-ASR completion was 26.108 seconds and first partial was 86.262 seconds. Fast partial/constant short Enter latency goals are not achieved by this trial.",
+    "The backlog dropped after startup, then rose near the tail; this trial does not show a continuously increasing backlog throughout the recording.",
+    "No improvement percentage, p95, true startup memory peak, full-app memory, painted UX, microphone, paste, history, or AI results are claimed."
+  ],
+  "engineDocumentation": "https://raw.githubusercontent.com/nyosegawa/speech.cpp/v0.10.1/docs/worker.md"
+}

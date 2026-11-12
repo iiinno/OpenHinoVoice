@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "runId": "20261109T150700957Z-110648ad",
+  "mode": "Fast",
+  "liveTest": null,
+  "scope": "filtered",
+  "startedAt": "2026-11-09T15:07:01.2734475Z",
+  "finishedAt": "2026-11-09T15:09:38.1271617Z",
+  "revision": "205efa0f159a810d48a798052f3891299110d484",
+  "dirty": true,
+  "sourceSha256": "CF320B1AD6145959FCFEA20AC595ACF506F3431ED383BEC307FA0BC414BDDDA8",
+  "sourceFileCount": 41,
+  "status": "passed",
+  "checks": [
+    {
+      "name": "format",
+      "status": "passed",
+      "durationMs": 10252,
+      "exitCode": 0,
+      "log": "format.log",
+      "validationError": null
+    },
+    {
+      "name": "tests",
+      "status": "passed",
+      "durationMs": 137688,
+      "exitCode": 0,
+      "log": "tests.log",
+      "validationError": null
+    }
+  ],
+  "tests": {
+    "passed": 3,
+    "failed": 0,
+    "ignored": 0
+  },
+  "ignored": [],
+  "manualPrerequisites": [
+    "実マイクの録音と切断",
+    "対象アプリの本文とクリップボード復元",
+    "UIAとDPI・複数モニター",
+    "実クラウドAPIと複数のローカルLLM"
+  ],
+  "isolation": {
+    "appData": "appdata",
+    "localAppData": "localappdata",
+    "namespace": "20261109T150700957Z-110648ad"
+  }
+}

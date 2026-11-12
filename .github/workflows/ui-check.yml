@@ -1,0 +1,165 @@
+name: Explicit UI diagnostics
+
+on:
+  workflow_call:
+    inputs:
+      release_artifact:
+        description: Same-run release artifact produced by the required Full verification job
+        type: string
+        required: true
+      settings_ui:
+        description: Attempt settings UIA and capture on the hosted desktop
+        type: boolean
+        required: false
+        default: false
+  workflow_dispatch:
+    inputs:
+      settings_ui:
+        description: 'Attempt settings UIA/capture; requires a compatible OpenGL desktop. Unsupported runners fail this check.'
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: visual-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  visual-diagnostics:
+    name: Offscreen fixtures and optional settings capture
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download the verified release artifact from this run
+        id: download
+        if: ${{ inputs.release_artifact != '' }}
+        uses: actions/download-artifact@v8.0.2
+        timeout-minutes: 5
+        with:
+          name: ${{ inputs.release_artifact }}
+          path: target/ci-artifacts
+      - name: Validate the artifact revision and binary checksums
+        id: validate_artifact
+        if: ${{ inputs.release_artifact != '' }}
+        env:
+          RELEASE_ARTIFACT: ${{ inputs.release_artifact }}
+        run: |
+          New-Item -ItemType Directory -Force -Path target/qa/visual | Out-Null
+          $validation = [ordered]@{ status = 'running'; artifact = $env:RELEASE_ARTIFACT; expectedRevision = $env:GITHUB_SHA; files = @() }
+          try {
+            $metadata = Get-Content -LiteralPath target/ci-artifacts/build.json -Raw | ConvertFrom-Json
+            $validation['artifactRevision'] = $metadata.revision
+            if ($metadata.revision -cne $env:GITHUB_SHA) { throw 'Release artifact revision does not match this workflow revision.' }
+            $checksums = @{}
+            foreach ($line in Get-Content -LiteralPath target/ci-artifacts/SHA256SUMS.txt) {
+              if ($line -cnotmatch '^([0-9a-fA-F]{64}) \*(openhinovoice\.exe|overlay_preview\.exe)$') { throw 'Malformed release checksum manifest.' }
+              $name = $Matches[2]
+              if ($checksums.ContainsKey($name)) { throw "Duplicate checksum entry: $name" }
+              $checksums[$name] = $Matches[1].ToLowerInvariant()
+            }
+            if ($checksums.Count -ne 2) { throw 'Both release binaries must be present in the checksum manifest.' }
+            foreach ($name in @('openhinovoice.exe', 'overlay_preview.exe')) {
+              $actual = (Get-FileHash -LiteralPath (Join-Path target/ci-artifacts $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+              if ($actual -cne $checksums[$name]) { throw "Release checksum mismatch: $name" }
+              $validation.files += [ordered]@{ file = $name; sha256 = $actual }
+            }
+            New-Item -ItemType Directory -Force -Path target/release/examples | Out-Null
+            Copy-Item -LiteralPath target/ci-artifacts/openhinovoice.exe -Destination target/release/openhinovoice.exe
+            Copy-Item -LiteralPath target/ci-artifacts/overlay_preview.exe -Destination target/release/examples/overlay_preview.exe
+            $validation.status = 'passed'
+          } catch {
+            $validation.status = 'failed'
+            $validation['error'] = $_.Exception.Message
+            throw
+          } finally {
+            $validation | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath target/qa/visual/artifact-validation.json -Encoding utf8NoBOM
+          }
+      - uses: dtolnay/rust-toolchain@stable
+        if: ${{ inputs.release_artifact == '' }}
+      - uses: Swatinem/rust-cache@v2
+        if: ${{ inputs.release_artifact == '' }}
+        with:
+          cache-on-failure: true
+      - name: Prepare locked dependencies
+        id: dependencies
+        if: ${{ inputs.release_artifact == '' }}
+        run: |
+          New-Item -ItemType Directory -Force -Path target/qa/visual | Out-Null
+          cargo fetch --locked 2>&1 | Tee-Object -FilePath target/qa/visual/fetch.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build release binaries for this revision
+        id: build
+        if: ${{ inputs.release_artifact == '' }}
+        run: |
+          cargo build --release --locked --offline --bin openhinovoice --example overlay_preview 2>&1 | Tee-Object -FilePath target/qa/visual/build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Render and benchmark with system animation enabled
+        id: render
+        run: ./scripts/verify-renderer.ps1 -Executable target/release/examples/overlay_preview.exe -OutputDir target/qa/visual/renderer
+      - name: Prepare isolated software OpenGL for the hosted desktop
+        id: opengl
+        if: ${{ !cancelled() && inputs.settings_ui && (steps.validate_artifact.outcome == 'success' || steps.build.outcome == 'success') }}
+        run: |
+          ./scripts/prepare-ci-opengl.ps1 -OutputDir target/qa/visual/opengl
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item -LiteralPath target/release/openhinovoice.exe -Destination target/qa/visual/opengl/openhinovoice.exe
+      - name: Check settings UIA and capture on the hosted desktop
+        id: settings_ui
+        if: ${{ !cancelled() && inputs.settings_ui && steps.opengl.outcome == 'success' }}
+        run: ./scripts/verify-ui.ps1 -Executable target/qa/visual/opengl/openhinovoice.exe -OutputDir target/qa/visual/settings-ui
+      - name: Record visual diagnostic scope
+        if: always()
+        env:
+          RELEASE_ARTIFACT: ${{ inputs.release_artifact }}
+          DOWNLOAD_RESULT: ${{ steps.download.outcome }}
+          ARTIFACT_VALIDATION_RESULT: ${{ steps.validate_artifact.outcome }}
+          DEPENDENCIES_RESULT: ${{ steps.dependencies.outcome }}
+          BUILD_RESULT: ${{ steps.build.outcome }}
+          RENDER_RESULT: ${{ steps.render.outcome }}
+          OPENGL_RESULT: ${{ steps.opengl.outcome }}
+          SETTINGS_UI_RESULT: ${{ steps.settings_ui.outcome }}
+        run: |
+          New-Item -ItemType Directory -Force -Path target/qa/visual | Out-Null
+          $uiResult = if ($env:SETTINGS_UI_RESULT -eq 'skipped') { 'not_run' } else { $env:SETTINGS_UI_RESULT }
+          $renderer = if (Test-Path -LiteralPath target/qa/visual/renderer/result.json) { Get-Content -LiteralPath target/qa/visual/renderer/result.json -Raw | ConvertFrom-Json } else { $null }
+          [ordered]@{
+            revision = $env:GITHUB_SHA
+            releaseArtifact = $env:RELEASE_ARTIFACT
+            artifactDownload = $env:DOWNLOAD_RESULT
+            artifactValidation = $env:ARTIFACT_VALIDATION_RESULT
+            binarySource = $(if ($env:ARTIFACT_VALIDATION_RESULT -eq 'success') { 'verified_same_run_artifact' } elseif ($env:BUILD_RESULT -eq 'success') { 'standalone_remote_build' } else { 'unavailable' })
+            dependencies = $env:DEPENDENCIES_RESULT
+            build = $env:BUILD_RESULT
+            rendererTask = $env:RENDER_RESULT
+            offscreenFixtures = $renderer.fixtures ?? 'not_run'
+            settingsUi = $uiResult
+            softwareOpenGlPreparation = $env:OPENGL_RESULT
+            settingsRenderer = 'Mesa llvmpipe 26.2.6; isolated test copy'
+            humanVisualReview = 'not_run'
+            rendererBenchmark = $renderer.rendererBenchmark ?? 'not_run'
+            wholeApplicationPerformanceBenchmark = 'not_run'
+            liveMicrophoneAndModelTests = 'not_run'
+            limitations = @('Hosted desktop/OpenGL availability is not guaranteed.', 'Rendered fixtures do not prove settings UI behavior.', 'Captured images still require visual review.')
+          } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath target/qa/visual/status.json -Encoding utf8NoBOM
+          "Renderer task: $env:RENDER_RESULT; settings UI: $uiResult; visual review: not_run." | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+      - name: Keep diagnostic output even when capture fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-diagnostics-${{ github.sha }}
+          path: |
+            target/qa/visual/**/*.json
+            target/qa/visual/**/*.log
+            target/qa/visual/**/*.png
+            target/qa/visual/**/*.bmp
+          if-no-files-found: error
+          retention-days: 14

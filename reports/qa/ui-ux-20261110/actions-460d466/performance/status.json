@@ -1,0 +1,33 @@
+{
+  "status": "passed",
+  "revision": "460d4667f4101966cd1161d2d872354d45fb8131",
+  "runId": "42665854698",
+  "releaseArtifact": "windows-release-460d4667f4101966cd1161d2d872354d45fb8131",
+  "phases": {
+    "checkout": "passed",
+    "cache": "passed",
+    "artifactDownload": "passed",
+    "artifactValidation": "passed",
+    "harnessCompilation": "passed",
+    "toolchain": "passed",
+    "dependencies": "passed",
+    "featureOffBuild": "passed",
+    "softwareOpenGlPreparation": "passed",
+    "settingsMeasurement": "passed",
+    "budgetEvaluation": "passed"
+  },
+  "repetitions": 3,
+  "durationSeconds": 30,
+  "baselineFeatures": "--no-default-features",
+  "candidateFeatures": "default (accessibility)",
+  "settingsRenderer": "Mesa llvmpipe 26.2.6 for both isolated copies",
+  "residentMeasurement": "not_run",
+  "residentReason": "An inactive desktop has no guaranteed Explorer tray; this workflow measures settings UIA cost only.",
+  "liveMicrophoneAndModelTests": "not_run",
+  "limitations": [
+    "Hosted desktop/OpenGL/UIA availability is not guaranteed; unavailable observations fail.",
+    "Expected feature-off UIA absence is not accessibility success.",
+    "Measurement completion and performance budget acceptance are separate results.",
+    "Inactive desktop metrics do not establish active HUD, ASR or end-to-end input latency."
+  ]
+}

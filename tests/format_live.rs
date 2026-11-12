@@ -1,16 +1,6 @@
-// Integration crates compile full production modules but use only a subset of their APIs.
-#![allow(dead_code)]
+use openhinovoice::{config, format};
 
 use std::time::{Duration, Instant};
-
-#[path = "../src/chatgpt.rs"]
-mod chatgpt;
-#[path = "../src/config.rs"]
-mod config;
-#[path = "../src/format.rs"]
-mod format;
-#[path = "../src/lexicon.rs"]
-mod lexicon;
 
 #[test]
 #[ignore = "calls the real formatting API with the key in the user config; run explicitly"]
@@ -20,7 +10,7 @@ fn real_api_formats_with_prewarm() {
         "えーと、明日の会議は午後3時からに変更になりました。資料は共有フォルダにおいてあります。";
 
     let t = Instant::now();
-    let cold = format::format(&cfg, raw).expect("cold request must succeed");
+    let cold = format::format_with_deltas(&cfg, raw, &|_| {}).expect("cold request must succeed");
     println!("cold {:?}: {cold}", t.elapsed());
 
     let mut warm = Vec::new();
@@ -28,7 +18,8 @@ fn real_api_formats_with_prewarm() {
         std::thread::sleep(Duration::from_secs(2));
         format::prewarm(&cfg);
         let t = Instant::now();
-        let out = format::format(&cfg, raw).expect("warm request must succeed");
+        let out =
+            format::format_with_deltas(&cfg, raw, &|_| {}).expect("warm request must succeed");
         warm.push(t.elapsed());
         assert!(!out.contains("えーと"), "filler must be removed: {out}");
     }
@@ -59,7 +50,7 @@ fn real_api_formats_long_dictation() {
     );
     for attempt in 1..=3 {
         let t = Instant::now();
-        let result = format::format(&cfg, raw.trim());
+        let result = format::format_with_deltas(&cfg, raw.trim(), &|_| {});
         println!(
             "attempt {attempt}: {:?} -> {}",
             t.elapsed(),

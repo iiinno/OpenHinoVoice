@@ -1,0 +1,140 @@
+{
+  "schemaVersion": 1,
+  "mode": "HiddenDesktopUI",
+  "runId": "ui-20261109T161530-aaac81d3",
+  "status": "passed",
+  "startedAt": "2026-11-09T16:15:30.2192422Z",
+  "finishedAt": "2026-11-09T16:15:46.2845059Z",
+  "scope": "settings UIA + client capture at 600x420 and 720x520 logical pixels",
+  "executable": "C:\\Users\\inoue\\Project\\OpenHinoVoice\\target\\debug\\openhinovoice.exe",
+  "executableSha256": "E77B424C45E6832E29E543E6E2798465859D8FE55C29C41131BBC6DF644955B0",
+  "harnessSha256": "0972EC6F6B318EF76F40C907E88C1A2156BC184BF3463A174F7618F231BB2C24",
+  "compile": "passed",
+  "ui": "passed",
+  "sourceRevision": "8adad35a74fb38e767d4aec8fe604f95066c28f1",
+  "inputDesktopSwitched": false,
+  "audioRequested": false,
+  "microphoneRequested": false,
+  "limitations": [
+    "画像の見た目は別途確認が必要",
+    "WindowsのDPIと高コントラスト設定は変更しない",
+    "キーボード操作・音・ASR・貼付・外部APIは未実施"
+  ],
+  "controller-result": {
+    "schemaVersion": 1,
+    "status": "passed",
+    "startedAt": "2026-11-09T16:15:32.4537234Z",
+    "desktopSwitched": false,
+    "timeoutMs": 90000,
+    "inputDesktopBefore": "Default",
+    "workerExitCode": 0,
+    "scope": "hidden desktop settings UIA and client capture",
+    "desktopName": "OHV_ui-20261109T161530-aaac81d3",
+    "workerPid": 46044,
+    "desktopClosed": true,
+    "inputDesktopAfter": "Default",
+    "finishedAt": "2026-11-09T16:15:46.2087327Z"
+  },
+  "worker-result": {
+    "schemaVersion": 1,
+    "status": "passed",
+    "startedAt": "2026-11-09T16:15:32.8164108Z",
+    "cases": [
+      {
+        "sizeLogical": "600x420",
+        "status": "passed",
+        "pid": 37852,
+        "gracefulExit": true,
+        "dpi": 120,
+        "clientPixels": [
+          750,
+          525
+        ],
+        "metricsBefore": {
+          "at": "2026-11-09T16:15:39.372839Z",
+          "privateBytes": 110723072,
+          "workingSetBytes": 108064768,
+          "cpuMs": 1843.75,
+          "gdi": 13,
+          "user": 14,
+          "handles": 345
+        },
+        "uiaNodes": 52,
+        "displayPageNamed": true,
+        "focusableNodes": 30,
+        "uiaStatus": "passed",
+        "printWindow": {
+          "status": "failed",
+          "colors": 1,
+          "path": "600x420/client-printwindow.png"
+        },
+        "captureColors": 337,
+        "capturePath": "600x420/client-framebuffer.png",
+        "captureRenderer": "eframe glow framebuffer",
+        "metricsAfter": {
+          "at": "2026-11-09T16:15:41.3819222Z",
+          "privateBytes": 124076032,
+          "workingSetBytes": 130465792,
+          "cpuMs": 2265.625,
+          "gdi": 12,
+          "user": 15,
+          "handles": 360
+        },
+        "exitCode": 0
+      },
+      {
+        "sizeLogical": "720x520",
+        "status": "passed",
+        "pid": 28752,
+        "gracefulExit": true,
+        "dpi": 120,
+        "clientPixels": [
+          900,
+          650
+        ],
+        "metricsBefore": {
+          "at": "2026-11-09T16:15:45.0856057Z",
+          "privateBytes": 111570944,
+          "workingSetBytes": 108187648,
+          "cpuMs": 1625,
+          "gdi": 13,
+          "user": 14,
+          "handles": 343
+        },
+        "uiaNodes": 52,
+        "displayPageNamed": true,
+        "focusableNodes": 30,
+        "uiaStatus": "passed",
+        "printWindow": {
+          "status": "failed",
+          "colors": 1,
+          "path": "720x520/client-printwindow.png"
+        },
+        "captureColors": 358,
+        "capturePath": "720x520/client-framebuffer.png",
+        "captureRenderer": "eframe glow framebuffer",
+        "metricsAfter": {
+          "at": "2026-11-09T16:15:45.7744465Z",
+          "privateBytes": 114438144,
+          "workingSetBytes": 112992256,
+          "cpuMs": 1859.375,
+          "gdi": 12,
+          "user": 15,
+          "handles": 358
+        },
+        "exitCode": 0
+      }
+    ],
+    "audioRequested": false,
+    "microphoneRequested": false,
+    "globalInputSent": false,
+    "limitations": [
+      "Capture success requires human inspection; nonblank is only a transport check.",
+      "Native DPI is the existing Windows value; no user display settings are changed.",
+      "No keyboard shortcut, preview audio, ASR, paste, or external API validation is performed."
+    ],
+    "phase": "complete",
+    "updatedAt": "2026-11-09T16:15:46.1529922Z",
+    "finishedAt": "2026-11-09T16:15:46.1529922Z"
+  }
+}

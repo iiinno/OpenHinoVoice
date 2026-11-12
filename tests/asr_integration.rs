@@ -1,18 +1,6 @@
-// Integration crates compile full production modules but use only a subset of their APIs.
-#![allow(dead_code)]
+use openhinovoice::{asr, config};
 
 use std::time::Duration;
-
-#[path = "../src/asr.rs"]
-mod asr;
-#[path = "../src/chatgpt.rs"]
-mod chatgpt;
-#[path = "../src/config.rs"]
-mod config;
-#[path = "../src/format.rs"]
-mod format;
-#[path = "../src/lexicon.rs"]
-mod lexicon;
 
 #[test]
 #[ignore = "needs the speech.cpp worker, a Haas model and a test WAV; run explicitly"]
@@ -40,20 +28,20 @@ fn wav_is_transcribed() {
 
     let chunk_bytes = (wav.sample_rate as usize / 10) * 2;
     for chunk in wav.pcm_le.chunks(chunk_bytes.max(2)) {
-        while !worker.send_chunk(chunk).expect("chunk must be queued") {
+        while !worker.send_chunk("r", chunk).expect("chunk must be queued") {
             worker.poll_writer().expect("writer must make progress");
             std::thread::sleep(Duration::from_millis(1));
         }
     }
     while !worker
-        .transcribe(wav.sample_rate, "")
+        .transcribe("r", wav.sample_rate, "")
         .expect("transcribe must be queued")
     {
         worker.poll_writer().expect("writer must make progress");
         std::thread::sleep(Duration::from_millis(1));
     }
     let text = worker
-        .wait_end(Duration::from_secs(120))
+        .wait_end("r", Duration::from_secs(120))
         .expect("transcription must finish");
     worker.shutdown();
     println!("transcription: {text}");
