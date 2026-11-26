@@ -64,7 +64,7 @@ libc = "0.2"
 png = "0.18"
 sha2 = "0.10"
 chacha20poly1305 = "0.10"
-fontdue = "0.9"
+ab_glyph = "0.2"
 zbus = { version = "5", default-features = false, features = ["blocking-api"] }
 ksni = { version = "0.3", features = ["blocking"] }
 wayland-client = "0.31"

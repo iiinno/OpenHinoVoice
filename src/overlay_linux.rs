@@ -9,7 +9,7 @@ use std::sync::mpsc::{channel, Sender};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use fontdue::{Font, FontSettings};
+use ab_glyph::{Font, FontVec, PxScale, ScaleFont};
 use wayland_client::protocol::{
     wl_buffer, wl_compositor, wl_output, wl_region, wl_registry, wl_shm, wl_shm_pool, wl_surface,
 };
@@ -25,12 +25,12 @@ use crate::overlay::{
 };
 
 // ---------------------------------------------------------------------------
-// Font loading & text rasterization (fontdue)
+// Font loading & text rasterization (ab_glyph: lazy glyph parsing, low RSS)
 // ---------------------------------------------------------------------------
 
 struct FontPair {
-    regular: Font,
-    bold: Font,
+    regular: FontVec,
+    bold: Option<FontVec>,
 }
 
 fn find_font_file(candidates: &[&str], fc_query: &str) -> Option<PathBuf> {
@@ -52,28 +52,24 @@ fn find_font_file(candidates: &[&str], fc_query: &str) -> Option<PathBuf> {
     p.is_file().then_some(p)
 }
 
+fn load_font_file(path: &PathBuf) -> Option<FontVec> {
+    let bytes = std::fs::read(path).ok()?;
+    FontVec::try_from_vec_and_index(bytes, 0).ok()
+}
+
 fn load_font_pair() -> Option<FontPair> {
+    // Prefer a compact Japanese-only font first to keep resident memory small.
     let reg_path = find_font_file(
         &[
+            "/usr/share/fonts/OTF/ipaexg.ttf",
             "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
             "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
             "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
-            "/usr/share/fonts/OTF/ipaexg.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         ],
         ":lang=ja",
     )?;
-    let reg_bytes = std::fs::read(&reg_path).ok()?;
-    let regular = Font::from_bytes(
-        reg_bytes,
-        FontSettings {
-            collection_index: 0,
-            scale: 40.0,
-            load_substitutions: true,
-        },
-    )
-    .ok()?;
-
+    let regular = load_font_file(&reg_path)?;
     let bold_path = find_font_file(
         &[
             "/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.ttc",
@@ -81,28 +77,51 @@ fn load_font_pair() -> Option<FontPair> {
             "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Bold.ttc",
         ],
         ":lang=ja:weight=bold",
-    );
-    let bold = bold_path
-        .and_then(|p| std::fs::read(p).ok())
-        .and_then(|bytes| {
-            Font::from_bytes(
-                bytes,
-                FontSettings {
-                    collection_index: 0,
-                    scale: 40.0,
-                    load_substitutions: true,
-                },
-            )
-            .ok()
-        })
-        .unwrap_or_else(|| regular.clone());
-
+    )
+    .filter(|p| p != &reg_path && p.extension().is_some_and(|e| e != "ttc"));
+    let bold = bold_path.and_then(|p| load_font_file(&p));
     Some(FontPair { regular, bold })
 }
 
 fn fonts() -> Option<&'static FontPair> {
     static FONTS: OnceLock<Option<FontPair>> = OnceLock::new();
     FONTS.get_or_init(load_font_pair).as_ref()
+}
+
+fn draw_line_into(
+    scaled: &ab_glyph::PxScaleFont<&FontVec>,
+    text: &str,
+    baseline_y: f32,
+    w: i32,
+    h: i32,
+    cov: &mut [u8],
+) {
+    let mut cursor_x = 0.0f32;
+    let mut prev = None;
+    for ch in text.chars() {
+        let gid = scaled.glyph_id(ch);
+        if let Some(p) = prev {
+            cursor_x += scaled.kern(p, gid);
+        }
+        let glyph =
+            gid.with_scale_and_position(scaled.scale(), ab_glyph::point(cursor_x, baseline_y));
+        if let Some(outlined) = scaled.outline_glyph(glyph) {
+            let bounds = outlined.px_bounds();
+            outlined.draw(|gx, gy, c| {
+                let dx = bounds.min.x as i32 + gx as i32;
+                let dy = bounds.min.y as i32 + gy as i32;
+                if dx >= 0 && dx < w && dy >= 0 && dy < h {
+                    let v = (c.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+                    let dst = &mut cov[(dy * w + dx) as usize];
+                    if v > *dst {
+                        *dst = v;
+                    }
+                }
+            });
+        }
+        cursor_x += scaled.h_advance(gid);
+        prev = Some(gid);
+    }
 }
 
 pub fn render_text(text: &str, px_height: i32, bold: bool, max_w: i32) -> TextMask {
@@ -120,64 +139,49 @@ pub fn render_text(text: &str, px_height: i32, bold: bool, max_w: i32) -> TextMa
             cov: vec![0; px_height.max(1) as usize],
         };
     };
-    let font = if bold { &pair.bold } else { &pair.regular };
-    let px = px_height as f32;
-    let line_metrics = font.horizontal_line_metrics(px);
-    let ascent = line_metrics.map_or((px * 0.82).ceil(), |m| m.ascent.ceil());
-    let descent = line_metrics.map_or((px * 0.22).ceil(), |m| (-m.descent).ceil());
+    let font = if bold {
+        pair.bold.as_ref().unwrap_or(&pair.regular)
+    } else {
+        &pair.regular
+    };
+    let scaled = font.as_scaled(PxScale::from(px_height as f32));
+    let ascent = scaled.ascent().ceil();
+    let descent = (-scaled.descent()).ceil();
     let h = ((ascent + descent).ceil() as i32).max(px_height).max(1);
 
-    let ellipsis_m = font.metrics('…', px);
-    let ellipsis_w = ellipsis_m.advance_width;
-    let mut glyphs = Vec::new();
-    let mut cursor_x = 0.0f32;
+    let ellipsis_w = scaled.h_advance(scaled.glyph_id('…'));
     let max_wf = max_w as f32;
-    let chars: Vec<char> = text.chars().collect();
-    for (idx, &ch) in chars.iter().enumerate() {
-        let m = font.metrics(ch, px);
-        let next_x = cursor_x + m.advance_width;
-        if next_x > max_wf && idx < chars.len() {
-            // Trim back so ellipsis fits inside max_w
-            while let Some((gx, _, _)) = glyphs.last() {
-                if *gx + ellipsis_w <= max_wf {
-                    break;
-                }
-                glyphs.pop();
-            }
-            let ex = glyphs.last().map_or(0.0, |(gx, adv, _)| *gx + *adv);
-            let (em, eb) = font.rasterize('…', px);
-            glyphs.push((ex, em.advance_width, (em, eb)));
-            cursor_x = (ex + em.advance_width).min(max_wf);
+    let mut out = String::new();
+    let mut cursor_x = 0.0f32;
+    let mut prev = None;
+    let mut truncated = false;
+    for ch in text.chars() {
+        let gid = scaled.glyph_id(ch);
+        let kern = prev.map_or(0.0, |p| scaled.kern(p, gid));
+        let adv = kern + scaled.h_advance(gid);
+        if cursor_x + adv > max_wf {
+            truncated = true;
             break;
         }
-        let (gm, gb) = font.rasterize(ch, px);
-        glyphs.push((cursor_x, gm.advance_width, (gm, gb)));
-        cursor_x = next_x;
+        out.push(ch);
+        cursor_x += adv;
+        prev = Some(gid);
+    }
+    if truncated {
+        while let Some(last) = out.pop() {
+            let gid = scaled.glyph_id(last);
+            cursor_x = (cursor_x - scaled.h_advance(gid)).max(0.0);
+            if cursor_x + ellipsis_w <= max_wf {
+                break;
+            }
+        }
+        out.push('…');
+        cursor_x = (cursor_x + ellipsis_w).min(max_wf);
     }
 
     let w = (cursor_x.ceil() as i32).clamp(1, max_w);
     let mut cov = vec![0u8; (w * h) as usize];
-    for (gx, _, (m, bitmap)) in glyphs {
-        let x0 = gx.round() as i32 + m.xmin;
-        let y0 = ascent.round() as i32 - m.ymin - m.height as i32;
-        for row in 0..m.height {
-            let dy = y0 + row as i32;
-            if dy < 0 || dy >= h {
-                continue;
-            }
-            for col in 0..m.width {
-                let dx = x0 + col as i32;
-                if dx < 0 || dx >= w {
-                    continue;
-                }
-                let src = bitmap[row * m.width + col];
-                let dst = &mut cov[(dy * w + dx) as usize];
-                if src > *dst {
-                    *dst = src;
-                }
-            }
-        }
-    }
+    draw_line_into(&scaled, &out, ascent, w, h, &mut cov);
     TextMask { w, h, cov }
 }
 
@@ -196,15 +200,11 @@ pub fn render_text_wrapped(text: &str, px_height: i32, max_w: i32, max_lines: us
             cov: vec![0; px_height.max(1) as usize],
         };
     };
-    let font = &pair.regular;
-    let px = px_height as f32;
-    let line_metrics = font.horizontal_line_metrics(px);
-    let ascent = line_metrics.map_or((px * 0.82).ceil(), |m| m.ascent.ceil());
-    let line_h = line_metrics
-        .map_or((px * 1.25).ceil() as i32, |m| {
-            m.new_line_size.ceil().max(px) as i32
-        })
-        .max(px_height);
+    let scaled = pair.regular.as_scaled(PxScale::from(px_height as f32));
+    let ascent = scaled.ascent().ceil();
+    let line_h = ((scaled.ascent() - scaled.descent() + scaled.line_gap()).ceil() as i32)
+        .max(px_height)
+        .max(1);
 
     let max_wf = max_w as f32;
     let mut lines: Vec<(String, f32)> = Vec::new();
@@ -216,7 +216,7 @@ pub fn render_text_wrapped(text: &str, px_height: i32, max_w: i32, max_lines: us
             cur_w = 0.0;
             continue;
         }
-        let adv = font.metrics(ch, px).advance_width;
+        let adv = scaled.h_advance(scaled.glyph_id(ch));
         if cur_w + adv > max_wf && !cur.is_empty() {
             lines.push((std::mem::take(&mut cur), cur_w));
             cur_w = 0.0;
@@ -240,31 +240,8 @@ pub fn render_text_wrapped(text: &str, px_height: i32, max_w: i32, max_lines: us
     let mut cov = vec![0u8; (w * h) as usize];
 
     for (line_idx, (line, _)) in visible.iter().enumerate() {
-        let base_y = line_idx as i32 * line_h + ascent.round() as i32;
-        let mut cursor_x = 0.0f32;
-        for ch in line.chars() {
-            let (m, bitmap) = font.rasterize(ch, px);
-            let x0 = cursor_x.round() as i32 + m.xmin;
-            let y0 = base_y - m.ymin - m.height as i32;
-            for row in 0..m.height {
-                let dy = y0 + row as i32;
-                if dy < 0 || dy >= h {
-                    continue;
-                }
-                for col in 0..m.width {
-                    let dx = x0 + col as i32;
-                    if dx < 0 || dx >= w {
-                        continue;
-                    }
-                    let src = bitmap[row * m.width + col];
-                    let dst = &mut cov[(dy * w + dx) as usize];
-                    if src > *dst {
-                        *dst = src;
-                    }
-                }
-            }
-            cursor_x += m.advance_width;
-        }
+        let base_y = line_idx as f32 * line_h as f32 + ascent;
+        draw_line_into(&scaled, line, base_y, w, h, &mut cov);
     }
     TextMask { w, h, cov }
 }
