@@ -15,15 +15,25 @@ use openhinovoice::{context, uia};
 use std::time::Duration;
 
 fn focused_app() -> String {
-    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
-    unsafe {
-        let hwnd = GetForegroundWindow();
-        let mut pid = 0u32;
-        GetWindowThreadProcessId(hwnd, Some(&mut pid));
-        if pid == 0 {
-            return "不明".into();
+    #[cfg(windows)]
+    {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetForegroundWindow, GetWindowThreadProcessId,
+        };
+        unsafe {
+            let hwnd = GetForegroundWindow();
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(hwnd, Some(&mut pid));
+            if pid == 0 {
+                return "不明".into();
+            }
+            context::process_name(pid).unwrap_or_else(|| format!("pid {pid}"))
         }
-        context::process_name(pid).unwrap_or_else(|| format!("pid {pid}"))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = context::process_name(0);
+        "不明".into()
     }
 }
 

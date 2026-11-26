@@ -5,12 +5,15 @@ use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
+#[cfg(windows)]
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+#[cfg(windows)]
 use windows::Win32::Foundation::CloseHandle;
+#[cfg(windows)]
 use windows::Win32::System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject};
 
 const MAX_HISTORY_BYTES: u64 = 16 * 1024 * 1024;
@@ -319,11 +322,34 @@ fn snapshot_from_entries(mut entries: Vec<RecoveryEntry>, today_start: u64) -> H
     }
 }
 
+#[cfg(windows)]
 fn start_of_local_day_ms() -> io::Result<u64> {
     let now = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
     local_midnight_utc_ms(now, None)
 }
 
+#[cfg(not(windows))]
+fn start_of_local_day_ms() -> io::Result<u64> {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(io::Error::other)?
+        .as_secs() as libc::time_t;
+    let mut local: libc::tm = unsafe { std::mem::zeroed() };
+    if unsafe { libc::localtime_r(&secs, &mut local) }.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    local.tm_hour = 0;
+    local.tm_min = 0;
+    local.tm_sec = 0;
+    local.tm_isdst = -1;
+    let midnight = unsafe { libc::mktime(&mut local) };
+    if midnight < 0 {
+        return Err(io::Error::other("ローカル日付の開始時刻を計算できません"));
+    }
+    Ok(midnight as u64 * 1000)
+}
+
+#[cfg(windows)]
 fn local_midnight_utc_ms(
     date: windows::Win32::Foundation::SYSTEMTIME,
     timezone: Option<&windows::Win32::System::Time::TIME_ZONE_INFORMATION>,
@@ -352,6 +378,7 @@ fn local_midnight_utc_ms(
 }
 
 /// 西暦からの経過日数(1970-01-01 を 0 とする)
+#[cfg(any(windows, test))]
 fn days_from_epoch(year: u16, month: u16, day: u16) -> u64 {
     let (y, m) = if month <= 2 {
         (i64::from(year) - 1, i64::from(month) + 12)
@@ -378,6 +405,7 @@ pub fn clear_recovery() -> io::Result<()> {
 mod usage_tests {
     use super::*;
 
+    #[cfg(windows)]
     #[test]
     fn local_midnight_has_the_correct_sign_in_east_and_west_timezones() {
         use windows::Win32::Foundation::SYSTEMTIME;
@@ -401,6 +429,7 @@ mod usage_tests {
         }
     }
 
+    #[cfg(windows)]
     #[test]
     fn daylight_transition_uses_the_offset_at_midnight() {
         use windows::Win32::Foundation::SYSTEMTIME;
@@ -437,6 +466,18 @@ mod usage_tests {
         }
     }
 
+    #[cfg(not(windows))]
+    #[test]
+    fn start_of_local_day_is_within_24_hours_before_now() {
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let midnight = start_of_local_day_ms().unwrap();
+        assert!(midnight <= now_ms);
+        assert!(now_ms - midnight <= 25 * 3_600_000);
+    }
+
     #[test]
     fn days_from_epoch_matches_known_dates() {
         assert_eq!(days_from_epoch(1970, 1, 1), 0);
@@ -459,9 +500,10 @@ fn check_text_size(value: &str) -> io::Result<()> {
 }
 
 /// The app and the independent settings process both access these files.
-/// A named Windows mutex serializes updates, pruning and explicit clearing.
+#[cfg(windows)]
 struct RecoveryLock(windows::Win32::Foundation::HANDLE);
 
+#[cfg(windows)]
 impl RecoveryLock {
     fn acquire() -> io::Result<Self> {
         let name =
@@ -480,11 +522,53 @@ impl RecoveryLock {
     }
 }
 
+#[cfg(windows)]
 impl Drop for RecoveryLock {
     fn drop(&mut self) {
         unsafe {
             let _ = ReleaseMutex(self.0);
             let _ = CloseHandle(self.0);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+struct RecoveryLock(fs::File);
+
+#[cfg(not(windows))]
+impl RecoveryLock {
+    fn acquire() -> io::Result<Self> {
+        use std::os::unix::io::AsRawFd;
+        let name = config::mutex_name("recovery-history");
+        let path = config::runtime_dir().join(format!("{name}.lock"));
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&path)?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+                return Ok(Self(file));
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "復旧履歴の排他ロックを取得できません",
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+#[cfg(not(windows))]
+impl Drop for RecoveryLock {
+    fn drop(&mut self) {
+        use std::os::unix::io::AsRawFd;
+        unsafe {
+            libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
         }
     }
 }
@@ -624,11 +708,13 @@ fn write_entry(path: &Path, entry: &RecoveryEntry) -> io::Result<()> {
     result
 }
 
+#[cfg(windows)]
 #[link(name = "kernel32")]
 extern "system" {
     fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
 }
 
+#[cfg(windows)]
 fn wide_path(path: &Path) -> Vec<u16> {
     path.as_os_str()
         .encode_wide()
@@ -637,18 +723,30 @@ fn wide_path(path: &Path) -> Vec<u16> {
 }
 
 fn atomic_replace(source: &Path, destination: &Path) -> io::Result<()> {
-    // REPLACE_EXISTING | WRITE_THROUGH. No truncate window when updating a saved transcript.
-    let moved = unsafe {
-        MoveFileExW(
-            wide_path(source).as_ptr(),
-            wide_path(destination).as_ptr(),
-            0x1 | 0x8,
-        )
-    };
-    if moved == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
+    #[cfg(windows)]
+    {
+        // REPLACE_EXISTING | WRITE_THROUGH. No truncate window when updating a saved transcript.
+        let moved = unsafe {
+            MoveFileExW(
+                wide_path(source).as_ptr(),
+                wide_path(destination).as_ptr(),
+                0x1 | 0x8,
+            )
+        };
+        if moved == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(source, fs::Permissions::from_mode(0o600));
+        }
+        fs::rename(source, destination)
     }
 }
 

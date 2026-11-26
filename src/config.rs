@@ -293,10 +293,46 @@ impl Config {
 }
 
 pub fn config_path() -> PathBuf {
-    let base = std::env::var_os("APPDATA")
+    #[cfg(windows)]
+    {
+        let base = std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."));
+        base.join("OpenHinoVoice").join("config.toml")
+    }
+    #[cfg(not(windows))]
+    {
+        if let Some(appdata) = std::env::var_os("APPDATA").filter(|v| !v.is_empty()) {
+            return PathBuf::from(appdata)
+                .join("OpenHinoVoice")
+                .join("config.toml");
+        }
+        let base = std::env::var_os("XDG_CONFIG_HOME")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+            .unwrap_or_else(|| PathBuf::from("."));
+        base.join("openhinovoice").join("config.toml")
+    }
+}
+
+#[cfg(not(windows))]
+pub fn runtime_dir() -> PathBuf {
+    let base = std::env::var_os("XDG_RUNTIME_DIR")
+        .filter(|v| !v.is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join("OpenHinoVoice").join("config.toml")
+        .unwrap_or_else(|| {
+            let uid = unsafe { libc::getuid() };
+            std::env::temp_dir().join(format!("openhinovoice-runtime-{uid}"))
+        });
+    let dir = base.join("openhinovoice");
+    let _ = std::fs::create_dir_all(&dir);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    }
+    dir
 }
 
 /// API キーは ChatGPT トークンと同様に Windows DPAPI で保護した別ファイルに保存する。
@@ -465,29 +501,69 @@ pub fn load() -> Result<Config, String> {
     Ok(cfg)
 }
 
-/// speech.cpp の標準の導入先(%LOCALAPPDATA%\Programs\speech.cpp\<版>\speech.exe)から最新版を探す。なければ PATH に任せる
+/// speech.cpp の標準の導入先から最新版を探す。なければ PATH に任せる
 pub fn find_speech_exe() -> String {
-    let root = std::env::var_os("LOCALAPPDATA")
-        .map(|d| PathBuf::from(d).join("Programs").join("speech.cpp"));
-    let newest = root
-        .and_then(|r| std::fs::read_dir(r).ok())
-        .into_iter()
-        .flatten()
-        .filter_map(|e| e.ok())
-        .map(|e| e.path().join("speech.exe"))
-        .filter(|p| p.is_file())
-        .max_by_key(|p| {
+    #[cfg(windows)]
+    {
+        let root = std::env::var_os("LOCALAPPDATA")
+            .map(|d| PathBuf::from(d).join("Programs").join("speech.cpp"));
+        let newest = root
+            .and_then(|r| std::fs::read_dir(r).ok())
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path().join("speech.exe"))
+            .filter(|p| p.is_file())
+            .max_by_key(|p| {
+                version_key(
+                    p.parent()
+                        .and_then(|d| d.file_name())
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(""),
+                )
+            });
+        newest.map_or_else(
+            || "speech.exe".to_string(),
+            |p| p.to_string_lossy().into_owned(),
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let mut candidates: Vec<PathBuf> = Vec::new();
+        if let Some(ref home) = home {
+            for root in [
+                home.join(".local/opt/speech.cpp"),
+                home.join(".local/share/speech.cpp"),
+            ] {
+                if let Ok(entries) = std::fs::read_dir(root) {
+                    for entry in entries.flatten() {
+                        let bin = entry.path().join("speech");
+                        if bin.is_file() {
+                            candidates.push(bin);
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(newest) = candidates.into_iter().max_by_key(|p| {
             version_key(
                 p.parent()
                     .and_then(|d| d.file_name())
                     .and_then(|n| n.to_str())
                     .unwrap_or(""),
             )
-        });
-    newest.map_or_else(
-        || "speech.exe".to_string(),
-        |p| p.to_string_lossy().into_owned(),
-    )
+        }) {
+            return newest.to_string_lossy().into_owned();
+        }
+        if let Some(ref home) = home {
+            let local_bin = home.join(".local/bin/speech");
+            if local_bin.is_file() {
+                return local_bin.to_string_lossy().into_owned();
+            }
+        }
+        "speech".to_string()
+    }
 }
 
 /// "0.10.2" が "0.9.4" より新しいと判定できるよう、数の並びとして比べる
@@ -687,7 +763,7 @@ pub fn parse_hotkey(name: &str) -> Option<Hotkey> {
             "CTRL" | "CONTROL" => mods |= MOD_CTRL,
             "ALT" => mods |= MOD_ALT,
             "SHIFT" => mods |= MOD_SHIFT,
-            "WIN" => mods |= MOD_WIN,
+            "WIN" | "SUPER" | "META" => mods |= MOD_WIN,
             key if vk.is_none() => vk = Some(parse_key(key)?),
             _ => return None,
         }

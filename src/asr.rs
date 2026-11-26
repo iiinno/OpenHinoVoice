@@ -1,13 +1,20 @@
 use base64::Engine;
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{channel, sync_channel, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::time::{Duration, Instant};
 
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+fn hide_console(cmd: &mut Command) -> &mut Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
 
 // Initial model setup can take longer than an ordinary transcription. Both
 // deadlines are checked by the UI loop so a silent worker can be torn down.
@@ -307,14 +314,14 @@ pub struct Worker {
 
 impl Worker {
     pub fn spawn(exe: &str, model: &str) -> Result<Worker, AsrError> {
-        let mut child = Command::new(exe)
-            .arg("worker")
+        let mut cmd = Command::new(exe);
+        cmd.arg("worker")
             .arg(model)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            // speech.exe はコンソールアプリなので、指定しないと録音のたびに黒い窓が開く
-            .creation_flags(CREATE_NO_WINDOW)
+            .stderr(Stdio::null());
+        // speech.exe はコンソールアプリなので、Windows では指定しないと録音のたびに黒い窓が開く
+        let mut child = hide_console(&mut cmd)
             .spawn()
             .map_err(|e| AsrError::Spawn(e.to_string()))?;
         let stdin = child
@@ -538,13 +545,13 @@ pub fn model_fetched(speech_exe: &str, model: &str) -> Result<bool, String> {
     if path.is_absolute() || model.to_ascii_lowercase().ends_with(".gguf") || model.contains('\\') {
         return Ok(false);
     }
-    let output = Command::new(speech_exe)
-        .arg("models")
+    let mut cmd = Command::new(speech_exe);
+    cmd.arg("models")
         .arg("--json")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
+        .stderr(Stdio::null());
+    let output = hide_console(&mut cmd)
         .output()
         .map_err(|e| format!("speech models を実行できません: {e}"))?;
     if !output.status.success() {
@@ -588,6 +595,28 @@ fn model_fetched_from_catalog(json: &str, model: &str) -> Result<bool, String> {
     Ok(false)
 }
 
+#[cfg(test)]
+fn spawn_short_lived_child() -> Child {
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = Command::new("cmd.exe");
+        c.args(["/c", "exit"]);
+        c
+    };
+    #[cfg(not(windows))]
+    let mut cmd = {
+        let mut c = Command::new("sh");
+        c.args(["-c", "exit 0"]);
+        c
+    };
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    hide_console(&mut cmd)
+        .spawn()
+        .expect("test child must spawn")
+}
+
 /// 区間認識の単体テスト用。偽の標準入力と、返す行を決められる worker を作る。
 /// broken_stdin を真にすると、書き込みが必ず失敗する(worker の死を模す)
 #[cfg(test)]
@@ -601,14 +630,7 @@ pub fn test_worker(lines: std::sync::mpsc::Receiver<String>, broken_stdin: bool)
             Ok(())
         }
     }
-    let child = Command::new("cmd.exe")
-        .args(["/c", "exit"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()
-        .expect("test child must spawn");
+    let child = spawn_short_lived_child();
     let writer = if broken_stdin {
         WriterQueue::spawn(Broken)
     } else {
@@ -653,14 +675,7 @@ pub fn test_worker_with_recorder(
         }
     }
     let buffer = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-    let child = Command::new("cmd.exe")
-        .args(["/c", "exit"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()
-        .expect("test child must spawn");
+    let child = spawn_short_lived_child();
     let worker = Worker {
         child,
         writer: WriterQueue::spawn(Recording {
@@ -1259,19 +1274,29 @@ mod tests {
     fn shutdown_kills_a_child_that_never_reads_its_pipe() {
         // One process, no model or microphone. It deliberately keeps stdin
         // open without reading for much longer than our allowed shutdown.
-        let mut child = Command::new("powershell.exe")
-            .args([
+        #[cfg(windows)]
+        let mut cmd = {
+            let mut c = Command::new("powershell.exe");
+            c.args([
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
                 "Start-Sleep -Seconds 30",
-            ])
-            .stdin(Stdio::piped())
+            ]);
+            c
+        };
+        #[cfg(not(windows))]
+        let mut cmd = {
+            let mut c = Command::new("sleep");
+            c.arg("30");
+            c
+        };
+        cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .creation_flags(CREATE_NO_WINDOW)
+            .stderr(Stdio::null());
+        let mut child = hide_console(&mut cmd)
             .spawn()
-            .expect("PowerShell test worker must launch on Windows");
+            .expect("sleep test worker must launch");
         let stdin = child.stdin.take().unwrap();
         let (_, lines) = channel();
         let mut worker = Worker {
@@ -1502,14 +1527,22 @@ mod tests {
 
     #[test]
     fn a_stop_request_terminates_before_cleanup_is_scheduled() {
-        let mut child = Command::new("cmd.exe")
-            .args(["/D", "/C", "set /p wait="])
-            .stdin(Stdio::piped())
+        #[cfg(windows)]
+        let mut cmd = {
+            let mut c = Command::new("cmd.exe");
+            c.args(["/D", "/C", "set /p wait="]);
+            c
+        };
+        #[cfg(not(windows))]
+        let mut cmd = {
+            let mut c = Command::new("sh");
+            c.args(["-c", "read wait"]);
+            c
+        };
+        cmd.stdin(Stdio::piped())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()
-            .unwrap();
+            .stderr(Stdio::null());
+        let mut child = hide_console(&mut cmd).spawn().unwrap();
         let writer = WriterQueue::spawn(child.stdin.take().unwrap());
         let (_tx, lines) = channel();
         let mut worker = Worker {
@@ -1539,14 +1572,7 @@ mod tests {
 
     /// shutdown と構造のテスト用に使う、すぐ終わる子プロセス
     fn dead_child() -> Child {
-        Command::new("cmd.exe")
-            .args(["/c", "exit"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()
-            .expect("test child must spawn")
+        spawn_short_lived_child()
     }
 
     #[test]

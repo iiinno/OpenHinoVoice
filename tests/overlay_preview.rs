@@ -1,9 +1,11 @@
 use openhinovoice::overlay;
 
 use std::time::{Duration, Instant};
+#[cfg(windows)]
 use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
 };
@@ -14,6 +16,7 @@ use overlay::{Mode, Tone};
 #[test]
 #[ignore = "shows the overlay on screen; run explicitly"]
 fn cycle_overlay_states() {
+    #[cfg(windows)]
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
@@ -84,6 +87,7 @@ fn cycle_overlay_states() {
 }
 
 fn pump() {
+    #[cfg(windows)]
     unsafe {
         let mut msg = MSG::default();
         while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {

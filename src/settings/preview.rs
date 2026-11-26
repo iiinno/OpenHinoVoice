@@ -2,7 +2,9 @@ use crate::config::Config;
 use crate::feedback::{FeedbackSettings, SoundEvent};
 use crate::overlay::{self, Mode, Tone};
 use eframe::egui::{self, Color32, TextureHandle, TextureOptions};
+#[cfg(windows)]
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(windows)]
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -10,18 +12,22 @@ const FRAME_INTERVAL: Duration = Duration::from_nanos(16_666_667);
 const SEQUENCE_END: Duration = Duration::from_millis(3900);
 const EVENT_END: Duration = Duration::from_millis(900);
 
+#[cfg(windows)]
 const ENVIRONMENT_SUBCLASS: usize = 0x4F48_5645;
 
+#[cfg(windows)]
 struct EnvironmentState {
     ctx: egui::Context,
     installed: AtomicBool,
 }
 
+#[cfg(windows)]
 struct EnvironmentObserver {
     window: windows::Win32::Foundation::HWND,
     state: Arc<EnvironmentState>,
 }
 
+#[cfg(windows)]
 impl EnvironmentObserver {
     fn install(cc: &eframe::CreationContext<'_>) -> Option<Self> {
         use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -55,6 +61,7 @@ impl EnvironmentObserver {
     }
 }
 
+#[cfg(windows)]
 impl Drop for EnvironmentObserver {
     fn drop(&mut self) {
         use windows::Win32::UI::Shell::RemoveWindowSubclass;
@@ -79,6 +86,7 @@ impl Drop for EnvironmentObserver {
     }
 }
 
+#[cfg(windows)]
 unsafe extern "system" fn environment_proc(
     window: windows::Win32::Foundation::HWND,
     message: u32,
@@ -107,6 +115,16 @@ unsafe extern "system" fn environment_proc(
         drop(Arc::from_raw(data as *const EnvironmentState));
     }
     result
+}
+
+#[cfg(not(windows))]
+struct EnvironmentObserver;
+
+#[cfg(not(windows))]
+impl EnvironmentObserver {
+    fn install(_cc: &eframe::CreationContext<'_>) -> Option<Self> {
+        None
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

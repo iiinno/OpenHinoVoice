@@ -179,6 +179,45 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  linux-build-and-test:
+    name: Linux build and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install Linux audio and display development headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config libxkbcommon-dev libwayland-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Run Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Run Linux unit tests
+        run: cargo test --lib --locked
+      - name: Build Linux release binary
+        run: cargo build --release --locked
+      - name: Package Linux release artifact
+        run: |
+          mkdir -p target/ci-artifacts-linux
+          cp target/release/openhinovoice target/ci-artifacts-linux/openhinovoice
+          (cd target/ci-artifacts-linux && sha256sum openhinovoice > SHA256SUMS.txt)
+      - name: Upload Linux release binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-release-${{ github.sha }}
+          path: target/ci-artifacts-linux/*
+          if-no-files-found: error
+          retention-days: 14
+
   ui-check:
     name: Explicit UI diagnostics
     needs: build-and-test

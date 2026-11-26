@@ -18,7 +18,9 @@ use crate::startup;
 use eframe::egui::{self, Color32, RichText};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+#[cfg(windows)]
 use windows::Win32::Foundation::HWND;
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
 
 const HINOMARU_RED: Color32 = Color32::from_rgb(188, 0, 45);
@@ -103,10 +105,19 @@ fn test_page(name: &str) -> Option<Page> {
 
 fn use_japanese_font(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
-    for path in [
+    #[cfg(windows)]
+    let candidates: &[&str] = &[
         r"C:\Windows\Fonts\YuGothM.ttc",
         r"C:\Windows\Fonts\meiryo.ttc",
-    ] {
+    ];
+    #[cfg(not(windows))]
+    let candidates: &[&str] = &[
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/OTF/ipaexg.ttf",
+    ];
+    for path in candidates {
         if let Ok(bytes) = std::fs::read(path) {
             fonts
                 .font_data
@@ -166,14 +177,21 @@ fn take<T>(job: &mut Option<Job<T>>) -> Option<T> {
     result
 }
 
-/// 設定画面上のボタンからのみ呼ぶ。実在する自プロセスのウィンドウを
+/// 設定画面上のボタンからのみ呼ぶ。Windows では実在する自プロセスのウィンドウを
 /// clipboard owner に渡す（HWND::default() では SetClipboardData が失敗する）。
-fn settings_clipboard_owner() -> Result<HWND, String> {
+#[cfg(windows)]
+fn settings_clipboard_owner() -> Result<crate::overlay::OverlayHandle, String> {
     let window = unsafe { GetForegroundWindow() };
     check_settings_clipboard_owner(window)?;
     Ok(window)
 }
 
+#[cfg(not(windows))]
+fn settings_clipboard_owner() -> Result<crate::overlay::OverlayHandle, String> {
+    Ok(crate::overlay::OverlayHandle)
+}
+
+#[cfg(windows)]
 fn check_settings_clipboard_owner(window: HWND) -> Result<(), String> {
     if window.0.is_null() {
         return Err("設定ウィンドウを取得できません".into());
@@ -188,9 +206,15 @@ fn check_settings_clipboard_owner(window: HWND) -> Result<(), String> {
 
 /// 3秒の待機は別スレッド、実際の貼り付けは設定画面のUIスレッド(STA)で行う。
 /// OLEクリップボードの参照を一時ワーカースレッドに残さないため。
-fn repaste_after_switch(text: &str, owner: HWND) -> Result<paste::PasteTransaction, String> {
-    // 待機中に設定ウィンドウが閉じられていたら、安全に中断する。
-    check_settings_clipboard_owner(owner)?;
+fn repaste_after_switch(
+    text: &str,
+    owner: crate::overlay::OverlayHandle,
+) -> Result<paste::PasteTransaction, String> {
+    #[cfg(windows)]
+    {
+        // 待機中に設定ウィンドウが閉じられていたら、安全に中断する。
+        check_settings_clipboard_owner(owner)?;
+    }
     let target = paste::capture_target()?;
     if target.process_id() == std::process::id() {
         return Err("貼り付け先のアプリに切り替えてください".into());
@@ -886,7 +910,13 @@ impl eframe::App for Settings {
             }));
         }
         if let Some((text, owner)) = take(&mut self.history_paste_job) {
+            #[cfg(windows)]
             let owner = HWND(owner as *mut std::ffi::c_void);
+            #[cfg(not(windows))]
+            let owner = {
+                let _ = owner;
+                crate::overlay::OverlayHandle
+            };
             match repaste_after_switch(&text, owner) {
                 Ok(tx) => {
                     ui.ctx().request_repaint_after(
@@ -1454,7 +1484,11 @@ impl Settings {
             ui.end_row();
 
             ui.label("自動起動");
-            ui.checkbox(&mut self.startup, "Windows にサインインしたときに起動する");
+            #[cfg(windows)]
+            let startup_label = "Windows にサインインしたときに起動する";
+            #[cfg(not(windows))]
+            let startup_label = "ログインしたときに自動起動する";
+            ui.checkbox(&mut self.startup, startup_label);
             ui.end_row();
         });
     }
@@ -2455,7 +2489,13 @@ impl Settings {
                             Ok(owner) => {
                                 self.history_message =
                                     Some("貼り付け先へ切り替えてください".into());
+                                #[cfg(windows)]
                                 let owner = owner.0 as isize;
+                                #[cfg(not(windows))]
+                                let owner = {
+                                    let _ = owner;
+                                    0isize
+                                };
                                 self.history_paste_job = Some(spawn(ui.ctx(), move || {
                                     std::thread::sleep(Duration::from_secs(3));
                                     (text, owner)
@@ -2525,7 +2565,9 @@ impl Settings {
 #[cfg(test)]
 mod clipboard_tests {
     use super::*;
+    #[cfg(windows)]
     use windows::core::w;
+    #[cfg(windows)]
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_POPUP,
     };
@@ -2742,6 +2784,7 @@ mod clipboard_tests {
         assert!(!Settings::needs_setup(&cfg));
     }
 
+    #[cfg(windows)]
     #[test]
     fn clipboard_owner_requires_a_live_window_in_this_process() {
         assert!(check_settings_clipboard_owner(HWND::default()).is_err());

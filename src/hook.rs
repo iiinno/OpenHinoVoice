@@ -1,17 +1,36 @@
-use crate::config::{Hotkey, MOD_ALT, MOD_CTRL, MOD_SHIFT, MOD_WIN};
-use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, AtomicU8, Ordering};
-use std::sync::mpsc::{channel, Sender};
+use crate::config::Hotkey;
+#[cfg(windows)]
+use crate::config::{MOD_ALT, MOD_CTRL, MOD_SHIFT, MOD_WIN};
+#[cfg(any(windows, test))]
+use std::sync::atomic::AtomicBool;
+#[cfg(windows)]
+use std::sync::atomic::{AtomicIsize, AtomicU64};
+use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+#[cfg(windows)]
+use std::sync::mpsc::channel;
+use std::sync::mpsc::Sender;
+#[cfg(windows)]
 use std::sync::{Mutex, OnceLock};
+#[cfg(windows)]
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+#[cfg(windows)]
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
     VIRTUAL_KEY,
 };
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetMessageW, PeekMessageW, PostThreadMessageW,
     SetWindowsHookExW, UnhookWindowsHookEx, HC_ACTION, KBDLLHOOKSTRUCT, MSG, PM_NOREMOVE,
     WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
+
+#[cfg(not(windows))]
+#[path = "hook_linux.rs"]
+mod linux;
+
+#[cfg(not(windows))]
+pub use linux::{send_control_command, wait_for_wake};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyEvent {
@@ -25,38 +44,53 @@ pub const MIRROR_RECORDING: u8 = 1;
 pub const MIRROR_RECOGNIZING: u8 = 2;
 pub const MIRROR_FORMATTING: u8 = 3;
 
+#[cfg(windows)]
 static SENDER: OnceLock<Sender<KeyEvent>> = OnceLock::new();
+#[cfg(windows)]
 static RESIDENT_WINDOW: AtomicIsize = AtomicIsize::new(0);
 static MIRROR: AtomicU8 = AtomicU8::new(MIRROR_IDLE);
 static PENDING_KEYS: AtomicU32 = AtomicU32::new(0);
 // 主キーと修飾キーは一つの値にして、設定更新の途中の組合せを読まない。
 static HOTKEY: AtomicU32 = AtomicU32::new(0x77);
 // 押下を横取りした主キーは、離したときも横取りしてアプリに片側だけ届かないようにする
+#[cfg(windows)]
 static CAPTURED_HOTKEYS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 // A held Enter produces repeated WM_KEYDOWN messages. Only its first physical
 // press may advance Recording -> Recognizing or request raw text.
+#[cfg(windows)]
 static ENTER_HELD: AtomicBool = AtomicBool::new(false);
+#[cfg(windows)]
 static ENTER_CAPTURED: AtomicBool = AtomicBool::new(false);
+#[cfg(windows)]
 static ESC_HELD: AtomicBool = AtomicBool::new(false);
+#[cfg(windows)]
 static ESC_CAPTURED: AtomicBool = AtomicBool::new(false);
+#[cfg(windows)]
 static PUMP: Mutex<Option<(u32, std::thread::JoinHandle<()>)>> = Mutex::new(None);
 
-/// キーの通知を待ちループに知らせる。待機中はスリープでなくメッセージ待ちで
-/// 起きるため、通知にはウィンドウメッセージを使う
+/// キーの通知を待ちループに知らせる。
 pub fn wake_resident() {
-    use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
-    let hwnd = windows::Win32::Foundation::HWND(
-        RESIDENT_WINDOW.load(Ordering::Acquire) as *mut std::ffi::c_void
-    );
-    if !hwnd.0.is_null() {
-        unsafe {
-            let _ = PostMessageW(hwnd, crate::overlay::WM_WAKE, WPARAM(0), LPARAM(0));
+    #[cfg(windows)]
+    {
+        use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
+        let hwnd = windows::Win32::Foundation::HWND(
+            RESIDENT_WINDOW.load(Ordering::Acquire) as *mut std::ffi::c_void
+        );
+        if !hwnd.0.is_null() {
+            unsafe {
+                let _ = PostMessageW(hwnd, crate::overlay::WM_WAKE, WPARAM(0), LPARAM(0));
+            }
         }
+    }
+    #[cfg(not(windows))]
+    {
+        linux::wake_resident();
     }
 }
 
 /// Returns (swallow, send_event). Also captures the matching key-up even if
 /// the app state changes while the key is held.
+#[cfg(any(windows, test))]
 fn capture_press(
     held: &AtomicBool,
     captured: &AtomicBool,
@@ -77,6 +111,8 @@ fn capture_press(
 
 pub fn set_mirror(state: u8) {
     MIRROR.store(state, Ordering::SeqCst);
+    #[cfg(not(windows))]
+    linux::on_mirror_changed(state);
 }
 
 pub fn acknowledge_hotkey() {
@@ -95,53 +131,71 @@ pub fn mirror() -> u8 {
 
 pub fn set_hotkey(hotkey: Hotkey) {
     HOTKEY.store(hotkey.vk | (u32::from(hotkey.mods) << 16), Ordering::SeqCst);
+    #[cfg(not(windows))]
+    linux::on_hotkey_changed(hotkey);
 }
 
 pub fn install(sender: Sender<KeyEvent>, hotkey: Hotkey) -> Result<(), String> {
-    SENDER
-        .set(sender)
-        .map_err(|_| "キーフックは既に初期化されています".to_string())?;
-    set_hotkey(hotkey);
-    RESIDENT_WINDOW.store(crate::overlay::hwnd().0 as isize, Ordering::Release);
-    let (ready, result) = channel();
-    let thread = std::thread::Builder::new()
-        .name("keyboard-hook".into())
-        .spawn(move || unsafe {
-            // 最初にメッセージキューを作り、終了通知を受け取れる状態で知らせる。
-            let mut message = MSG::default();
-            let _ = PeekMessageW(&mut message, None, 0, 0, PM_NOREMOVE);
-            let id = windows::Win32::System::Threading::GetCurrentThreadId();
-            match SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), None, 0) {
-                Ok(hook) => {
-                    if ready.send(Ok(id)).is_ok() {
-                        while GetMessageW(&mut message, None, 0, 0).0 > 0 {
-                            DispatchMessageW(&message);
+    #[cfg(windows)]
+    {
+        SENDER
+            .set(sender)
+            .map_err(|_| "キーフックは既に初期化されています".to_string())?;
+        set_hotkey(hotkey);
+        RESIDENT_WINDOW.store(crate::overlay::hwnd().0 as isize, Ordering::Release);
+        let (ready, result) = channel();
+        let thread = std::thread::Builder::new()
+            .name("keyboard-hook".into())
+            .spawn(move || unsafe {
+                // 最初にメッセージキューを作り、終了通知を受け取れる状態で知らせる。
+                let mut message = MSG::default();
+                let _ = PeekMessageW(&mut message, None, 0, 0, PM_NOREMOVE);
+                let id = windows::Win32::System::Threading::GetCurrentThreadId();
+                match SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), None, 0) {
+                    Ok(hook) => {
+                        if ready.send(Ok(id)).is_ok() {
+                            while GetMessageW(&mut message, None, 0, 0).0 > 0 {
+                                DispatchMessageW(&message);
+                            }
                         }
+                        let _ = UnhookWindowsHookEx(hook);
                     }
-                    let _ = UnhookWindowsHookEx(hook);
+                    Err(error) => {
+                        let _ = ready.send(Err(format!("キーフックを設置できません: {error}")));
+                    }
                 }
-                Err(error) => {
-                    let _ = ready.send(Err(format!("キーフックを設置できません: {error}")));
-                }
-            }
-        })
-        .map_err(|e| format!("キー入力の担当を起動できません: {e}"))?;
-    let id = result
-        .recv()
-        .map_err(|_| "キー入力の担当が起動中に終了しました".to_string())??;
-    *PUMP.lock().unwrap_or_else(|p| p.into_inner()) = Some((id, thread));
-    Ok(())
-}
-
-pub fn uninstall() {
-    if let Some((id, thread)) = PUMP.lock().unwrap_or_else(|p| p.into_inner()).take() {
-        let sent = unsafe { PostThreadMessageW(id, WM_QUIT, WPARAM(0), LPARAM(0)) };
-        if sent.is_ok() {
-            let _ = thread.join();
-        }
+            })
+            .map_err(|e| format!("キー入力の担当を起動できません: {e}"))?;
+        let id = result
+            .recv()
+            .map_err(|_| "キー入力の担当が起動中に終了しました".to_string())??;
+        *PUMP.lock().unwrap_or_else(|p| p.into_inner()) = Some((id, thread));
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        set_hotkey(hotkey);
+        linux::install(sender, hotkey)
     }
 }
 
+pub fn uninstall() {
+    #[cfg(windows)]
+    {
+        if let Some((id, thread)) = PUMP.lock().unwrap_or_else(|p| p.into_inner()).take() {
+            let sent = unsafe { PostThreadMessageW(id, WM_QUIT, WPARAM(0), LPARAM(0)) };
+            if sent.is_ok() {
+                let _ = thread.join();
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        linux::uninstall();
+    }
+}
+
+#[cfg(windows)]
 unsafe fn current_mods() -> u8 {
     let down = |vk: i32| GetAsyncKeyState(vk) as u16 & 0x8000 != 0;
     let mut mods = 0;
@@ -161,6 +215,7 @@ unsafe fn current_mods() -> u8 {
 }
 
 /// Alt や Win を単独で離したとみなされるとメニューバーやスタートメニューが開くので、割り当てのないキーを挟んで打ち消す
+#[cfg(windows)]
 unsafe fn send_mask_key() {
     let key = |flags| INPUT {
         r#type: INPUT_KEYBOARD,
@@ -176,6 +231,7 @@ unsafe fn send_mask_key() {
     SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
 }
 
+#[cfg(windows)]
 unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code != HC_ACTION as i32 {
         return CallNextHookEx(None, code, wparam, lparam);

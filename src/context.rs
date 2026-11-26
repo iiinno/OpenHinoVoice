@@ -32,8 +32,21 @@ pub fn process_name(pid: u32) -> Option<String> {
 }
 
 #[cfg(not(windows))]
-pub fn process_name(_pid: u32) -> Option<String> {
-    None
+pub fn process_name(pid: u32) -> Option<String> {
+    if pid == 0 {
+        return None;
+    }
+    if let Ok(path) = std::fs::read_link(format!("/proc/{pid}/exe")) {
+        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            let trimmed = name.trim_end_matches(" (deleted)");
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_owned());
+            }
+        }
+    }
+    let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
+    let trimmed = comm.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
 #[cfg(test)]
@@ -43,10 +56,11 @@ mod tests {
         assert!(super::process_name(0).is_none());
     }
 
-    #[cfg(windows)]
     #[test]
     fn current_process_can_be_identified() {
         let name = super::process_name(std::process::id()).expect("own process can be queried");
+        assert!(!name.is_empty());
+        #[cfg(windows)]
         assert!(name.to_ascii_lowercase().ends_with(".exe"));
     }
 }

@@ -618,21 +618,43 @@ fn pkce_challenge(verifier: &str) -> String {
 }
 
 fn sha256(data: &[u8]) -> [u8; 32] {
-    use windows::Win32::Security::Cryptography::{BCryptHash, BCRYPT_SHA256_ALG_HANDLE};
-    let mut out = [0u8; 32];
-    let status = unsafe { BCryptHash(BCRYPT_SHA256_ALG_HANDLE, None, data, &mut out) };
-    assert!(status.is_ok(), "BCryptHash failed: {status:?}");
-    out
+    #[cfg(windows)]
+    {
+        use windows::Win32::Security::Cryptography::{BCryptHash, BCRYPT_SHA256_ALG_HANDLE};
+        let mut out = [0u8; 32];
+        let status = unsafe { BCryptHash(BCRYPT_SHA256_ALG_HANDLE, None, data, &mut out) };
+        assert!(status.is_ok(), "BCryptHash failed: {status:?}");
+        out
+    }
+    #[cfg(not(windows))]
+    {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        hasher.finalize().into()
+    }
 }
 
 fn random_bytes(n: usize) -> Vec<u8> {
-    use windows::Win32::Security::Cryptography::{
-        BCryptGenRandom, BCRYPT_USE_SYSTEM_PREFERRED_RNG,
-    };
-    let mut buf = vec![0u8; n];
-    let status = unsafe { BCryptGenRandom(None, &mut buf, BCRYPT_USE_SYSTEM_PREFERRED_RNG) };
-    assert!(status.is_ok(), "BCryptGenRandom failed: {status:?}");
-    buf
+    #[cfg(windows)]
+    {
+        use windows::Win32::Security::Cryptography::{
+            BCryptGenRandom, BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+        };
+        let mut buf = vec![0u8; n];
+        let status = unsafe { BCryptGenRandom(None, &mut buf, BCRYPT_USE_SYSTEM_PREFERRED_RNG) };
+        assert!(status.is_ok(), "BCryptGenRandom failed: {status:?}");
+        buf
+    }
+    #[cfg(not(windows))]
+    {
+        use std::io::Read;
+        let mut buf = vec![0u8; n];
+        let mut f = std::fs::File::open("/dev/urandom").expect("failed to open /dev/urandom");
+        f.read_exact(&mut buf)
+            .expect("failed to read random bytes from /dev/urandom");
+        buf
+    }
 }
 
 fn uuid_v4() -> String {
@@ -699,24 +721,38 @@ fn hex_byte(pair: &[u8]) -> Option<u8> {
 }
 
 pub(crate) fn open_browser(url: &str) {
-    use windows::Win32::UI::Shell::ShellExecuteW;
-    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-    let wide: Vec<u16> = url.encode_utf16().chain(Some(0)).collect();
-    unsafe {
-        ShellExecuteW(
-            None,
-            windows::core::w!("open"),
-            windows::core::PCWSTR(wide.as_ptr()),
-            None,
-            None,
-            SW_SHOWNORMAL,
-        );
+    #[cfg(windows)]
+    {
+        use windows::Win32::UI::Shell::ShellExecuteW;
+        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        let wide: Vec<u16> = url.encode_utf16().chain(Some(0)).collect();
+        unsafe {
+            ShellExecuteW(
+                None,
+                windows::core::w!("open"),
+                windows::core::PCWSTR(wide.as_ptr()),
+                None,
+                None,
+                SW_SHOWNORMAL,
+            );
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = std::process::Command::new("xdg-open")
+            .arg(url)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
     }
 }
 
-/// プロセスをまたいだ排他。名前付きミューテックスを取り、抜けるときに離す
+/// プロセスをまたいだ排他。Windows は名前付きミューテックス、Linux は flock を使う
+#[cfg(windows)]
 struct NamedLock(windows::Win32::Foundation::HANDLE);
 
+#[cfg(windows)]
 impl NamedLock {
     fn acquire(name: &str) -> Result<NamedLock, String> {
         use windows::Win32::System::Threading::{CreateMutexW, WaitForSingleObject};
@@ -738,6 +774,7 @@ impl NamedLock {
     }
 }
 
+#[cfg(windows)]
 impl Drop for NamedLock {
     fn drop(&mut self) {
         unsafe {
@@ -747,6 +784,56 @@ impl Drop for NamedLock {
     }
 }
 
+#[cfg(not(windows))]
+struct NamedLock(std::fs::File);
+
+#[cfg(not(windows))]
+impl NamedLock {
+    fn acquire(name: &str) -> Result<NamedLock, String> {
+        use std::os::unix::io::AsRawFd;
+        let sanitized: String = name
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let path = crate::config::runtime_dir().join(format!("{sanitized}.lock"));
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&path)
+            .map_err(|e| format!("ChatGPTの排他ロックを作成できません: {e}"))?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+            if rc == 0 {
+                return Ok(NamedLock(file));
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err("ChatGPTの排他ロックを取得できません (timeout)".into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+}
+
+#[cfg(not(windows))]
+impl Drop for NamedLock {
+    fn drop(&mut self) {
+        use std::os::unix::io::AsRawFd;
+        unsafe {
+            libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
+        }
+    }
+}
+
+#[cfg(windows)]
 pub(crate) mod dpapi {
     use windows::Win32::Foundation::{LocalFree, HLOCAL};
     use windows::Win32::Security::Cryptography::{
@@ -800,6 +887,91 @@ pub(crate) mod dpapi {
         let v = std::slice::from_raw_parts(blob.pbData, blob.cbData as usize).to_vec();
         let _ = LocalFree(HLOCAL(blob.pbData as *mut core::ffi::c_void));
         v
+    }
+}
+
+#[cfg(not(windows))]
+pub(crate) mod dpapi {
+    use chacha20poly1305::aead::{Aead, KeyInit};
+    use chacha20poly1305::{ChaCha20Poly1305, Nonce};
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    use std::path::PathBuf;
+
+    const MAGIC: &[u8; 4] = b"OHV1";
+
+    fn key_path() -> PathBuf {
+        crate::config::config_path().with_file_name(".local.key")
+    }
+
+    fn load_or_create_key() -> Result<[u8; 32], String> {
+        let path = key_path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("暗号鍵のフォルダを作れません: {e}"))?;
+        }
+        if let Ok(bytes) = std::fs::read(&path) {
+            if bytes.len() == 32 {
+                let mut key = [0u8; 32];
+                key.copy_from_slice(&bytes);
+                return Ok(key);
+            }
+        }
+        let generated = super::random_bytes(32);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                file.write_all(&generated)
+                    .and_then(|()| file.sync_all())
+                    .map_err(|e| format!("暗号鍵を保存できません: {e}"))?;
+                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+                let mut key = [0u8; 32];
+                key.copy_from_slice(&generated);
+                Ok(key)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let bytes =
+                    std::fs::read(&path).map_err(|err| format!("暗号鍵を読めません: {err}"))?;
+                if bytes.len() != 32 {
+                    return Err("暗号鍵の形式が不正です".into());
+                }
+                let mut key = [0u8; 32];
+                key.copy_from_slice(&bytes);
+                Ok(key)
+            }
+            Err(e) => Err(format!("暗号鍵を作成できません: {e}")),
+        }
+    }
+
+    pub fn protect(data: &[u8]) -> Result<Vec<u8>, String> {
+        let key = load_or_create_key()?;
+        let cipher = ChaCha20Poly1305::new((&key).into());
+        let nonce_bytes = super::random_bytes(12);
+        let nonce = Nonce::from_slice(&nonce_bytes);
+        let ciphertext = cipher
+            .encrypt(nonce, data)
+            .map_err(|_| "トークンを暗号化できません".to_string())?;
+        let mut out = Vec::with_capacity(4 + 12 + ciphertext.len());
+        out.extend_from_slice(MAGIC);
+        out.extend_from_slice(&nonce_bytes);
+        out.extend_from_slice(&ciphertext);
+        Ok(out)
+    }
+
+    pub fn unprotect(data: &[u8]) -> Result<Vec<u8>, String> {
+        if data.len() < 4 + 12 + 16 || &data[..4] != MAGIC {
+            return Err("トークンの暗号化形式が不正です".into());
+        }
+        let key = load_or_create_key()?;
+        let cipher = ChaCha20Poly1305::new((&key).into());
+        let nonce = Nonce::from_slice(&data[4..16]);
+        cipher
+            .decrypt(nonce, &data[16..])
+            .map_err(|_| "トークンを復号できません".to_string())
     }
 }
 

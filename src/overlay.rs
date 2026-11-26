@@ -3,10 +3,13 @@ use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
+#[cfg(windows)]
 use windows::core::PCWSTR;
+#[cfg(windows)]
 use windows::Win32::Foundation::{
     COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
 };
+#[cfg(windows)]
 use windows::Win32::Graphics::Gdi::{
     ClientToScreen, CreateCompatibleDC, CreateDIBSection, CreateFontW, DeleteDC, DeleteObject,
     DrawTextW, GetMonitorInfoW, MonitorFromWindow, SelectObject, SetBkMode, SetTextColor,
@@ -14,11 +17,15 @@ use windows::Win32::Graphics::Gdi::{
     DT_CALCRECT, DT_END_ELLIPSIS, DT_NOPREFIX, DT_SINGLELINE, DT_WORDBREAK, HBITMAP, HDC, HFONT,
     HGDIOBJ, MONITORINFO, MONITOR_DEFAULTTOPRIMARY, TRANSPARENT,
 };
+#[cfg(windows)]
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+#[cfg(windows)]
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+#[cfg(windows)]
 use windows::Win32::UI::Shell::{
     Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
 };
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
     GetCursorPos, GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId, LoadIconW,
@@ -30,22 +37,45 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WS_EX_TRANSPARENT, WS_POPUP,
 };
 
+#[cfg(windows)]
+pub type OverlayHandle = HWND;
+#[cfg(not(windows))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OverlayHandle;
+
+#[cfg(not(windows))]
+#[allow(clippy::upper_case_acronyms)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct RECT {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+
+#[cfg(windows)]
 pub const WM_TRAY: u32 = WM_APP + 1;
 /// キーフックが録音の開始などを通知するときに送るメッセージ。待機中の
 /// メッセージ待ちを起こすためのもの
+#[cfg(windows)]
 pub const WM_WAKE: u32 = WM_APP + 2;
+#[cfg(windows)]
 pub const CMD_EXIT: usize = 1001;
+#[cfg(windows)]
 pub const CMD_SETTINGS: usize = 1002;
+#[cfg(windows)]
 pub const CMD_RECOVER_TEXT: usize = 1003;
+#[cfg(windows)]
 pub const CMD_COPY_LAST_TEXT: usize = 1004;
 
 pub static EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 #[cfg(test)]
 pub(crate) static EXIT_TEST_LOCK: Mutex<()> = Mutex::new(());
-static RECOVERY_COUNT: AtomicUsize = AtomicUsize::new(0);
-static RECOVERY_REQUESTED: AtomicBool = AtomicBool::new(false);
-static LAST_TEXT_AVAILABLE: AtomicBool = AtomicBool::new(false);
-static LAST_TEXT_REQUESTED: AtomicBool = AtomicBool::new(false);
+pub(crate) static RECOVERY_COUNT: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static RECOVERY_REQUESTED: AtomicBool = AtomicBool::new(false);
+pub(crate) static LAST_TEXT_AVAILABLE: AtomicBool = AtomicBool::new(false);
+pub(crate) static LAST_TEXT_REQUESTED: AtomicBool = AtomicBool::new(false);
+#[cfg(windows)]
 static TASKBAR_CREATED: OnceLock<u32> = OnceLock::new();
 /// リアルタイム表示の(確定, 仮)。仮は話している途中の認識で、空のときは確定だけを出す
 static CAPTION: Mutex<Option<(String, String)>> = Mutex::new(None);
@@ -55,6 +85,8 @@ static DIRTY: AtomicBool = AtomicBool::new(true);
 
 pub fn set_recovery_count(count: usize) {
     RECOVERY_COUNT.store(count, Ordering::SeqCst);
+    #[cfg(not(windows))]
+    crate::overlay_linux::refresh_linux_tray_menu();
 }
 
 pub fn take_recovery_request() -> bool {
@@ -63,6 +95,8 @@ pub fn take_recovery_request() -> bool {
 
 pub fn set_last_text_available(available: bool) {
     LAST_TEXT_AVAILABLE.store(available, Ordering::SeqCst);
+    #[cfg(not(windows))]
+    crate::overlay_linux::refresh_linux_tray_menu();
 }
 
 pub fn take_last_text_request() -> bool {
@@ -196,28 +230,44 @@ fn lock() -> std::sync::MutexGuard<'static, Overlay> {
     store().lock().unwrap_or_else(|p| p.into_inner())
 }
 
-pub fn hwnd() -> HWND {
-    HWND(lock().hwnd as *mut std::ffi::c_void)
+pub fn hwnd() -> OverlayHandle {
+    #[cfg(windows)]
+    {
+        HWND(lock().hwnd as *mut std::ffi::c_void)
+    }
+    #[cfg(not(windows))]
+    {
+        OverlayHandle
+    }
 }
 
+#[cfg(windows)]
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
 /// GUI-subsystem binaries have no visible stderr; surface fatal errors to the user.
 pub fn show_error(message: &str) {
-    let text = wide(message);
-    unsafe {
-        let _ = MessageBoxW(
-            None,
-            PCWSTR(text.as_ptr()),
-            windows::core::w!("OpenHinoVoice"),
-            MB_OK | MB_ICONERROR | MB_SETFOREGROUND,
-        );
+    #[cfg(windows)]
+    {
+        let text = wide(message);
+        unsafe {
+            let _ = MessageBoxW(
+                None,
+                PCWSTR(text.as_ptr()),
+                windows::core::w!("OpenHinoVoice"),
+                MB_OK | MB_ICONERROR | MB_SETFOREGROUND,
+            );
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        crate::overlay_linux::show_error(message);
     }
 }
 
-pub fn create() -> Result<HWND, String> {
+pub fn create() -> Result<OverlayHandle, String> {
+    #[cfg(windows)]
     unsafe {
         let taskbar_created = *TASKBAR_CREATED
             .get_or_init(|| RegisterWindowMessageW(windows::core::w!("TaskbarCreated")));
@@ -264,6 +314,12 @@ pub fn create() -> Result<HWND, String> {
         lock().hwnd = window.0 as isize;
         Ok(window)
     }
+    #[cfg(not(windows))]
+    {
+        crate::overlay_linux::create_linux_overlay_and_tray()?;
+        lock().hwnd = 1;
+        Ok(OverlayHandle)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -284,6 +340,7 @@ impl TrayKind {
             _ => Self::Idle,
         }
     }
+    #[cfg(any(windows, test))]
     fn bytes(self, light: bool) -> &'static [u8] {
         match (light, self) {
             (true, Self::Idle) => include_bytes!("../assets/branding/tray/light-idle.ico"),
@@ -305,12 +362,14 @@ impl TrayKind {
         }
     }
 }
+#[cfg(windows)]
 struct TrayCache {
     icon: isize,
     kind: TrayKind,
     light: bool,
     pixels: i32,
 }
+#[cfg(windows)]
 static TRAY_CACHE: Mutex<TrayCache> = Mutex::new(TrayCache {
     icon: 0,
     kind: TrayKind::Idle,
@@ -318,9 +377,11 @@ static TRAY_CACHE: Mutex<TrayCache> = Mutex::new(TrayCache {
     pixels: 16,
 });
 static TRAY_MODE: Mutex<TrayKind> = Mutex::new(TrayKind::Idle);
+#[cfg(windows)]
 static TRAY_READD: AtomicBool = AtomicBool::new(false);
 static ENVIRONMENT_CHANGED: AtomicBool = AtomicBool::new(false);
 
+#[cfg(any(windows, test))]
 const TRAY_RETRY_LIMIT: u8 = 5;
 
 #[derive(Default)]
@@ -339,6 +400,7 @@ impl TrayRetry {
         self.retry_at = None;
     }
 
+    #[cfg(any(windows, test))]
     fn ready(&self, now: Instant) -> Option<(bool, bool)> {
         if self.failures >= TRAY_RETRY_LIMIT || self.retry_at.is_some_and(|at| now < at) {
             None
@@ -347,6 +409,7 @@ impl TrayRetry {
         }
     }
 
+    #[cfg(any(windows, test))]
     fn failed(&mut self, now: Instant, requires_add: bool) {
         self.add_needed |= requires_add;
         self.failures = self.failures.saturating_add(1);
@@ -354,6 +417,7 @@ impl TrayRetry {
             .then(|| now + Duration::from_millis(250 * (1 << (self.failures - 1))));
     }
 
+    #[cfg(any(windows, test))]
     fn succeeded(&mut self) {
         *self = Self::default();
     }
@@ -372,6 +436,7 @@ pub fn next_deadline() -> Option<Instant> {
         .retry_at
 }
 
+#[cfg(windows)]
 struct TrayUpdateError {
     message: String,
     requires_add: bool,
@@ -391,9 +456,32 @@ pub fn set_tray_mode(mode: Option<&Mode>) {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .invalidate(false, false);
+        #[cfg(not(windows))]
+        {
+            let (lkind, tip) = match kind {
+                TrayKind::Idle => (
+                    crate::overlay_linux::LinuxTrayKind::Idle,
+                    "OpenHinoVoice - 待機中",
+                ),
+                TrayKind::Recording => (
+                    crate::overlay_linux::LinuxTrayKind::Recording,
+                    "OpenHinoVoice - 録音中",
+                ),
+                TrayKind::Processing => (
+                    crate::overlay_linux::LinuxTrayKind::Processing,
+                    "OpenHinoVoice - 処理中",
+                ),
+                TrayKind::Error => (
+                    crate::overlay_linux::LinuxTrayKind::Error,
+                    "OpenHinoVoice - エラー",
+                ),
+            };
+            crate::overlay_linux::update_linux_tray(lkind, tip);
+        }
     }
 }
 
+#[cfg(windows)]
 fn tray_appearance() -> (bool, i32) {
     use windows::Win32::UI::HiDpi::GetDpiForWindow;
     use windows::Win32::UI::WindowsAndMessaging::FindWindowW;
@@ -413,6 +501,7 @@ fn tray_appearance() -> (bool, i32) {
 }
 
 /// ICO directory lookup is bounded; Windows creates only the selected raster size.
+#[cfg(any(windows, test))]
 fn ico_frame(bytes: &[u8], desired: i32) -> Option<&[u8]> {
     if bytes.get(..4)? != [0, 0, 1, 0] {
         return None;
@@ -445,6 +534,7 @@ fn ico_frame(bytes: &[u8], desired: i32) -> Option<&[u8]> {
     selected.map(|(_, image)| image)
 }
 
+#[cfg(windows)]
 unsafe fn update_tray(
     window: HWND,
     readd: bool,
@@ -518,27 +608,36 @@ unsafe fn update_tray(
     Ok(())
 }
 
+#[cfg(windows)]
 unsafe fn add_tray(window: HWND) -> Result<(), String> {
     update_tray(window, true, true).map_err(|error| error.message)
 }
 
 pub fn remove_tray() {
-    use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, HICON};
-    unsafe {
-        let data = NOTIFYICONDATAW {
-            cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
-            hWnd: hwnd(),
-            uID: 1,
-            ..Default::default()
-        };
-        let _ = Shell_NotifyIconW(NIM_DELETE, &data);
-        let old_icon = {
-            let mut cache = TRAY_CACHE.lock().unwrap_or_else(|p| p.into_inner());
-            std::mem::replace(&mut cache.icon, 0)
-        };
-        if old_icon != 0 {
-            let _ = DestroyIcon(HICON(old_icon as *mut std::ffi::c_void));
+    #[cfg(windows)]
+    {
+        use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, HICON};
+        unsafe {
+            let data = NOTIFYICONDATAW {
+                cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+                hWnd: hwnd(),
+                uID: 1,
+                ..Default::default()
+            };
+            let _ = Shell_NotifyIconW(NIM_DELETE, &data);
+            let old_icon = {
+                let mut cache = TRAY_CACHE.lock().unwrap_or_else(|p| p.into_inner());
+                std::mem::replace(&mut cache.icon, 0)
+            };
+            if old_icon != 0 {
+                let _ = DestroyIcon(HICON(old_icon as *mut std::ffi::c_void));
+            }
         }
+    }
+    #[cfg(not(windows))]
+    {
+        crate::overlay_linux::remove_linux_tray();
+        lock().hwnd = 0;
     }
 }
 
@@ -606,20 +705,27 @@ fn motion_allowed(preference: FeedbackMotion, system_enabled: bool) -> bool {
 }
 
 fn system_motion_enabled() -> bool {
-    use windows::Win32::Foundation::BOOL;
-    use windows::Win32::UI::WindowsAndMessaging::{
-        SystemParametersInfoW, SPI_GETCLIENTAREAANIMATION, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
-    };
-    let mut enabled = BOOL(1);
-    let result = unsafe {
-        SystemParametersInfoW(
-            SPI_GETCLIENTAREAANIMATION,
-            0,
-            Some((&mut enabled as *mut BOOL).cast()),
-            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
-        )
-    };
-    result.is_err() || enabled.as_bool()
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::BOOL;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SystemParametersInfoW, SPI_GETCLIENTAREAANIMATION, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+        };
+        let mut enabled = BOOL(1);
+        let result = unsafe {
+            SystemParametersInfoW(
+                SPI_GETCLIENTAREAANIMATION,
+                0,
+                Some((&mut enabled as *mut BOOL).cast()),
+                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+            )
+        };
+        result.is_err() || enabled.as_bool()
+    }
+    #[cfg(not(windows))]
+    {
+        true
+    }
 }
 
 /// リアルタイム表示の文字を渡す。確定は区間の認識結果、仮は話している途中の文字。
@@ -653,6 +759,7 @@ fn caption_lock() -> std::sync::MutexGuard<'static, Option<(String, String)>> {
     CAPTION.lock().unwrap_or_else(|p| p.into_inner())
 }
 
+#[cfg(windows)]
 fn caption_anchor() -> String {
     CAPTION_ANCHOR
         .lock()
@@ -668,6 +775,7 @@ pub fn caption_for_test() -> Option<(String, String)> {
 
 /// 入力先のキャレットの画面座標(キャレット行の下端)。取れないときは None で、
 /// 帯は画面の上端に出す。キー操作もクリップボードも使わない
+#[cfg(windows)]
 unsafe fn caret_screen_position() -> Option<POINT> {
     let foreground = GetForegroundWindow();
     let thread = GetWindowThreadProcessId(foreground, None);
@@ -789,25 +897,28 @@ fn recording_second(mode: Option<&Mode>) -> Option<u64> {
 /// メインループから毎回呼ぶ。アニメーション中だけ描き直す
 pub fn tick() {
     let environment_changed = ENVIRONMENT_CHANGED.swap(false, Ordering::AcqRel);
-    let window = hwnd();
-    if !window.0.is_null() {
-        let readd = TRAY_READD.swap(false, Ordering::AcqRel);
-        let now = Instant::now();
-        let attempt = {
-            let mut retry = tray_retry().lock().unwrap_or_else(|p| p.into_inner());
-            if readd || environment_changed {
-                retry.invalidate(readd, environment_changed);
-            }
-            retry.ready(now)
-        };
-        if let Some((readd, refresh)) = attempt {
-            let result = unsafe { update_tray(window, readd, refresh) };
-            let mut retry = tray_retry().lock().unwrap_or_else(|p| p.into_inner());
-            match result {
-                Ok(()) => retry.succeeded(),
-                Err(error) => {
-                    retry.failed(now, error.requires_add);
-                    eprintln!("{}", error.message);
+    #[cfg(windows)]
+    {
+        let window = hwnd();
+        if !window.0.is_null() {
+            let readd = TRAY_READD.swap(false, Ordering::AcqRel);
+            let now = Instant::now();
+            let attempt = {
+                let mut retry = tray_retry().lock().unwrap_or_else(|p| p.into_inner());
+                if readd || environment_changed {
+                    retry.invalidate(readd, environment_changed);
+                }
+                retry.ready(now)
+            };
+            if let Some((readd, refresh)) = attempt {
+                let result = unsafe { update_tray(window, readd, refresh) };
+                let mut retry = tray_retry().lock().unwrap_or_else(|p| p.into_inner());
+                match result {
+                    Ok(()) => retry.succeeded(),
+                    Err(error) => {
+                        retry.failed(now, error.requires_add);
+                        eprintln!("{}", error.message);
+                    }
                 }
             }
         }
@@ -834,10 +945,21 @@ pub fn tick() {
         return;
     }
     o.last_frame = Instant::now();
-    let window = HWND(o.hwnd as *mut std::ffi::c_void);
-    if window.0.is_null() {
-        return;
-    }
+    #[cfg(windows)]
+    let window = {
+        let w = HWND(o.hwnd as *mut std::ffi::c_void);
+        if w.0.is_null() {
+            return;
+        }
+        w
+    };
+    #[cfg(not(windows))]
+    let window = {
+        if o.hwnd == 0 {
+            return;
+        }
+        OverlayHandle
+    };
     let fade = match o.hiding_since {
         Some(since) => {
             let p = since.elapsed().as_secs_f32() / FADE_OUT.as_secs_f32();
@@ -845,9 +967,12 @@ pub fn tick() {
                 o.visible = false;
                 o.hiding_since = None;
                 o.mode = None;
+                #[cfg(windows)]
                 unsafe {
                     let _ = ShowWindow(window, SW_HIDE);
                 }
+                #[cfg(not(windows))]
+                crate::overlay_linux::hide_overlay();
                 return;
             }
             1.0 - ease_out(p)
@@ -909,15 +1034,30 @@ fn level_from_rms(rms: f32) -> f32 {
 }
 
 unsafe fn anchor_monitor() -> (RECT, f32) {
-    let monitor = MonitorFromWindow(GetForegroundWindow(), MONITOR_DEFAULTTOPRIMARY);
-    let mut info = MONITORINFO {
-        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
-        ..Default::default()
-    };
-    let _ = GetMonitorInfoW(monitor, &mut info);
-    let (mut dx, mut dy) = (96u32, 96u32);
-    let _ = GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
-    (info.rcWork, dx as f32 / 96.0)
+    #[cfg(windows)]
+    {
+        let monitor = MonitorFromWindow(GetForegroundWindow(), MONITOR_DEFAULTTOPRIMARY);
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        let _ = GetMonitorInfoW(monitor, &mut info);
+        let (mut dx, mut dy) = (96u32, 96u32);
+        let _ = GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
+        (info.rcWork, dx as f32 / 96.0)
+    }
+    #[cfg(not(windows))]
+    {
+        (
+            RECT {
+                left: 0,
+                top: 0,
+                right: 1920,
+                bottom: 1080,
+            },
+            1.0,
+        )
+    }
 }
 
 // ---- 描画 ----
@@ -1004,47 +1144,69 @@ pub fn preview_environment(theme: &str, motion: FeedbackMotion) -> PreviewEnviro
 }
 
 fn high_contrast_enabled() -> bool {
-    use windows::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
-    use windows::Win32::UI::WindowsAndMessaging::{
-        SystemParametersInfoW, SPI_GETHIGHCONTRAST, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
-    };
-    let mut value = HIGHCONTRASTW {
-        cbSize: std::mem::size_of::<HIGHCONTRASTW>() as u32,
-        ..Default::default()
-    };
-    let ok = unsafe {
-        SystemParametersInfoW(
-            SPI_GETHIGHCONTRAST,
-            value.cbSize,
-            Some((&mut value as *mut HIGHCONTRASTW).cast()),
-            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
-        )
-    };
-    ok.is_ok() && value.dwFlags.contains(HCF_HIGHCONTRASTON)
+    #[cfg(windows)]
+    {
+        use windows::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SystemParametersInfoW, SPI_GETHIGHCONTRAST, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+        };
+        let mut value = HIGHCONTRASTW {
+            cbSize: std::mem::size_of::<HIGHCONTRASTW>() as u32,
+            ..Default::default()
+        };
+        let ok = unsafe {
+            SystemParametersInfoW(
+                SPI_GETHIGHCONTRAST,
+                value.cbSize,
+                Some((&mut value as *mut HIGHCONTRASTW).cast()),
+                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+            )
+        };
+        ok.is_ok() && value.dwFlags.contains(HCF_HIGHCONTRASTON)
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
 }
 
 fn system_palette() -> Palette {
-    use windows::Win32::Graphics::Gdi::{GetSysColor, COLOR_WINDOW, COLOR_WINDOWTEXT};
-    let rgb = |value: u32| Rgb(value as u8, (value >> 8) as u8, (value >> 16) as u8);
-    let background = unsafe { rgb(GetSysColor(COLOR_WINDOW)) };
-    let foreground = unsafe { rgb(GetSysColor(COLOR_WINDOWTEXT)) };
-    Palette {
-        bg: background,
-        bg_alpha: 1.0,
-        edge: foreground,
-        edge_alpha: 1.0,
-        fg: foreground,
-        red: foreground,
-        amber: foreground,
-        shadow_alpha: 0.0,
-        high_contrast: true,
+    #[cfg(windows)]
+    {
+        use windows::Win32::Graphics::Gdi::{GetSysColor, COLOR_WINDOW, COLOR_WINDOWTEXT};
+        let rgb = |value: u32| Rgb(value as u8, (value >> 8) as u8, (value >> 16) as u8);
+        let background = unsafe { rgb(GetSysColor(COLOR_WINDOW)) };
+        let foreground = unsafe { rgb(GetSysColor(COLOR_WINDOWTEXT)) };
+        Palette {
+            bg: background,
+            bg_alpha: 1.0,
+            edge: foreground,
+            edge_alpha: 1.0,
+            fg: foreground,
+            red: foreground,
+            amber: foreground,
+            shadow_alpha: 0.0,
+            high_contrast: true,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        DARK
     }
 }
 
 fn windows_uses_light_theme() -> bool {
-    windows_light_theme_value(windows::core::w!("AppsUseLightTheme"))
+    #[cfg(windows)]
+    {
+        windows_light_theme_value(windows::core::w!("AppsUseLightTheme"))
+    }
+    #[cfg(not(windows))]
+    {
+        crate::overlay_linux::system_uses_light_theme()
+    }
 }
 
+#[cfg(windows)]
 fn windows_light_theme_value(name: PCWSTR) -> bool {
     use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
     let mut value: u32 = 1;
@@ -1279,10 +1441,10 @@ fn coverage(d: f32, soften: f32) -> f32 {
     }
 }
 
-struct TextMask {
-    w: i32,
-    h: i32,
-    cov: Vec<u8>,
+pub(crate) struct TextMask {
+    pub(crate) w: i32,
+    pub(crate) h: i32,
+    pub(crate) cov: Vec<u8>,
 }
 
 struct CachedText {
@@ -1317,6 +1479,7 @@ unsafe fn cached_text(text: &str, font_px: i32, bold: bool, max_w: i32) -> Arc<T
 }
 
 /// 折り返して描いた文字。長い文章は下から max_lines 行だけを残す(古い行は上へ送る)
+#[cfg(windows)]
 unsafe fn render_text_wrapped(
     text: &str,
     px_height: i32,
@@ -1407,6 +1570,16 @@ unsafe fn render_text_wrapped(
     TextMask { w, h, cov }
 }
 
+#[cfg(not(windows))]
+unsafe fn render_text_wrapped(
+    text: &str,
+    px_height: i32,
+    max_w: i32,
+    max_lines: usize,
+) -> TextMask {
+    crate::overlay_linux::render_text_wrapped(text, px_height, max_w, max_lines)
+}
+
 /// リアルタイム表示の帯に使う、折り返し済みの文字の Bitmap。文字が変わったときだけ描き直す
 struct CaptionMasks {
     key: (String, String),
@@ -1435,6 +1608,7 @@ unsafe fn caption_masks(confirmed: &str, partial: &str, font_px: i32, max_w: i32
 }
 
 /// GDI で白黒の文字を描き、その濃さを塗りの割合として取り出す。GDI は 32bit 画像のアルファを壊すため別に描く
+#[cfg(windows)]
 unsafe fn render_text(text: &str, px_height: i32, bold: bool, max_w: i32) -> TextMask {
     if text.is_empty() {
         return TextMask {
@@ -1511,6 +1685,11 @@ unsafe fn render_text(text: &str, px_height: i32, bold: bool, max_w: i32) -> Tex
     TextMask { w, h, cov }
 }
 
+#[cfg(not(windows))]
+unsafe fn render_text(text: &str, px_height: i32, bold: bool, max_w: i32) -> TextMask {
+    crate::overlay_linux::render_text(text, px_height, bold, max_w)
+}
+
 #[derive(Debug)]
 pub struct PreviewFrame {
     pub width: usize,
@@ -1581,6 +1760,7 @@ struct Visuals {
     recording_elapsed: Duration,
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 struct RenderedFrame {
     canvas: Canvas,
     shadow: f32,
@@ -1592,7 +1772,7 @@ struct RenderedFrame {
 
 #[allow(clippy::too_many_arguments)]
 unsafe fn present(
-    window: HWND,
+    window: OverlayHandle,
     mode: &Mode,
     pal: &Palette,
     work: RECT,
@@ -1604,50 +1784,67 @@ unsafe fn present(
 ) {
     let frame = render_frame(mode, pal, work, s, level, masks, visuals);
     let px = |v: f32| (v * s).round();
-    let (w, h) = (frame.canvas.w, frame.canvas.h);
-    let (shadow, pill_h, gap, band_w, band_h) = (
-        frame.shadow,
-        frame.pill_h,
-        frame.gap,
-        frame.band_w,
-        frame.band_h,
-    );
-    let y0 = shadow;
-    // 帯の場所。"caret" は入力中の位置の近く、取れないときと "top" は画面の上端の中央。
-    // 下中央はチャットの入力欄など文字を入れる場所に重なりやすいので避ける。出るときは上から少し降りてくる
-    let drop = px(8.0) * (1.0 - fade);
-    let band_top_in_canvas = y0 + pill_h + gap;
-    let (wx, wy) = if caption_anchor() == "caret" && band_h > 0.0 {
-        match unsafe { caret_screen_position() } {
-            Some(caret) => {
-                // 帯はキャレットの上に出す。上に space がなければ下に出す
-                let band_h_px = band_h as i32;
-                let above = caret.y - band_h_px - gap as i32;
-                let target_y = if above >= work.top {
-                    above
-                } else {
-                    caret.y + gap as i32
-                };
-                let band_w_px = band_w as i32;
-                let target_x = caret.x - band_w_px / 2;
-                (
-                    target_x - (shadow as i32 + (w - shadow as i32 * 2 - band_w_px) / 2),
-                    target_y - band_top_in_canvas as i32 - drop as i32,
-                )
+    #[cfg(windows)]
+    {
+        let (w, h) = (frame.canvas.w, frame.canvas.h);
+        let (shadow, pill_h, gap, band_w, band_h) = (
+            frame.shadow,
+            frame.pill_h,
+            frame.gap,
+            frame.band_w,
+            frame.band_h,
+        );
+        let y0 = shadow;
+        // 帯の場所。"caret" は入力中の位置の近く、取れないときと "top" は画面の上端の中央。
+        // 下中央はチャットの入力欄など文字を入れる場所に重なりやすいので避ける。出るときは上から少し降りてくる
+        let drop = px(8.0) * (1.0 - fade);
+        let band_top_in_canvas = y0 + pill_h + gap;
+        let (wx, wy) = if caption_anchor() == "caret" && band_h > 0.0 {
+            match unsafe { caret_screen_position() } {
+                Some(caret) => {
+                    // 帯はキャレットの上に出す。上に space がなければ下に出す
+                    let band_h_px = band_h as i32;
+                    let above = caret.y - band_h_px - gap as i32;
+                    let target_y = if above >= work.top {
+                        above
+                    } else {
+                        caret.y + gap as i32
+                    };
+                    let band_w_px = band_w as i32;
+                    let target_x = caret.x - band_w_px / 2;
+                    (
+                        target_x - (shadow as i32 + (w - shadow as i32 * 2 - band_w_px) / 2),
+                        target_y - band_top_in_canvas as i32 - drop as i32,
+                    )
+                }
+                None => (
+                    work.left + ((work.right - work.left) - w) / 2,
+                    work.top + px(4.0) as i32 - drop as i32,
+                ),
             }
-            None => (
+        } else {
+            (
                 work.left + ((work.right - work.left) - w) / 2,
                 work.top + px(4.0) as i32 - drop as i32,
-            ),
+            )
+        };
+        let (wx, wy) = clamp_to_work_area(wx, wy, w, h, work);
+        blit(window, &frame.canvas, wx, wy, (fade * 255.0) as u8);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = window;
+        let mut argb = Vec::with_capacity(frame.canvas.px.len() * 4);
+        let fade_clamped = fade.clamp(0.0, 1.0);
+        for p in &frame.canvas.px {
+            // Canvas stores premultiplied [B, G, R, A] in 0..1; wl_shm Argb8888 is BGRA bytes on LE.
+            for &ch in p.iter() {
+                argb.push((ch.clamp(0.0, 1.0) * fade_clamped * 255.0 + 0.5) as u8);
+            }
         }
-    } else {
-        (
-            work.left + ((work.right - work.left) - w) / 2,
-            work.top + px(4.0) as i32 - drop as i32,
-        )
-    };
-    let (wx, wy) = clamp_to_work_area(wx, wy, w, h, work);
-    blit(window, &frame.canvas, wx, wy, (fade * 255.0) as u8);
+        let top_margin = (px(8.0) * fade_clamped).round() as i32;
+        crate::overlay_linux::present_buffer(frame.canvas.w, frame.canvas.h, argb, top_margin);
+    }
     FRAME_CANVAS.with(|slot| *slot.borrow_mut() = Some(frame.canvas));
 }
 
@@ -2005,6 +2202,7 @@ unsafe fn render_frame(
     }
 }
 
+#[cfg(any(windows, test))]
 fn clamp_to_work_area(x: i32, y: i32, w: i32, h: i32, work: RECT) -> (i32, i32) {
     (
         x.clamp(work.left, (work.right - w).max(work.left)),
@@ -2012,6 +2210,7 @@ fn clamp_to_work_area(x: i32, y: i32, w: i32, h: i32, work: RECT) -> (i32, i32) 
     )
 }
 
+#[cfg(windows)]
 struct BlitSurface {
     dc: HDC,
     bitmap: HBITMAP,
@@ -2021,6 +2220,7 @@ struct BlitSurface {
     h: i32,
 }
 
+#[cfg(windows)]
 impl BlitSurface {
     unsafe fn new(w: i32, h: i32) -> Option<Self> {
         let dc = CreateCompatibleDC(None);
@@ -2060,6 +2260,7 @@ impl BlitSurface {
     }
 }
 
+#[cfg(windows)]
 impl Drop for BlitSurface {
     fn drop(&mut self) {
         unsafe {
@@ -2070,11 +2271,13 @@ impl Drop for BlitSurface {
     }
 }
 
+#[cfg(windows)]
 thread_local! {
     // GDI resources remain on the presenting thread and are released on resize or exit.
     static BLIT_SURFACE: RefCell<Option<BlitSurface>> = const { RefCell::new(None) };
 }
 
+#[cfg(windows)]
 unsafe fn blit(window: HWND, c: &Canvas, x: i32, y: i32, alpha: u8) {
     BLIT_SURFACE.with(|slot| {
         let mut slot = slot.borrow_mut();
@@ -2124,6 +2327,7 @@ unsafe fn blit(window: HWND, c: &Canvas, x: i32, y: i32, alpha: u8) {
     });
 }
 
+#[cfg(windows)]
 unsafe fn show_exit_menu(window: HWND) {
     let menu = match CreatePopupMenu() {
         Ok(m) => m,
@@ -2175,6 +2379,7 @@ unsafe fn show_exit_menu(window: HWND) {
     }
 }
 
+#[cfg(windows)]
 unsafe extern "system" fn wnd_proc(
     window: HWND,
     msg: u32,
@@ -2226,12 +2431,12 @@ unsafe extern "system" fn wnd_proc(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 pub(crate) struct TestOwner {
     previous: isize,
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 pub(crate) fn test_owner(window: HWND) -> TestOwner {
     let mut state = lock();
     let previous = state.hwnd;
@@ -2239,7 +2444,7 @@ pub(crate) fn test_owner(window: HWND) -> TestOwner {
     TestOwner { previous }
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 impl Drop for TestOwner {
     fn drop(&mut self) {
         hide();
@@ -2251,6 +2456,7 @@ impl Drop for TestOwner {
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
     #[test]
     fn close_request_preserves_the_hidden_clipboard_owner_until_shutdown() {
         let _exit_guard = EXIT_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -2416,6 +2622,7 @@ mod tests {
         assert!(TEXT_MASKS.lock().unwrap_or_else(|p| p.into_inner()).len() <= 8);
     }
 
+    #[cfg(windows)]
     #[test]
     fn taskbar_created_message_registration_is_stable() {
         let first = unsafe { RegisterWindowMessageW(windows::core::w!("TaskbarCreated")) };

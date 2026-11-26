@@ -164,6 +164,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[cfg(windows)]
 #[repr(C)]
 #[derive(Default)]
 struct ProcessMemoryCounters {
@@ -180,6 +181,7 @@ struct ProcessMemoryCounters {
     private_usage: usize,
 }
 
+#[cfg(windows)]
 #[link(name = "kernel32")]
 extern "system" {
     fn K32GetProcessMemoryInfo(
@@ -198,6 +200,7 @@ struct Resources {
     user: u32,
 }
 
+#[cfg(windows)]
 fn resources() -> Result<Resources, Box<dyn std::error::Error>> {
     use windows::Win32::Foundation::FILETIME;
     use windows::Win32::System::Threading::{
@@ -232,6 +235,26 @@ fn resources() -> Result<Resources, Box<dyn std::error::Error>> {
             user: GetGuiResources(process, GR_USEROBJECTS),
         })
     }
+}
+
+#[cfg(not(windows))]
+fn resources() -> Result<Resources, Box<dyn std::error::Error>> {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    let rss_kb = status
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("VmRSS:")
+                .and_then(|v| v.split_whitespace().next())
+                .and_then(|n| n.parse::<usize>().ok())
+        })
+        .unwrap_or(0);
+    Ok(Resources {
+        private_bytes: rss_kb * 1024,
+        working_set_bytes: rss_kb * 1024,
+        cpu_ms: 0.0,
+        gdi: 0,
+        user: 0,
+    })
 }
 
 fn percentile(sorted: &[u128], percent: usize) -> u128 {

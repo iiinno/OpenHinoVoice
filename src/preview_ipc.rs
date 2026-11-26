@@ -1,28 +1,37 @@
 use crate::feedback::{SoundEvent, SoundSet};
 use crate::{config, sound};
 use serde::{Deserialize, Serialize};
+#[cfg(windows)]
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
+#[cfg(windows)]
 use windows::core::{PCWSTR, PWSTR};
+#[cfg(windows)]
 use windows::Win32::Foundation::{
     CloseHandle, BOOL, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM,
 };
+#[cfg(windows)]
 use windows::Win32::System::DataExchange::COPYDATASTRUCT;
+#[cfg(windows)]
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+#[cfg(windows)]
 use windows::Win32::System::SystemInformation::GetTickCount64;
+#[cfg(windows)]
 use windows::Win32::System::Threading::{
     GetCurrentProcessId, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
     PROCESS_QUERY_LIMITED_INFORMATION,
 };
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, EnumWindows, GetPropW,
     GetWindowThreadProcessId, RegisterClassW, RemovePropW, SendMessageTimeoutW, SetPropW,
     HWND_MESSAGE, SMTO_ABORTIFHUNG, SMTO_BLOCK, SMTO_ERRORONEXIT, WM_COPYDATA, WNDCLASSW,
 };
 
+#[cfg(windows)]
 const MAGIC: usize = 0x4F48_5650;
 const VERSION: u8 = 1;
 const MAX_MESSAGE: usize = 512;
@@ -229,18 +238,36 @@ fn namespace() -> String {
     config::mutex_name("OpenHinoVoice.Preview")
 }
 
+#[cfg(windows)]
 fn property(kind: &str) -> Vec<u16> {
     wide(&config::mutex_name(&format!(
         "OpenHinoVoice.Preview.{kind}"
     )))
 }
 
+#[cfg(windows)]
 fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(Some(0)).collect()
 }
 
 fn now_ms() -> u64 {
-    unsafe { GetTickCount64() }
+    #[cfg(windows)]
+    {
+        unsafe { GetTickCount64() }
+    }
+    #[cfg(not(windows))]
+    {
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        unsafe {
+            libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts);
+        }
+        (ts.tv_sec as u64)
+            .saturating_mul(1000)
+            .saturating_add((ts.tv_nsec as u64) / 1_000_000)
+    }
 }
 
 fn event_from_id(value: &str) -> Option<SoundEvent> {
@@ -360,7 +387,8 @@ pub fn deadline() -> Option<Instant> {
     }
 }
 
-pub fn register_endpoint(window: HWND) -> Result<(), String> {
+#[cfg(windows)]
+pub fn register_endpoint(window: crate::overlay::OverlayHandle) -> Result<(), String> {
     let property = property("Resident");
     unsafe {
         SetPropW(
@@ -372,7 +400,8 @@ pub fn register_endpoint(window: HWND) -> Result<(), String> {
     }
 }
 
-pub fn unregister_endpoint(window: HWND) {
+#[cfg(windows)]
+pub fn unregister_endpoint(window: crate::overlay::OverlayHandle) {
     invalidate();
     let property = property("Resident");
     unsafe {
@@ -380,6 +409,160 @@ pub fn unregister_endpoint(window: HWND) {
     }
 }
 
+#[cfg(not(windows))]
+mod unix_transport {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::path::PathBuf;
+    use std::sync::atomic::AtomicBool;
+
+    static RUNNING: AtomicBool = AtomicBool::new(false);
+    static THREAD: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
+
+    fn socket_path() -> PathBuf {
+        let sanitized: String = namespace()
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        config::runtime_dir().join(format!("{sanitized}.sock"))
+    }
+
+    fn peer_uid_and_pid(stream: &UnixStream) -> Option<(u32, u32)> {
+        let mut cred = libc::ucred {
+            pid: 0,
+            uid: u32::MAX,
+            gid: u32::MAX,
+        };
+        let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+        let rc = unsafe {
+            libc::getsockopt(
+                stream.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_PEERCRED,
+                (&mut cred as *mut libc::ucred).cast(),
+                &mut len,
+            )
+        };
+        (rc == 0 && cred.pid > 0).then_some((cred.uid, cred.pid as u32))
+    }
+
+    pub fn register_endpoint(_window: crate::overlay::OverlayHandle) -> Result<(), String> {
+        let path = socket_path();
+        let _ = std::fs::remove_file(&path);
+        let listener =
+            UnixListener::bind(&path).map_err(|e| format!("試聴の受付を作れません: {e}"))?;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        let _ = listener.set_nonblocking(true);
+        RUNNING.store(true, Ordering::SeqCst);
+        let my_uid = unsafe { libc::getuid() };
+        let handle = std::thread::Builder::new()
+            .name("preview-ipc".into())
+            .spawn(move || {
+                while RUNNING.load(Ordering::Acquire) {
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            let _ =
+                                stream.set_read_timeout(Some(Duration::from_millis(REQUEST_MS)));
+                            let _ =
+                                stream.set_write_timeout(Some(Duration::from_millis(REQUEST_MS)));
+                            let accepted = if let Some((uid, pid)) = peer_uid_and_pid(&stream) {
+                                if uid == my_uid && pid != std::process::id() {
+                                    let mut buf = vec![0u8; MAX_MESSAGE + 1];
+                                    let n = stream.read(&mut buf).unwrap_or(0);
+                                    if n > 0 && n <= MAX_MESSAGE {
+                                        let now = now_ms();
+                                        decode(&buf[..n], &namespace(), pid, now).is_some_and(
+                                            |request| {
+                                                if matches!(request.command, Command::Play { .. })
+                                                    && crate::hook::preview_blocked()
+                                                {
+                                                    return false;
+                                                }
+                                                let ok = controller()
+                                                    .lock()
+                                                    .unwrap_or_else(|p| p.into_inner())
+                                                    .enqueue(request, now);
+                                                if ok {
+                                                    crate::hook::wake_resident();
+                                                }
+                                                ok
+                                            },
+                                        )
+                                    } else {
+                                        false
+                                    }
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            };
+                            let _ = stream.write_all(&[u8::from(accepted)]);
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(20));
+                        }
+                        Err(_) => std::thread::sleep(Duration::from_millis(50)),
+                    }
+                }
+            })
+            .map_err(|e| format!("試聴の受付スレッドを起動できません: {e}"))?;
+        *THREAD.lock().unwrap_or_else(|p| p.into_inner()) = Some(handle);
+        Ok(())
+    }
+
+    pub fn unregister_endpoint(_window: crate::overlay::OverlayHandle) {
+        invalidate();
+        RUNNING.store(false, Ordering::SeqCst);
+        if let Some(handle) = THREAD.lock().unwrap_or_else(|p| p.into_inner()).take() {
+            let _ = handle.join();
+        }
+        let _ = std::fs::remove_file(socket_path());
+    }
+
+    pub fn send(command: Command) -> Result<(), String> {
+        let mut stream = UnixStream::connect(socket_path())
+            .map_err(|_| "本体に接続できないため、音なしで表示を試します。".to_string())?;
+        let _ = stream.set_read_timeout(Some(Duration::from_millis(REQUEST_MS * 2)));
+        let _ = stream.set_write_timeout(Some(Duration::from_millis(REQUEST_MS)));
+        let issued_ms = now_ms();
+        let request = Request {
+            version: VERSION,
+            namespace: namespace(),
+            pid: std::process::id(),
+            issued_ms,
+            expires_ms: issued_ms + REQUEST_MS,
+            command,
+        };
+        let bytes = serde_json::to_vec(&request).map_err(|error| error.to_string())?;
+        if bytes.len() > MAX_MESSAGE {
+            return Err("試聴要求が上限を超えています。".into());
+        }
+        stream.write_all(&bytes).map_err(|_| {
+            "録音・処理中、または本体が応答しないため、音なしで表示を試します。".to_string()
+        })?;
+        let mut reply = [0u8; 1];
+        if stream.read_exact(&mut reply).is_ok() && reply[0] == 1 {
+            Ok(())
+        } else {
+            Err("録音・処理中、または本体が応答しないため、音なしで表示を試します。".into())
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub use unix_transport::{register_endpoint, unregister_endpoint};
+
+#[cfg(windows)]
 fn window_pid(window: HWND) -> u32 {
     let mut pid = 0;
     unsafe {
@@ -388,6 +571,7 @@ fn window_pid(window: HWND) -> u32 {
     pid
 }
 
+#[cfg(windows)]
 fn same_executable(pid: u32) -> bool {
     unsafe {
         let Ok(process) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
@@ -421,6 +605,7 @@ fn same_executable(pid: u32) -> bool {
 /// # Safety
 /// For WM_COPYDATA, `data` must be the valid COPYDATASTRUCT supplied to this window
 /// by Windows, including its readable buffer for the duration of the callback.
+#[cfg(windows)]
 pub unsafe fn handle_message(
     window: HWND,
     message: u32,
@@ -467,8 +652,10 @@ pub unsafe fn handle_message(
     Some(LRESULT(isize::from(accepted)))
 }
 
+#[cfg(windows)]
 struct ClientWindow(HWND);
 
+#[cfg(windows)]
 impl Drop for ClientWindow {
     fn drop(&mut self) {
         unsafe {
@@ -477,10 +664,12 @@ impl Drop for ClientWindow {
     }
 }
 
+#[cfg(windows)]
 thread_local! {
     static CLIENT: RefCell<Option<(String, ClientWindow)>> = const { RefCell::new(None) };
 }
 
+#[cfg(windows)]
 unsafe extern "system" fn client_proc(
     window: HWND,
     message: u32,
@@ -490,6 +679,7 @@ unsafe extern "system" fn client_proc(
     DefWindowProcW(window, message, wparam, lparam)
 }
 
+#[cfg(windows)]
 fn client_window() -> Result<HWND, String> {
     CLIENT.with(|slot| {
         let mut slot = slot.borrow_mut();
@@ -537,11 +727,13 @@ fn client_window() -> Result<HWND, String> {
     })
 }
 
+#[cfg(windows)]
 struct Search {
     property: Vec<u16>,
     window: HWND,
 }
 
+#[cfg(windows)]
 unsafe extern "system" fn find_endpoint(window: HWND, data: LPARAM) -> BOOL {
     let search = &mut *(data.0 as *mut Search);
     let pid = window_pid(window);
@@ -557,6 +749,7 @@ unsafe extern "system" fn find_endpoint(window: HWND, data: LPARAM) -> BOOL {
     }
 }
 
+#[cfg(windows)]
 fn send(command: Command) -> Result<(), String> {
     let sender = client_window()?;
     let mut search = Search {
@@ -616,16 +809,35 @@ pub fn request_play(
     volume: u8,
     token: u64,
 ) -> Result<(), String> {
-    send(Command::Play {
-        set: set.id().into(),
-        event: event.id().into(),
-        volume,
-        token,
-    })
+    #[cfg(windows)]
+    {
+        send(Command::Play {
+            set: set.id().into(),
+            event: event.id().into(),
+            volume,
+            token,
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        unix_transport::send(Command::Play {
+            set: set.id().into(),
+            event: event.id().into(),
+            volume,
+            token,
+        })
+    }
 }
 
 pub fn request_stop(token: u64) -> Result<(), String> {
-    send(Command::Stop { token })
+    #[cfg(windows)]
+    {
+        send(Command::Stop { token })
+    }
+    #[cfg(not(windows))]
+    {
+        unix_transport::send(Command::Stop { token })
+    }
 }
 
 #[cfg(test)]
@@ -756,8 +968,10 @@ mod tests {
         assert!(state.active.is_none());
     }
 
+    #[cfg(windows)]
     static TRANSPORT_ACCEPTED: AtomicU64 = AtomicU64::new(0);
 
+    #[cfg(windows)]
     unsafe extern "system" fn transport_proc(
         window: HWND,
         message: u32,
@@ -774,6 +988,7 @@ mod tests {
     }
 
     // This helper only submits Stop; neither process calls the audio backend.
+    #[cfg(windows)]
     #[test]
     fn native_transport_child() {
         if std::env::var_os("OHV_PREVIEW_TRANSPORT_CHILD").is_none() {
@@ -782,6 +997,7 @@ mod tests {
         request_stop(new_token()).expect("hidden-window preview transport");
     }
 
+    #[cfg(windows)]
     #[test]
     fn hidden_window_transport_accepts_a_bounded_request_from_the_same_executable() {
         use std::os::windows::io::AsRawHandle;

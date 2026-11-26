@@ -16,6 +16,12 @@ pub(crate) mod history;
 pub(crate) mod hook;
 pub mod lexicon;
 pub mod overlay;
+#[cfg(not(windows))]
+mod overlay_linux;
+#[cfg(windows)]
+pub mod paste;
+#[cfg(not(windows))]
+#[path = "paste_linux.rs"]
 pub mod paste;
 pub(crate) mod provider;
 pub(crate) mod recovery;

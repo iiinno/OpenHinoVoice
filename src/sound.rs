@@ -58,8 +58,10 @@ trait PlaybackBackend {
     fn stop(&mut self) -> bool;
 }
 
+#[cfg(windows)]
 struct WinMm;
 
+#[cfg(windows)]
 impl PlaybackBackend for WinMm {
     fn play(&mut self, pcm: &[u8]) -> bool {
         use windows::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
@@ -78,6 +80,63 @@ impl PlaybackBackend for WinMm {
         unsafe { PlaySoundW(windows::core::PCWSTR::null(), None, SND_SYNC).as_bool() }
     }
 }
+
+#[cfg(not(windows))]
+#[derive(Default)]
+struct LinuxAudio {
+    child: Option<std::process::Child>,
+}
+
+#[cfg(not(windows))]
+impl PlaybackBackend for LinuxAudio {
+    fn play(&mut self, pcm: &[u8]) -> bool {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+
+        let _ = self.stop();
+        // Prefer pw-play (PipeWire), then paplay (PulseAudio), then aplay (ALSA).
+        let candidates: [(&str, &[&str]); 3] = [
+            ("pw-play", &["--media-role", "Notification", "-"]),
+            ("paplay", &[]),
+            ("aplay", &["-q", "-"]),
+        ];
+        for (cmd, args) in candidates {
+            let Ok(mut child) = Command::new(cmd)
+                .args(args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+            else {
+                continue;
+            };
+            if let Some(mut stdin) = child.stdin.take() {
+                let data = pcm.to_vec();
+                std::thread::spawn(move || {
+                    let _ = stdin.write_all(&data);
+                });
+            }
+            self.child = Some(child);
+            return true;
+        }
+        false
+    }
+
+    fn stop(&mut self) -> bool {
+        if let Some(mut child) = self.child.take() {
+            if child.try_wait().ok().flatten().is_none() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+        true
+    }
+}
+
+#[cfg(windows)]
+type PlatformBackend = WinMm;
+#[cfg(not(windows))]
+type PlatformBackend = LinuxAudio;
 
 struct Player<B> {
     backend: B,
@@ -146,11 +205,17 @@ impl<B: PlaybackBackend> Player<B> {
     }
 }
 
-fn player() -> MutexGuard<'static, Player<WinMm>> {
-    // staticの所有で、通常終了時もWinMMより先に再生中PCMを解放しない。
-    static PLAYER: OnceLock<Mutex<Player<WinMm>>> = OnceLock::new();
+fn player() -> MutexGuard<'static, Player<PlatformBackend>> {
+    // staticの所有で、通常終了時も再生バックエンドより先に再生中PCMを解放しない。
+    static PLAYER: OnceLock<Mutex<Player<PlatformBackend>>> = OnceLock::new();
     PLAYER
-        .get_or_init(|| Mutex::new(Player::new(WinMm)))
+        .get_or_init(|| {
+            #[cfg(windows)]
+            let backend = WinMm;
+            #[cfg(not(windows))]
+            let backend = LinuxAudio::default();
+            Mutex::new(Player::new(backend))
+        })
         .lock()
         .unwrap_or_else(|p| p.into_inner())
 }

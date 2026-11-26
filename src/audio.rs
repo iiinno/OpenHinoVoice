@@ -81,7 +81,7 @@ impl CaptureBuffer {
 }
 
 impl Recorder {
-    #[cfg(test)]
+    #[cfg(all(test, windows))]
     pub(crate) fn fixture(sample_rate: u32, samples: Vec<f32>) -> Self {
         Self {
             _stream: None,

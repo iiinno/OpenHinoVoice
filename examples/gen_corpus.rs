@@ -9,11 +9,13 @@
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{channel, Receiver};
 use std::time::Duration;
 
+#[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const TARGETS: &[(&str, f64)] = &[
     ("short", 15.0),
@@ -106,15 +108,15 @@ struct TtsWorker {
 
 impl TtsWorker {
     fn spawn(speech_exe: &str, model: &str) -> TtsWorker {
-        let mut child = Command::new(speech_exe)
-            .arg("worker")
+        let mut cmd = Command::new(speech_exe);
+        cmd.arg("worker")
             .arg(model)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()
-            .expect("speech worker を起動できません");
+            .stderr(Stdio::inherit());
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        let mut child = cmd.spawn().expect("speech worker を起動できません");
         let stdout = child.stdout.take().expect("stdout を取得できません");
         let stdin = child.stdin.take().expect("stdin を取得できません");
         let (tx, rx) = channel();

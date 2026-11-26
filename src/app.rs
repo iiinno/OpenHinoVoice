@@ -14,11 +14,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+#[cfg(windows)]
 use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS, LPARAM, WPARAM};
+#[cfg(windows)]
 use windows::Win32::System::Threading::CreateMutexW;
+#[cfg(windows)]
 use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, MsgWaitForMultipleObjectsEx, PeekMessageW, TranslateMessage, MSG,
     MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT, WM_QUIT,
@@ -1226,6 +1230,7 @@ impl App {
                 retire_worker(kept.worker);
             }
         }
+        #[cfg(windows)]
         unsafe {
             let mut message = MSG::default();
             while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
@@ -2508,9 +2513,57 @@ pub mod replay {
     }
 }
 
+#[cfg(not(windows))]
+struct SingleInstanceLock(std::fs::File);
+
+#[cfg(not(windows))]
+impl SingleInstanceLock {
+    fn acquire(name: &str) -> Option<Self> {
+        use std::os::unix::io::AsRawFd;
+        let path = config::runtime_dir().join(format!("{}.lock", config::mutex_name(name)));
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&path)
+            .ok()?;
+        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        (rc == 0).then_some(Self(file))
+    }
+}
+
+#[cfg(not(windows))]
+impl Drop for SingleInstanceLock {
+    fn drop(&mut self) {
+        use std::os::unix::io::AsRawFd;
+        unsafe {
+            libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
+        }
+    }
+}
+
 pub fn run() {
+    #[cfg(not(windows))]
+    {
+        for (flag, cmd) in [
+            ("--trigger", "trigger"),
+            ("--finish", "finish"),
+            ("--cancel", "cancel"),
+            ("--quit", "exit"),
+        ] {
+            if std::env::args().any(|a| a == flag) {
+                if let Err(e) = hook::send_control_command(cmd) {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+                return;
+            }
+        }
+    }
     let settings_mode = std::env::args().any(|a| a == "--settings");
     // 二重に起動するとキーの横取りが重なるので、2 つ目は何もせずに終わる。設定ウィンドウも 1 つだけ開く
+    #[cfg(windows)]
     let _single = unsafe {
         let name = if settings_mode {
             "Local\\OpenHinoVoice.Settings"
@@ -2527,7 +2580,20 @@ pub fn run() {
         }
         handle
     };
-    // 高解像度の画面で表示がぼやけないよう、モニターごとの拡大率を自分で扱う
+    #[cfg(not(windows))]
+    let _single = {
+        let name = if settings_mode {
+            "settings"
+        } else {
+            "singleton"
+        };
+        let Some(lock) = SingleInstanceLock::acquire(name) else {
+            return;
+        };
+        lock
+    };
+    // 高解像度の画面で表示がぼやけないよう、Windows ではモニターごとの拡大率を自分で扱う
+    #[cfg(windows)]
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
@@ -2567,6 +2633,9 @@ pub fn run() {
         overlay::show_error(&e);
         return;
     }
+
+    #[cfg(not(windows))]
+    paste::warm_up_portal();
 
     // オフラインモードでは認識モデルの自動取得が起こらない。未取得のままなら
     // 起動時に 1 回だけ案内を出す(取得はしない)
@@ -2669,9 +2738,9 @@ pub fn run() {
             }
         }
 
-        // 何も表示していない待機中は、キーの通知(ウィンドウメッセージ)が来るまで
-        // 寝る。設定の更新を見落とさないよう 1 秒で起きる。録音と表示の応答は
-        // 従来どおり短い間隔で回す
+        // 何も表示していない待機中は、通知が来るまで寝る。
+        // 設定の更新を見落とさないよう 1 秒で起きる。録音と表示の応答は 10 ミリ秒
+        #[cfg(windows)]
         unsafe {
             MsgWaitForMultipleObjectsEx(
                 None,
@@ -2680,6 +2749,8 @@ pub fn run() {
                 MWMO_INPUTAVAILABLE,
             );
         }
+        #[cfg(not(windows))]
+        hook::wait_for_wake(app.wait_duration(Instant::now()));
     }
 
     app.teardown_session();
@@ -2690,8 +2761,11 @@ pub fn run() {
     crate::preview_ipc::unregister_endpoint(overlay::hwnd());
     sound::stop();
     overlay::remove_tray();
-    let _ = LPARAM(0);
-    let _ = WPARAM(0);
+    #[cfg(windows)]
+    {
+        let _ = LPARAM(0);
+        let _ = WPARAM(0);
+    }
 }
 
 /// 待機中に次に起きるまでの長さ。待機中はメッセージで起こされるので、
@@ -3802,5 +3876,5 @@ mod flow_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod core_e2e;

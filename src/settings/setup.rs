@@ -1,27 +1,35 @@
 use eframe::egui;
 use std::io::Read;
+#[cfg(windows)]
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+#[cfg(windows)]
 use windows::Win32::Foundation::{CloseHandle, FILETIME, HANDLE};
+#[cfg(windows)]
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
 };
+#[cfg(windows)]
 use windows::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
     SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
+#[cfg(windows)]
 use windows::Win32::System::Pipes::PeekNamedPipe;
+#[cfg(windows)]
 use windows::Win32::System::Threading::{
     GetProcessIdOfThread, GetThreadTimes, OpenThread, ResumeThread, CREATE_SUSPENDED,
     THREAD_QUERY_LIMITED_INFORMATION, THREAD_SUSPEND_RESUME,
 };
 
+#[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const OUTPUT_LIMIT: usize = 512 * 1024;
 const PROGRESS_LIMIT: usize = 512;
@@ -196,7 +204,9 @@ fn catalog_contains(json: &str, model: &str) -> Result<bool, String> {
     Ok(false)
 }
 
+#[cfg(windows)]
 struct ProcessJob(HANDLE);
+#[cfg(windows)]
 impl ProcessJob {
     fn new() -> Result<Self, String> {
         let handle = unsafe { CreateJobObjectW(None, None) }
@@ -223,6 +233,7 @@ impl ProcessJob {
         let _ = unsafe { TerminateJobObject(self.0, 1) };
     }
 }
+#[cfg(windows)]
 impl Drop for ProcessJob {
     fn drop(&mut self) {
         let _ = unsafe { CloseHandle(self.0) };
@@ -231,6 +242,7 @@ impl Drop for ProcessJob {
 
 // Rust 1.99 keeps Child::main_thread_handle behind an unstable feature. Find
 // the oldest thread of our still-suspended child using the stable Win32 APIs.
+#[cfg(windows)]
 fn resume_initial_thread(child: &std::process::Child) -> Result<(), String> {
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) }
         .map_err(|e| format!("モデル処理の初期スレッドを確認できません: {e}"))?;
@@ -345,6 +357,7 @@ impl Capture {
 
 // There is one reader per handle. Reading no more than the bytes PeekNamedPipe
 // reports cannot wait for EOF, even if a descendant keeps its write end open.
+#[cfg(windows)]
 fn drain_available(
     pipe: &mut (impl Read + AsRawHandle),
     output: &mut Capture,
@@ -385,6 +398,68 @@ fn drain_available(
     Ok(())
 }
 
+#[cfg(not(windows))]
+fn set_nonblocking(fd: std::os::fd::RawFd) {
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        if flags >= 0 {
+            libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn drain_available(
+    pipe: &mut (impl Read + std::os::fd::AsRawFd),
+    output: &mut Capture,
+    progress: bool,
+) -> Result<(), String> {
+    let mut budget = 64 * 1024;
+    let mut buffer = [0_u8; 4096];
+    while budget > 0 {
+        let want = buffer.len().min(budget);
+        match pipe.read(&mut buffer[..want]) {
+            Ok(0) => break,
+            Ok(count) => {
+                output.push(&buffer[..count], progress);
+                budget -= count;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(format!("モデル処理の出力を読めません: {e}")),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+struct ProcessJob {
+    pgid: libc::pid_t,
+}
+
+#[cfg(not(windows))]
+impl ProcessJob {
+    fn from_child(child: &std::process::Child) -> Self {
+        Self {
+            pgid: child.id() as libc::pid_t,
+        }
+    }
+    fn stop(&self) {
+        if self.pgid > 0 {
+            unsafe {
+                libc::kill(-self.pgid, libc::SIGKILL);
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+impl Drop for ProcessJob {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
 fn run_command(
     exe: &str,
     args: &[&str],
@@ -396,26 +471,58 @@ fn run_command(
     if cancel.load(Ordering::Acquire) {
         return Err("中断しました".into());
     }
-    let process_job = ProcessJob::new()?;
-    let mut child = Command::new(exe)
-        .args(args)
-        .creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED.0)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("speech.cpp を起動できません: {e}"))?;
-    if let Err(error) = process_job
-        .assign(&child)
-        .and_then(|_| resume_initial_thread(&child))
-    {
-        process_job.stop();
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(error);
-    }
+    #[cfg(windows)]
+    let (process_job, mut child) = {
+        let process_job = ProcessJob::new()?;
+        let mut child = Command::new(exe)
+            .args(args)
+            .creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED.0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("speech.cpp を起動できません: {e}"))?;
+        if let Err(error) = process_job
+            .assign(&child)
+            .and_then(|_| resume_initial_thread(&child))
+        {
+            process_job.stop();
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+        (process_job, child)
+    };
+    #[cfg(not(windows))]
+    let (process_job, mut child) = {
+        use std::os::unix::process::CommandExt;
+        let mut cmd = Command::new(exe);
+        cmd.args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setpgid(0, 0) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let child = cmd
+            .spawn()
+            .map_err(|e| format!("speech.cpp を起動できません: {e}"))?;
+        let job = ProcessJob::from_child(&child);
+        (job, child)
+    };
     let mut stdout_pipe = child.stdout.take().expect("piped stdout");
     let mut stderr_pipe = child.stderr.take().expect("piped stderr");
+    #[cfg(not(windows))]
+    {
+        use std::os::fd::AsRawFd;
+        set_nonblocking(stdout_pipe.as_raw_fd());
+        set_nonblocking(stderr_pipe.as_raw_fd());
+    }
     let mut stdout = Capture::default();
     let mut stderr = Capture::default();
     let started = Instant::now();
@@ -624,6 +731,7 @@ mod tests {
         finished.recv_timeout(Duration::from_secs(2)).unwrap();
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_child_cannot_run_or_launch_descendants_before_job_assignment() {
         let job = ProcessJob::new().unwrap();
@@ -683,9 +791,6 @@ mod tests {
 
     #[test]
     fn a_descendant_holding_output_pipes_cannot_delay_command_completion() {
-        use windows::Win32::System::Threading::{
-            OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
-        };
         let exe = std::env::current_exe().unwrap();
         let started = Instant::now();
         let output = run_command(
@@ -715,10 +820,31 @@ mod tests {
             .unwrap()
             .parse()
             .unwrap();
-        if let Ok(handle) = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, pid) } {
-            let stopped = unsafe { WaitForSingleObject(handle, 2000) };
-            let _ = unsafe { CloseHandle(handle) };
-            assert_eq!(stopped.0, 0, "the command's job must reap its descendant");
+        #[cfg(windows)]
+        {
+            use windows::Win32::System::Threading::{
+                OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+            };
+            if let Ok(handle) = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, pid) } {
+                let stopped = unsafe { WaitForSingleObject(handle, 2000) };
+                let _ = unsafe { CloseHandle(handle) };
+                assert_eq!(stopped.0, 0, "the command's job must reap its descendant");
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < deadline {
+                if unsafe { libc::kill(pid as libc::pid_t, 0) } != 0 {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert_ne!(
+                unsafe { libc::kill(pid as libc::pid_t, 0) },
+                0,
+                "the command's process group must reap its descendant"
+            );
         }
     }
 
@@ -726,19 +852,19 @@ mod tests {
     #[ignore = "subprocess fixture with an inherited-pipe descendant"]
     #[allow(clippy::zombie_processes)] // The owning test reaps this child through its process job.
     fn pipe_holder_parent_fixture() {
-        let child = Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--ignored",
-                "--exact",
-                "settings::setup::tests::waiting_child_fixture",
-                "--nocapture",
-            ])
-            .creation_flags(CREATE_NO_WINDOW)
-            .stdin(Stdio::null())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .unwrap();
+        let mut cmd = Command::new(std::env::current_exe().unwrap());
+        cmd.args([
+            "--ignored",
+            "--exact",
+            "settings::setup::tests::waiting_child_fixture",
+            "--nocapture",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        let child = cmd.spawn().unwrap();
         println!("descendant_pid={}", child.id());
         // Exiting leaves both writers inherited by the descendant. The owner job
         // must stop it without waiting for the descendant's thirty-second sleep.

@@ -15,13 +15,7 @@ fn percentile(values: &mut [u64], p: f64) -> u64 {
 }
 
 fn default_path() -> std::path::PathBuf {
-    std::env::var_os("APPDATA")
-        .map(|base| {
-            std::path::PathBuf::from(base)
-                .join("OpenHinoVoice")
-                .join("usage-log.jsonl")
-        })
-        .unwrap_or_else(|| std::path::PathBuf::from("usage-log.jsonl"))
+    openhinovoice::config::config_path().with_file_name("usage-log.jsonl")
 }
 
 fn main() {
