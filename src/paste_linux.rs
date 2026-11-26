@@ -762,21 +762,27 @@ fn send_paste_ctrl_v() -> Result<Duration, String> {
     res.map(|()| PASTE_HOLD_DELAY)
 }
 
+static PORTAL_WARMING: AtomicBool = AtomicBool::new(false);
+
 /// Start the RemoteDesktop portal session in the background at app launch so
 /// any one-time KDE permission dialog appears immediately instead of mid-dictation.
 pub fn warm_up_portal() {
     if crate::config::is_test_sandbox() || std::env::var_os("WAYLAND_DISPLAY").is_none() {
         return;
     }
+    if PORTAL_WARMING.swap(true, Ordering::AcqRel) {
+        return;
+    }
     let _ = std::thread::Builder::new()
         .name("portal-warmup".into())
         .spawn(|| {
-            let mut guard = portal_store().lock().unwrap_or_else(|p| p.into_inner());
-            if guard.is_none() {
-                if let Ok(session) = open_portal_session() {
+            if let Ok(session) = open_portal_session() {
+                let mut guard = portal_store().lock().unwrap_or_else(|p| p.into_inner());
+                if guard.is_none() {
                     *guard = Some(session);
                 }
             }
+            PORTAL_WARMING.store(false, Ordering::Release);
         });
 }
 

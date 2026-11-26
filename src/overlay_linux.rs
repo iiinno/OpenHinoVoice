@@ -721,6 +721,7 @@ pub enum LinuxTrayKind {
 
 struct OhvTray {
     kind: LinuxTrayKind,
+    light: bool,
     tooltip: String,
     recovery_count: usize,
     last_text_available: bool,
@@ -759,8 +760,7 @@ fn decode_png_to_ksni_icon(bytes: &[u8]) -> Option<ksni::Icon> {
     })
 }
 
-fn tray_icon_pixmap(kind: LinuxTrayKind) -> Vec<ksni::Icon> {
-    let light = system_uses_light_theme();
+fn tray_icon_pixmap(kind: LinuxTrayKind, light: bool) -> Vec<ksni::Icon> {
     let bytes: &[u8] = match (light, kind) {
         (true, LinuxTrayKind::Idle) => include_bytes!("../assets/branding/tray/light-idle.png"),
         (true, LinuxTrayKind::Recording) => {
@@ -792,7 +792,7 @@ impl ksni::Tray for OhvTray {
     }
 
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
-        tray_icon_pixmap(self.kind)
+        tray_icon_pixmap(self.kind, self.light)
     }
 
     fn tool_tip(&self) -> ksni::ToolTip {
@@ -887,6 +887,7 @@ pub fn create_linux_overlay_and_tray() -> Result<(), String> {
         use ksni::blocking::TrayMethods;
         let tray = OhvTray {
             kind: LinuxTrayKind::Idle,
+            light: system_uses_light_theme(),
             tooltip: "OpenHinoVoice - 待機中".into(),
             recovery_count: RECOVERY_COUNT.load(Ordering::SeqCst),
             last_text_available: LAST_TEXT_AVAILABLE.load(Ordering::SeqCst),
@@ -904,6 +905,7 @@ pub fn create_linux_overlay_and_tray() -> Result<(), String> {
 }
 
 pub fn update_linux_tray(kind: LinuxTrayKind, tooltip: &str) {
+    let light = system_uses_light_theme();
     let recovery_count = RECOVERY_COUNT.load(Ordering::SeqCst);
     let last_text_available = LAST_TEXT_AVAILABLE.load(Ordering::SeqCst);
     let tooltip = tooltip.to_owned();
@@ -914,6 +916,7 @@ pub fn update_linux_tray(kind: LinuxTrayKind, tooltip: &str) {
     {
         handle.update(move |tray| {
             tray.kind = kind;
+            tray.light = light;
             tray.tooltip = tooltip;
             tray.recovery_count = recovery_count;
             tray.last_text_available = last_text_available;
