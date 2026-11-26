@@ -20,7 +20,7 @@ mod imp {
         installed: AtomicBool,
     }
 
-    pub(super) struct Capture {
+    pub struct Capture {
         window: HWND,
         state: Arc<State>,
     }
@@ -52,7 +52,7 @@ mod imp {
     }
 
     impl Capture {
-        pub(super) fn install(cc: &eframe::CreationContext<'_>) -> Option<Self> {
+        pub fn install(cc: &eframe::CreationContext<'_>) -> Option<Self> {
             use raw_window_handle::{HasWindowHandle, RawWindowHandle};
             let directory = authorized_directory()?;
             let RawWindowHandle::Win32(handle) = cc.window_handle().ok()?.as_raw() else {
